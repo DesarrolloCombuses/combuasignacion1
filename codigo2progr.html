@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8" />
@@ -686,6 +686,7 @@
               <option value="base">Ver base logueada</option>
             </select>
             <button class="btn btn-ghost" id="btnRefreshVisor">Actualizar visor</button>
+            <button class="btn btn-success" id="btnExportVisor">Descargar visor Excel</button>
             <span class="muted">Vista previa en tiempo real de como se va formando el formato operativo (todas las bases).</span>
           </div>
           <div id="liveExcelPreview" style="overflow:auto;max-height:60vh">
@@ -844,6 +845,8 @@ let currentProgramacionFileName = "programacion_online";
 let dragFeedbackTimer = null;
 let swapModalResolver = null;
 let noteModalResolver = null;
+const ROW_UI_ID_KEY = "__ROW_UI_ID";
+let rowUiIdSeq = 1;
 const UNASSIGNED_LABEL = "SIN CONDUCTOR PROGRAMADO";
 let syncRowsInProgress = false;
 let syncRowsPending = false;
@@ -1012,6 +1015,10 @@ function queueRealtimeProgramacionesRefresh(){
   realtimeProgramacionesTimer = setTimeout(async () => {
     realtimeProgramacionesTimer = null;
     if (!currentUserId) return;
+    if (syncRowsInProgress) {
+      queueRealtimeProgramacionesRefresh();
+      return;
+    }
     try {
       await loadLatestProgramacionFromSupabase();
       if (currentBase) refreshFilterDateOptions();
@@ -1019,6 +1026,8 @@ function queueRealtimeProgramacionesRefresh(){
       renderTable();
       renderDrivers();
       renderNovedades();
+      refreshVisorDateOptions();
+      renderLiveExcelPreview();
       renderConsultaBaseView();
       renderAdminComplianceDashboard();
       setSyncStatus("ok", "Actualizado en tiempo real");
@@ -1045,6 +1054,7 @@ function queueRealtimeNovedadesRefresh(){
 }
 
 function queueRealtimeAuditRefresh(){
+  if (AUDIT_DISABLED) return;
   if (realtimeAuditTimer) clearTimeout(realtimeAuditTimer);
   realtimeAuditTimer = setTimeout(async () => {
     realtimeAuditTimer = null;
@@ -1097,7 +1107,7 @@ function subscribeRealtimeChannels(){
     )
     .subscribe();
 
-  if (isSuperAdmin()) {
+  if (!AUDIT_DISABLED && isSuperAdmin()) {
     realtimeAuditChannel = supabaseClient
       .channel(`rt-audit-${suffix}`)
       .on(
@@ -1167,7 +1177,22 @@ function confirmVehicleSwapModal(payload){
 }
 
 function isInternalRowKey(key){
-  return String(key || "").startsWith("__NOTE__");
+  const keyText = String(key || "");
+  return keyText.startsWith("__NOTE__") || keyText === ROW_UI_ID_KEY;
+}
+
+function ensureRowUiId(rowObj){
+  const row = rowObj || {};
+  if (!row[ROW_UI_ID_KEY]) {
+    row[ROW_UI_ID_KEY] = `R${Date.now().toString(36)}${(rowUiIdSeq++).toString(36)}`;
+  }
+  return String(row[ROW_UI_ID_KEY]);
+}
+
+function sanitizeRowForStorage(rowObj){
+  const clean = { ...(rowObj || {}) };
+  delete clean[ROW_UI_ID_KEY];
+  return clean;
 }
 
 function getConductorNoteKey(conductorKey){
@@ -1620,6 +1645,7 @@ function buildProgramacionFilaPayload(rowsInput, programacionId){
   const source = Array.isArray(rowsInput) ? rowsInput : [];
   return source.map(row => {
     const rowKey = buildProgramacionRowKey(row);
+    const rowData = sanitizeRowForStorage(row);
     const baseCanonical = getRowCanonicalBase(row) || null;
     const fechaIso = getRowDateISO(row) || null;
     const vehKey = getVehiculoKey(row);
@@ -1627,7 +1653,7 @@ function buildProgramacionFilaPayload(rowsInput, programacionId){
     return {
       programacion_id: programacionId,
       row_key: rowKey,
-      row_data: row,
+      row_data: rowData,
       base: baseCanonical ? formatBaseLabel(baseCanonical) : null,
       fecha: fechaIso,
       vehiculo,
@@ -1710,25 +1736,32 @@ function mergeRowsForBaseOperator(latestRowsInput, localRowsInput, baseCanonical
   const localBaseKeys = new Set();
   localRows.forEach(r => {
     const key = buildProgramacionRowKey(r);
-    if (!key) return;
-    localMap.set(key, r);
+    const slotKey = buildProgramacionSlotKey(r);
+    if (!key && !slotKey) return;
+    if (key) localMap.set(`K:${key}`, r);
+    if (slotKey) localMap.set(`S:${slotKey}`, r);
     const rowBase = getRowCanonicalBase(r);
-    if (rowBase === baseScope) localBaseKeys.add(key);
+    if (rowBase === baseScope) {
+      if (slotKey) localBaseKeys.add(`S:${slotKey}`);
+      else if (key) localBaseKeys.add(`K:${key}`);
+    }
   });
 
   const merged = [];
   const usedLocalKeys = new Set();
   latestRows.forEach(r => {
     const key = buildProgramacionRowKey(r);
-    if (!key) {
+    const slotKey = buildProgramacionSlotKey(r);
+    const matchKey = slotKey ? `S:${slotKey}` : (key ? `K:${key}` : null);
+    if (!matchKey) {
       merged.push(r);
       return;
     }
     const rowBase = getRowCanonicalBase(r);
     if (rowBase === baseScope) {
-      if (localMap.has(key)) {
-        merged.push(localMap.get(key));
-        usedLocalKeys.add(key);
+      if (localMap.has(matchKey)) {
+        merged.push(localMap.get(matchKey));
+        usedLocalKeys.add(matchKey);
       }
       return;
     }
@@ -1775,18 +1808,31 @@ async function loadLatestProgramacionFromSupabase(){
   const latest = programacionesHistory[0];
   currentProgramacionId = latest.id;
   currentProgramacionFileName = latest.file_name || currentProgramacionFileName;
-  const consolidated = buildConsolidatedRowsFromHistory(programacionesHistory);
-  // Vista operativa por defecto: consolidar todo el historial para habilitar todas las fechas.
-  // Si se requiere ver una carga puntual, usar "Cargar historial".
-  rows = consolidated.rows;
+  let loadedFromRowsTable = false;
+  try {
+    const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
+    if (rowsResult?.ok && Array.isArray(rowsResult.rows) && rowsResult.rows.length > 0) {
+      const referenceRows = Array.isArray(latest.rows_data) ? latest.rows_data : [];
+      const reordered = reorderRowsByReference(referenceRows, rowsResult.rows);
+      rows = dedupeProgramacionRows(reordered).rows;
+      loadedFromRowsTable = true;
+    }
+  } catch (rowsError) {
+    console.warn("No se pudo leer programacion_filas en refresco realtime:", rowsError);
+  }
+  if (!loadedFromRowsTable) {
+    const latestRows = Array.isArray(latest.rows_data) ? latest.rows_data : [];
+    const prepared = normalizeProgramacionRows(latestRows);
+    rows = dedupeProgramacionRows(prepared.normalized).rows;
+    if (prepared.unmappedVehicles > 0) {
+      showToast(`Atencion: ${prepared.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
+      setSyncStatus("warn", "Mapeo parcial");
+      return;
+    }
+  }
   lblGlobal.textContent = `Programacion en linea: ${programacionesHistory.length} archivos | Filas: ${rows.length}`;
   updateExportAccess();
   fillStartBases();
-  if (consolidated.unmappedVehicles > 0) {
-    showToast(`Atencion: ${consolidated.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
-    setSyncStatus("warn", "Mapeo parcial");
-    return;
-  }
   setSyncStatus("ok", "Programacion online");
 }
 
@@ -1816,11 +1862,12 @@ async function applyProgramacionRecord(record){
   const prepared = normalizeProgramacionRows(Array.isArray(record.rows_data) ? record.rows_data : []);
   try {
     const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
-    rows = rowsResult.ok ? rowsResult.rows : prepared.normalized;
+    rows = rowsResult.ok ? reorderRowsByReference(prepared.normalized, rowsResult.rows) : prepared.normalized;
   } catch (rowsError) {
     console.error("Error cargando filas del historial:", rowsError);
     rows = prepared.normalized;
   }
+  rows = dedupeProgramacionRows(rows).rows;
   lblGlobal.textContent = `Programacion en linea: ${record.file_name} | Filas: ${rows.length}`;
   updateExportAccess();
   fillStartBases();
@@ -1890,7 +1937,7 @@ async function saveProgramacionToSupabase(file, parsedRows){
       ...programacionesHistory.filter(r => String(r.id) !== String(currentProgramacionId))
     ];
     renderProgramacionesHistoryOptions();
-    rows = savedToRowsTable ? parsedRows : buildConsolidatedRowsFromHistory(programacionesHistory).rows;
+    rows = dedupeProgramacionRows(parsedRows).rows;
     lblGlobal.textContent = `Programacion en linea: ${programacionesHistory.length} archivos | Filas: ${rows.length}`;
   }
   setSyncStatus("ok", "Archivo guardado");
@@ -1914,13 +1961,20 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
 
   try {
     let rowsToPersist = Array.isArray(rows) ? rows.slice() : [];
+    const dedupedBeforeSync = dedupeProgramacionRows(rowsToPersist);
+    if (dedupedBeforeSync.removed > 0) {
+      rowsToPersist = dedupedBeforeSync.rows;
+      rows = rowsToPersist;
+    }
     if (isBaseOperator() && currentProgramacionId) {
       const latestRowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
       if (latestRowsResult?.ok) {
         rowsToPersist = mergeRowsForBaseOperator(latestRowsResult.rows, rowsToPersist, currentUserBase);
-        rows = rowsToPersist;
+        rowsToPersist = dedupeProgramacionRows(rowsToPersist).rows;
       }
     }
+    rowsToPersist = getRowsOrderedByCurrentReference(rowsToPersist);
+    rows = rowsToPersist;
 
     if (currentProgramacionId) {
       try {
@@ -1956,6 +2010,13 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
     }
 
     setSyncStatus("ok", "Cambios en linea");
+    if (currentProgramacionId && Array.isArray(programacionesHistory)) {
+      programacionesHistory = programacionesHistory.map(rec =>
+        String(rec.id) === String(currentProgramacionId)
+          ? { ...rec, rows_data: rowsToPersist }
+          : rec
+      );
+    }
     showToast(reason, "ok");
     clearPendingRowsLocal();
   } catch (error) {
@@ -2112,6 +2173,7 @@ const liveExcelPreview = document.getElementById("liveExcelPreview");
 const visorDateSelect = document.getElementById("visorDateSelect");
 const visorScopeSelect = document.getElementById("visorScopeSelect");
 const btnRefreshVisor = document.getElementById("btnRefreshVisor");
+const btnExportVisor = document.getElementById("btnExportVisor");
 const auditBody = document.getElementById("auditBody");
 const auditCount = document.getElementById("auditCount");
 const auditFrom = document.getElementById("auditFrom");
@@ -2121,6 +2183,7 @@ const auditTableFilter = document.getElementById("auditTableFilter");
 const auditOpFilter = document.getElementById("auditOpFilter");
 const btnRefreshAudit = document.getElementById("btnRefreshAudit");
 let auditLogRows = [];
+const AUDIT_DISABLED = true;
 
 /* ===================== UTIL ===================== */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
@@ -2207,6 +2270,18 @@ function applyRoleRestrictions(){
   const tabVisor = document.querySelector('.tab[data-tab="visor"]');
   const tabNovedades = document.querySelector('.tab[data-tab="novedades"]');
   const operativoTitle = document.querySelector("#operativoPanel h2");
+  const auditContent = document.getElementById("tab-audit");
+
+  if (AUDIT_DISABLED) {
+    if (tabAudit) tabAudit.classList.add("hidden");
+    if (auditContent?.classList.contains("active")) {
+      auditContent.classList.remove("active");
+      const progTab = document.querySelector('.tab[data-tab="programacion"]');
+      const progContent = document.getElementById("tab-programacion");
+      if (progTab) progTab.classList.add("active");
+      if (progContent) progContent.classList.add("active");
+    }
+  }
 
   if (isBaseOperator()) {
     adminPanel.classList.add("hidden");
@@ -2232,10 +2307,9 @@ function applyRoleRestrictions(){
   if (btnGoConverter) btnGoConverter.classList.toggle("hidden", !isSuperAdmin());
   if (!isSuperAdmin() && converterPanel) converterPanel.classList.add("hidden");
   if (tabDebug) tabDebug.classList.remove("hidden");
-  if (tabAudit) tabAudit.classList.toggle("hidden", !isSuperAdmin());
+  if (tabAudit) tabAudit.classList.toggle("hidden", AUDIT_DISABLED ? true : !isSuperAdmin());
   if (tabVisor) tabVisor.classList.remove("hidden");
   if (!isSuperAdmin()) {
-    const auditContent = document.getElementById("tab-audit");
     if (auditContent?.classList.contains("active")) {
       auditContent.classList.remove("active");
       const progTab = document.querySelector('.tab[data-tab="programacion"]');
@@ -2357,6 +2431,11 @@ function summarizeAuditChange(row){
 
 function renderAuditLog(){
   if (!auditBody) return;
+  if (AUDIT_DISABLED) {
+    auditBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">Auditoria deshabilitada.</td></tr>`;
+    if (auditCount) auditCount.textContent = "0";
+    return;
+  }
   const userText = String(auditUserFilter?.value || "").trim().toLowerCase();
   const tableValue = String(auditTableFilter?.value || "");
   const opValue = String(auditOpFilter?.value || "");
@@ -2401,6 +2480,12 @@ function renderAuditLog(){
 async function loadAuditLogFromSupabase(options = {}){
   const silent = !!options.silent;
   if (!auditBody) return;
+  if (AUDIT_DISABLED) {
+    auditLogRows = [];
+    auditBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">Auditoria deshabilitada.</td></tr>`;
+    if (auditCount) auditCount.textContent = "0";
+    return;
+  }
   if (!isSuperAdmin()) {
     auditBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">Solo el administrador puede ver auditoria.</td></tr>`;
     if (auditCount) auditCount.textContent = "0";
@@ -3244,6 +3329,302 @@ function mergeImportedRowsPreservingAssignments(incomingRows, existingRows){
   return { mergedRows, matchedRows, preservedAssignments };
 }
 
+function scoreProgramacionRowForDedup(rowObj, conductorKey1, conductorKey2){
+  const row = rowObj || {};
+  let score = 0;
+  const c1 = conductorKey1 ? extractConductorName(row[conductorKey1] || "") : "";
+  const c2 = conductorKey2 ? extractConductorName(row[conductorKey2] || "") : "";
+  if (c1) score += 4;
+  if (c2) score += 4;
+  if (conductorKey1 && getConductorNote(row, conductorKey1)) score += 2;
+  if (conductorKey2 && getConductorNote(row, conductorKey2)) score += 2;
+  if (getVehiculoNote(row)) score += 1;
+  if (isFichoRowByContent(row)) score -= 1;
+  return score;
+}
+
+function buildProgramacionSlotKey(rowObj){
+  const row = rowObj || {};
+  const keys = Object.keys(row).filter(k => !isInternalRowKey(k));
+  const findByNorm = (aliases) => keys.find(k => aliases.includes(norm(k))) || null;
+  const findByCompact = (aliases) => keys.find(k => aliases.includes(normCompact(k))) || null;
+  const fechaKey = findByNorm(["FECHA"]);
+  const baseKey = findByNorm(BASE_COLUMN_ALIASES);
+  const numeroKey = findByNorm(["#"]);
+  const puestoKey = findByNorm(["PUESTO"]);
+  const inicia1Key = findByCompact(["INICIA", "INICIO", "HORAINICIO", "HORAINICIO1"]);
+  const inicia2Key = findByCompact(["INICIA2", "INICIO2", "HORAINICIO2"]);
+  const horaFinKey = findByCompact(["HORAFIN", "HORAFINAL"]);
+
+  const fechaVal = fechaKey ? normalizeDateToISO(row[fechaKey]) : "";
+  const baseVal = baseKey ? getBaseCanonical(row[baseKey]) : "";
+  const numeroVal = numeroKey ? normCompact(row[numeroKey]) : "";
+  const puestoVal = puestoKey ? normCompact(row[puestoKey]) : "";
+  const inicia1Val = inicia1Key ? normCompact(excelTimeToHHMM(row[inicia1Key])) : "";
+  const inicia2Val = inicia2Key ? normCompact(excelTimeToHHMM(row[inicia2Key])) : "";
+  const horaFinVal = horaFinKey ? normCompact(excelTimeToHHMM(row[horaFinKey])) : "";
+  return [fechaVal, baseVal, numeroVal, puestoVal, inicia1Val, inicia2Val, horaFinVal].join("|");
+}
+
+function reorderRowsByReference(referenceRowsInput, liveRowsInput){
+  const referenceRows = Array.isArray(referenceRowsInput) ? referenceRowsInput : [];
+  const liveRows = Array.isArray(liveRowsInput) ? liveRowsInput : [];
+  if (!referenceRows.length || !liveRows.length) return liveRows.slice();
+
+  const bySlot = new Map();
+  const byRowKey = new Map();
+  liveRows.forEach(r => {
+    const slotKey = buildProgramacionSlotKey(r);
+    if (slotKey && !bySlot.has(slotKey)) bySlot.set(slotKey, r);
+    const rowKey = buildProgramacionRowKey(r);
+    if (rowKey && !byRowKey.has(rowKey)) byRowKey.set(rowKey, r);
+  });
+
+  const ordered = [];
+  const used = new Set();
+  referenceRows.forEach(ref => {
+    const slotKey = buildProgramacionSlotKey(ref);
+    let row = slotKey ? bySlot.get(slotKey) : null;
+    if (!row) {
+      const rowKey = buildProgramacionRowKey(ref);
+      row = rowKey ? byRowKey.get(rowKey) : null;
+    }
+    if (row && !used.has(row)) {
+      ordered.push(row);
+      used.add(row);
+    }
+  });
+  liveRows.forEach(r => {
+    if (!used.has(r)) ordered.push(r);
+  });
+  return ordered;
+}
+
+function getCurrentProgramacionReferenceRows(){
+  if (!currentProgramacionId || !Array.isArray(programacionesHistory)) return [];
+  const rec = programacionesHistory.find(r => String(r.id) === String(currentProgramacionId));
+  return Array.isArray(rec?.rows_data) ? rec.rows_data : [];
+}
+
+function getRowsOrderedByCurrentReference(sourceRows){
+  const liveRows = Array.isArray(sourceRows) ? sourceRows : [];
+  const referenceRows = getCurrentProgramacionReferenceRows();
+  if (!referenceRows.length) return liveRows.slice();
+  return reorderRowsByReference(referenceRows, liveRows);
+}
+
+function canonicalizePuestoLabel(value){
+  const raw = String(value || "").trim();
+  const n = norm(raw);
+  if (n.includes("NUTIBARA")) return "NUTIBARA";
+  if (n.includes("SAN DIEGO")) return "SAN DIEGO";
+  if (n.includes("EXPOSICIONES")) return "EXPOSICIONES";
+  return raw || "SIN PUESTO";
+}
+
+function buildOperationalEntries(rowsInput, puestoKey, numeroKey){
+  const source = Array.isArray(rowsInput) ? rowsInput : [];
+  let lastResolvedPuesto = "SIN PUESTO";
+  return source.map((r, idx) => {
+    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
+    if (puestoRaw) lastResolvedPuesto = canonicalizePuestoLabel(puestoRaw);
+    const puestoResolved = puestoRaw ? canonicalizePuestoLabel(puestoRaw) : lastResolvedPuesto;
+    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
+    const isFichoMarker = norm(numeroRaw).includes("FICHO");
+    return { row: r, idx, puestoResolved, numeroRaw, isFichoMarker };
+  });
+}
+
+function sortOperationalEntries(entriesInput){
+  const entries = Array.isArray(entriesInput) ? entriesInput.slice() : [];
+  const puestoRank = (puestoText) => {
+    const p = norm(puestoText || "");
+    if (p.includes("NUTIBARA")) return 1;
+    if (p.includes("SAN DIEGO")) return 2;
+    if (p.includes("EXPOSICIONES")) return 3;
+    return 99;
+  };
+  const asNum = (val) => {
+    const n = Number(String(val ?? "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+  };
+  return entries.sort((a, b) => {
+    const rankDiff = puestoRank(a.puestoResolved) - puestoRank(b.puestoResolved);
+    if (rankDiff !== 0) return rankDiff;
+    const aNum = asNum(a.numeroRaw);
+    const bNum = asNum(b.numeroRaw);
+    if (aNum !== bNum) return aNum - bNum;
+    return a.idx - b.idx;
+  });
+}
+
+function groupOperationalEntriesByPuesto(entriesInput){
+  const entries = Array.isArray(entriesInput) ? entriesInput : [];
+  const buckets = new Map();
+  const order = [];
+  const ensureBucket = (label) => {
+    const key = String(label || "SIN PUESTO");
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      order.push(key);
+    }
+    return buckets.get(key);
+  };
+  let currentSection = "SIN PUESTO";
+  entries.forEach(entry => {
+    const rowLabel = canonicalizePuestoLabel(entry?.puestoResolved || "SIN PUESTO");
+    if (!entry?.isFichoMarker) {
+      currentSection = rowLabel || currentSection || "SIN PUESTO";
+    } else if (!currentSection || currentSection === "SIN PUESTO") {
+      currentSection = rowLabel || "SIN PUESTO";
+    }
+    const sectionLabel = currentSection || "SIN PUESTO";
+    ensureBucket(sectionLabel).push(entry);
+  });
+
+  const preferred = ["NUTIBARA", "SAN DIEGO", "EXPOSICIONES", "SIN PUESTO"];
+  const grouped = [];
+  preferred.forEach(label => {
+    if (buckets.has(label) && buckets.get(label).length) {
+      grouped.push({ puesto: label, entries: buckets.get(label) });
+      buckets.delete(label);
+    }
+  });
+  order.forEach(label => {
+    if (buckets.has(label) && buckets.get(label).length) {
+      grouped.push({ puesto: label, entries: buckets.get(label) });
+    }
+  });
+  return grouped;
+}
+
+function getFichoIndexFromNumero(value){
+  const txt = String(value || "").toUpperCase();
+  const m = txt.match(/FICHO\s*([0-9]+)/);
+  const idx = m ? Number(m[1]) : NaN;
+  return Number.isFinite(idx) ? idx : null;
+}
+
+function getNumericTurnNumber(value){
+  const digits = String(value ?? "").match(/\d+/);
+  if (!digits) return null;
+  const n = Number(digits[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildFichoAssignmentsByIndex(groupedSections, vehiculoKey){
+  const assignments = new Map(); // idx -> { veh, color }
+  (Array.isArray(groupedSections) ? groupedSections : []).forEach(section => {
+    const sectionLabel = canonicalizePuestoLabel(section?.puesto || "SIN PUESTO");
+    const sectionColor = norm(sectionLabel).includes("EXPOSICIONES") ? "blue" : "green";
+    (Array.isArray(section?.entries) ? section.entries : []).forEach(entry => {
+      if (!entry?.isFichoMarker) return;
+      const idx = getFichoIndexFromNumero(entry.numeroRaw);
+      if (!idx) return;
+      const veh = String(vehiculoKey ? (entry.row?.[vehiculoKey] || "") : "").trim();
+      if (!veh) return;
+      assignments.set(idx, { veh, color: sectionColor });
+    });
+  });
+  return assignments;
+}
+
+function syncNutibaraTop10FromFichos(opts = {}){
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (sourceRows.length === 0) return 0;
+
+  const fechaFiltro = normalizeDateToISO(opts.selectedDate || "");
+  const baseFiltro = getBaseCanonical(opts.currentBase || "");
+  const numeroKey = opts.numeroKey || getHeaderKeyByNorm(["#"]);
+  const puestoKey = opts.puestoKey || getHeaderKeyByNorm(["PUESTO"]);
+  const vehiculoKey = opts.vehiculoKey || getHeaderKeyByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
+  const baseKey = opts.baseKey || getBaseKey();
+  const fechaKey = opts.fechaKey || getFechaKey();
+
+  if (!numeroKey || !vehiculoKey || !puestoKey) return 0;
+
+  const assignByGroup = new Map(); // `${base}|${fecha}` -> Map(fichoIdx -> veh)
+  sourceRows.forEach(row => {
+    if (!row) return;
+    const rowBase = getRowCanonicalBase(row, baseKey);
+    const rowDate = getRowDateISO(row, fechaKey);
+    if (baseFiltro && rowBase !== baseFiltro) return;
+    if (fechaFiltro && rowDate !== fechaFiltro) return;
+
+    const numeroRaw = String(row[numeroKey] || "").trim();
+    const fichoIdx = getFichoIndexFromNumero(numeroRaw);
+    if (!fichoIdx) return;
+    const veh = String(row[vehiculoKey] || "").trim();
+    if (!veh) return;
+    const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+    if (!assignByGroup.has(groupKey)) assignByGroup.set(groupKey, new Map());
+    assignByGroup.get(groupKey).set(fichoIdx, veh);
+  });
+
+  let updated = 0;
+  sourceRows.forEach(row => {
+    if (!row) return;
+    const rowBase = getRowCanonicalBase(row, baseKey);
+    const rowDate = getRowDateISO(row, fechaKey);
+    if (baseFiltro && rowBase !== baseFiltro) return;
+    if (fechaFiltro && rowDate !== fechaFiltro) return;
+
+    const numeroRaw = String(row[numeroKey] || "").trim();
+    if (getFichoIndexFromNumero(numeroRaw)) return;
+
+    const puesto = canonicalizePuestoLabel(row[puestoKey] || "");
+    if (puesto !== "NUTIBARA") return;
+
+    const turnNum = getNumericTurnNumber(numeroRaw);
+    if (!turnNum || turnNum < 1 || turnNum > 10) return;
+
+    const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+    const mappedVeh = assignByGroup.get(groupKey)?.get(turnNum);
+    if (!mappedVeh) return;
+
+    const currentVeh = String(row[vehiculoKey] || "").trim();
+    if (currentVeh !== String(mappedVeh).trim()) {
+      row[vehiculoKey] = mappedVeh;
+      updated++;
+    }
+  });
+
+  return updated;
+}
+
+function dedupeProgramacionRows(inputRows){
+  const source = Array.isArray(inputRows) ? inputRows : [];
+  if (source.length <= 1) return { rows: source.slice(), removed: 0 };
+
+  const { key1: conductorKey1, key2: conductorKey2 } = getConductorKeysFromArray(source);
+  const keepByKey = new Map();
+  source.forEach((row, idx) => {
+    const slotKey = buildProgramacionSlotKey(row);
+    const vehKey = getVehiculoKey(row);
+    const vehNorm = vehKey ? normalizeVehicleId(row[vehKey]) : "";
+    const key = slotKey && slotKey.replace(/\|/g, "").length > 0
+      ? `SLOT:${slotKey}|VEH:${vehNorm || "-"}`
+      : buildProgramacionRowKey(row);
+    if (!key) {
+      keepByKey.set(`__ROWIDX__${idx}`, row);
+      return;
+    }
+    if (!keepByKey.has(key)) {
+      keepByKey.set(key, row);
+      return;
+    }
+    const current = keepByKey.get(key);
+    const currentScore = scoreProgramacionRowForDedup(current, conductorKey1, conductorKey2);
+    const nextScore = scoreProgramacionRowForDedup(row, conductorKey1, conductorKey2);
+    if (nextScore > currentScore) {
+      keepByKey.set(key, row);
+    }
+  });
+
+  const deduped = Array.from(keepByKey.values());
+  return { rows: deduped, removed: Math.max(0, source.length - deduped.length) };
+}
+
 /* ===================== CARGAR CONDUCTORES DESDE CSV ===================== */
 async function loadDriversFromCSV() {
   if (isLoadingDrivers) return;
@@ -3628,6 +4009,7 @@ function renderLiveExcelPreview(){
       ordered = ordered.filter(r => getRowCanonicalBase(r) === baseScope);
     }
   }
+  ordered = dedupeProgramacionRows(ordered).rows;
 
   if (!ordered.length) {
     liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">No hay filas para ${excelDateToReadable(visorDate)} con el filtro seleccionado.</div>`;
@@ -3639,22 +4021,9 @@ function renderLiveExcelPreview(){
     return;
   }
 
-  const fichoVehColorMap = new Map();
-  let scanActivePuesto = "";
-  ordered.forEach(r => {
-    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
-    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
-    const isFichoMarker = norm(numeroRaw).includes("FICHO");
-    if (!isFichoMarker && puestoRaw) scanActivePuesto = puestoRaw;
-    if (!isFichoMarker) return;
-    const vehRaw = String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim();
-    if (!vehRaw) return;
-    const vehNorm = normalizeVehicleId(vehRaw);
-    if (!vehNorm) return;
-    const isBlue = norm(scanActivePuesto).includes("EXPOSICIONES");
-    const existing = fichoVehColorMap.get(vehNorm);
-    if (!existing || isBlue) fichoVehColorMap.set(vehNorm, isBlue ? "blue" : "green");
-  });
+  const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
+  const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
+  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey);
 
   const formatConductorForPreview = (rowObj, conductorKey) => {
     if (!conductorKey) return "";
@@ -3667,7 +4036,6 @@ function renderLiveExcelPreview(){
   };
 
   const leftRows = [];
-  let activePuesto = "";
   const titleDate = formatDateLongEs(visorDate);
   const openSection = (puestoLabel) => {
     if (leftRows.length > 0) leftRows.push({ type: "spacer" });
@@ -3675,40 +4043,41 @@ function renderLiveExcelPreview(){
     leftRows.push({ type: "header" });
   };
 
-  ordered.forEach((r, idx) => {
-    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
-    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
-    const isFichoMarker = norm(numeroRaw).includes("FICHO");
+  groupedSections.forEach(section => {
+    const sectionLabel = canonicalizePuestoLabel(section.puesto);
+    openSection(sectionLabel);
+    section.entries.forEach(entry => {
+      const r = entry.row;
+      const isFichoMarker = entry.isFichoMarker;
+      const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
+      let vehRaw = String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim();
+      const isNutibara = norm(sectionLabel).includes("NUTIBARA");
+      let vehColor = null;
+      if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
+        const assigned = fichoAssignments.get(turnNum);
+        if (assigned?.veh) {
+          vehRaw = String(assigned.veh);
+          vehColor = assigned.color || null;
+        }
+      }
+      const vehNote = getVehiculoNote(r);
+      const vehVal = vehNote ? `${vehRaw}\nCOMENTARIO: ${vehNote}` : vehRaw;
 
-    if (!activePuesto) {
-      activePuesto = puestoRaw || "SIN PUESTO";
-      openSection(activePuesto);
-    } else if (!isFichoMarker && puestoRaw && puestoRaw !== activePuesto) {
-      activePuesto = puestoRaw;
-      openSection(activePuesto);
-    }
-
-    const vehRaw = String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim();
-    const vehNorm = normalizeVehicleId(vehRaw);
-    const isNutibara = norm(puestoRaw).includes("NUTIBARA");
-    const vehColor = isNutibara ? (fichoVehColorMap.get(vehNorm) || null) : null;
-    const vehNote = getVehiculoNote(r);
-    const vehVal = vehNote ? `${vehRaw}\nCOMENTARIO: ${vehNote}` : vehRaw;
-
-    leftRows.push({
-      type: "data",
-      isFicho: isFichoMarker,
-      fichoBlue: isFichoMarker && norm(activePuesto).includes("EXPOSICIONES"),
-      vehColor,
-      cells: [
-        numeroKey ? (r[numeroKey] || (idx + 1)) : (idx + 1),
-        horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
-        vehVal,
-        formatConductorForPreview(r, conductor1Key),
-        horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
-        formatConductorForPreview(r, conductor2Key),
-        horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
-      ]
+      leftRows.push({
+        type: "data",
+        isFicho: isFichoMarker,
+        fichoBlue: isFichoMarker && norm(sectionLabel).includes("EXPOSICIONES"),
+        vehColor,
+        cells: [
+          numeroKey ? (r[numeroKey] || (entry.idx + 1)) : (entry.idx + 1),
+          horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
+          vehVal,
+          formatConductorForPreview(r, conductor1Key),
+          horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
+          formatConductorForPreview(r, conductor2Key),
+          horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
+        ]
+      });
     });
   });
 
@@ -3786,8 +4155,35 @@ function renderLiveExcelPreview(){
   liveExcelPreview.innerHTML = html;
 }
 
+function exportLiveExcelPreviewTable(){
+  if (!liveExcelPreview) {
+    showToast("Visor no disponible.", "warn");
+    return;
+  }
+  const table = liveExcelPreview.querySelector("table");
+  if (!table) {
+    showToast("No hay tabla en el visor para exportar.", "warn");
+    return;
+  }
+  if (!window.XLSX || !XLSX.utils || !XLSX.writeFile) {
+    showToast("No se pudo cargar XLSX para exportar.", "err");
+    return;
+  }
+  const wb = XLSX.utils.table_to_book(table, { sheet: "Visor" });
+  const visorDate = normalizeDateToISO(visorDateSelect?.value || "");
+  const scopeMode = String(visorScopeSelect?.value || "all");
+  const scopeText = scopeMode === "base" ? "base" : "todo";
+  const fileDate = visorDate || "sin_fecha";
+  XLSX.writeFile(wb, `visor_excel_${fileDate}_${scopeText}.xlsx`);
+}
+
 /* ===================== TABLA PROGRAMACION ===================== */
 function renderTable(){
+  if (Array.isArray(rows) && rows.length > 1) {
+    syncNutibaraTop10FromFichos();
+    const deduped = dedupeProgramacionRows(rows);
+    if (deduped.removed > 0) rows = deduped.rows;
+  }
   gridHead.innerHTML = '';
   gridBody.innerHTML = '';
   adjustDynamicTableViewport();
@@ -3908,6 +4304,7 @@ function renderTable(){
 
   let activePuestoForFichoColor = "";
   filteredRows.forEach((r) => {
+    ensureRowUiId(r);
     const tr = document.createElement('tr');
     const rowCanonicalBase = getRowCanonicalBase(r, baseKey);
     const puestoRowVal = puestoKey ? norm(r[puestoKey]) : "";
@@ -4101,6 +4498,7 @@ function renderTable(){
           td.classList.add("highlight");
           ev.dataTransfer.setData("text/plain", JSON.stringify({
             tipo: "vehiculo_posicion",
+            sourceRowUiId: ensureRowUiId(r),
             sourceRowKey: buildProgramacionRowKey(r),
             sourceVehiculoKey: k,
             sourceVehiculo: String(sourceValue),
@@ -4123,7 +4521,8 @@ function renderTable(){
             const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
             if (data.tipo !== "vehiculo_posicion") return;
 
-            const sourceRow = rows.find(row => buildProgramacionRowKey(row) === data.sourceRowKey);
+            const sourceRow = rows.find(row => ensureRowUiId(row) === data.sourceRowUiId)
+              || rows.find(row => buildProgramacionRowKey(row) === data.sourceRowKey);
             if (!sourceRow) {
               showToast("No se encontro la fila origen para intercambio.", "warn");
               return;
@@ -4148,24 +4547,43 @@ function renderTable(){
             sourceRow[sourceVehiculoKey] = targetValue;
             r[k] = sourceValue;
             const conductorSync = syncConductoresAfterVehicleSwap(sourceRow, r, conductor1Key, conductor2Key);
-            const fichoUpdated = syncFichoVehicleLinksAfterSwap({
-              sourceVeh: sourceValue,
-              targetVeh: targetValue,
+            const sourceIsFicho = isFichoRowByContent(sourceRow);
+            const targetIsFicho = isFichoRowByContent(r);
+            const fichoUpdated = (sourceIsFicho || targetIsFicho)
+              ? 0
+              : syncFichoVehicleLinksAfterSwap({
+                  sourceVeh: sourceValue,
+                  targetVeh: targetValue,
+                  selectedDate,
+                  currentBase,
+                  baseKey,
+                  fechaKey,
+                  conductorKey1: conductor1Key,
+                  conductorKey2: conductor2Key,
+                  excludedRows: [sourceRow, r]
+                });
+            const nutibaraTopUpdated = syncNutibaraTop10FromFichos({
               selectedDate,
               currentBase,
               baseKey,
               fechaKey,
-              conductorKey1: conductor1Key,
-              conductorKey2: conductor2Key,
-              excludedRows: [sourceRow, r]
+              puestoKey,
+              numeroKey,
+              vehiculoKey
             });
+            const dedupedAfterSwap = dedupeProgramacionRows(rows);
+            if (dedupedAfterSwap.removed > 0) {
+              rows = dedupedAfterSwap.rows;
+            }
+            rows = getRowsOrderedByCurrentReference(rows);
 
             document.getElementById('btnExport').disabled = false;
             renderTable();
+            renderLiveExcelPreview();
             const conductorMsg = conductorSync.blockedByFicho
               ? " | FICHO sin conductor"
               : (conductorSync.swapped ? " | Conductores movidos con el carro" : "");
-            showToast(`Cambio confirmado: ${sourceValue || "-"} <-> ${targetValue || "-"}${conductorMsg}${fichoUpdated ? ` | FICHO actualizados: ${fichoUpdated}` : ""}`, "ok");
+            showToast(`Cambio confirmado: ${sourceValue || "-"} <-> ${targetValue || "-"}${conductorMsg}${fichoUpdated ? ` | FICHO actualizados: ${fichoUpdated}` : ""}${nutibaraTopUpdated ? ` | NUTIBARA top10: ${nutibaraTopUpdated}` : ""}${dedupedAfterSwap.removed ? ` | Duplicados limpiados: ${dedupedAfterSwap.removed}` : ""}`, "ok");
             await syncProgramacionRowsToSupabase("Cambio de posicion de vehiculos guardado.");
           } catch (e) {
             console.error("Error intercambio vehiculos", e);
@@ -4249,7 +4667,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tabId === 'debugsupabase') {
       renderSupabaseDebug();
     }
-    if (tabId === 'audit') {
+    if (tabId === 'audit' && !AUDIT_DISABLED) {
       loadAuditLogFromSupabase();
     }
     adjustDynamicTableViewport();
@@ -4526,30 +4944,12 @@ document.getElementById('btnExportFormato').onclick = async () => {
     return;
   }
 
-  const ordered = exportData.slice();
+  const ordered = dedupeProgramacionRows(exportData).rows;
+  const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
+  const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
   const dateForTitle = selectedDate || (fechaKey ? normalizeDateToISO(ordered[0][fechaKey]) : "");
   const titleDate = formatDateLongEs(dateForTitle || "");
-  const fichoVehColorMap = new Map(); // vehicleId(normalized) -> "green" | "blue"
-
-  // Escaneo previo: identificar vehiculos de filas FICHO y su color por bloque.
-  let scanActivePuesto = "";
-  ordered.forEach(r => {
-    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
-    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
-    const isFichoMarker = norm(numeroRaw).includes("FICHO");
-    if (!isFichoMarker && puestoRaw) scanActivePuesto = puestoRaw;
-    if (!isFichoMarker) return;
-    const vehRaw = String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim();
-    if (!vehRaw) return;
-    const vehNorm = normalizeVehicleId(vehRaw);
-    if (!vehNorm) return;
-    const isBlue = norm(scanActivePuesto).includes("EXPOSICIONES");
-    const existing = fichoVehColorMap.get(vehNorm);
-    // Prioridad al azul si el vehiculo aparece en ambos bloques.
-    if (!existing || isBlue) {
-      fichoVehColorMap.set(vehNorm, isBlue ? "blue" : "green");
-    }
-  });
+  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey);
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(`DIA_${selectedDate}`);
@@ -4616,7 +5016,6 @@ document.getElementById('btnExportFormato').onclick = async () => {
   };
 
   let currentRow = 1;
-  let activePuesto = "";
   const openSection = (puestoLabel) => {
     if (currentRow > 1) currentRow++;
     ws.mergeCells(currentRow, 1, currentRow, 7);
@@ -4630,63 +5029,63 @@ document.getElementById('btnExportFormato').onclick = async () => {
     currentRow++;
   };
 
-  ordered.forEach((r, idx) => {
-    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
-    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
-    const isFichoMarker = norm(numeroRaw).includes("FICHO");
-
-    // Regla: los FICHO se quedan en su posicion y no abren/cambian titulo de bloque.
-    if (!activePuesto) {
-      activePuesto = puestoRaw || "SIN PUESTO";
-      openSection(activePuesto);
-    } else if (!isFichoMarker && puestoRaw && puestoRaw !== activePuesto) {
-      activePuesto = puestoRaw;
-      openSection(activePuesto);
-    }
-
-    const vehNote = getVehiculoNote(r);
-    let vehValue = vehiculoKey ? (r[vehiculoKey] || "") : "";
-    if (vehNote) vehValue = `${vehValue}\nCOMENTARIO: ${vehNote}`;
-
-    ws.getRow(currentRow).values = [
-      numeroKey ? r[numeroKey] : (idx + 1),
-      horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
-      vehValue,
-      formatConductorForExport(r, conductor1Key),
-      horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
-      formatConductorForExport(r, conductor2Key),
-      horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
-    ];
-    ws.getRow(currentRow).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
-    ws.getRow(currentRow).getCell(2).alignment = { horizontal: "center", vertical: "middle" };
-    ws.getRow(currentRow).getCell(3).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    ws.getRow(currentRow).getCell(4).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    ws.getRow(currentRow).getCell(5).alignment = { horizontal: "center", vertical: "middle" };
-    ws.getRow(currentRow).getCell(6).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    ws.getRow(currentRow).getCell(7).alignment = { horizontal: "center", vertical: "middle" };
-    applyBorderRow(currentRow, 1, 7);
-
-    if (isFichoMarker) {
-      const isFichoExpos = norm(activePuesto).includes("EXPOSICIONES");
-      applyRowStyle(currentRow, isFichoExpos ? styleFichoBlue : styleFichoGreen);
-    } else {
-      const isNutibara = norm(puestoRaw).includes("NUTIBARA");
-      const vehNorm = normalizeVehicleId(String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim());
-      const vehColor = isNutibara ? fichoVehColorMap.get(vehNorm) : null;
-      if (vehColor) {
-        const vehCell = ws.getRow(currentRow).getCell(3); // Columna VEH
-        vehCell.style = {
-          ...(vehCell.style || {}),
-          fill: {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: vehColor === "blue" ? "FF2563EB" : "FF16A34A" }
-          },
-          font: { ...(vehCell.style?.font || {}), bold: true, color: { argb: "FFFFFFFF" } }
-        };
+  groupedSections.forEach(section => {
+    const sectionLabel = canonicalizePuestoLabel(section.puesto);
+    openSection(sectionLabel);
+    section.entries.forEach(entry => {
+      const r = entry.row;
+      const isFichoMarker = entry.isFichoMarker;
+      const vehNote = getVehiculoNote(r);
+      const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
+      let vehValue = vehiculoKey ? (r[vehiculoKey] || "") : "";
+      if (norm(sectionLabel).includes("NUTIBARA") && turnNum && turnNum >= 1 && turnNum <= 10) {
+        const assigned = fichoAssignments.get(turnNum);
+        if (assigned?.veh) vehValue = assigned.veh;
       }
-    }
-    currentRow++;
+      if (vehNote) vehValue = `${vehValue}\nCOMENTARIO: ${vehNote}`;
+
+      ws.getRow(currentRow).values = [
+        numeroKey ? r[numeroKey] : (entry.idx + 1),
+        horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
+        vehValue,
+        formatConductorForExport(r, conductor1Key),
+        horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
+        formatConductorForExport(r, conductor2Key),
+        horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
+      ];
+      ws.getRow(currentRow).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+      ws.getRow(currentRow).getCell(2).alignment = { horizontal: "center", vertical: "middle" };
+      ws.getRow(currentRow).getCell(3).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      ws.getRow(currentRow).getCell(4).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      ws.getRow(currentRow).getCell(5).alignment = { horizontal: "center", vertical: "middle" };
+      ws.getRow(currentRow).getCell(6).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      ws.getRow(currentRow).getCell(7).alignment = { horizontal: "center", vertical: "middle" };
+      applyBorderRow(currentRow, 1, 7);
+
+      if (isFichoMarker) {
+        const isFichoExpos = norm(sectionLabel).includes("EXPOSICIONES");
+        applyRowStyle(currentRow, isFichoExpos ? styleFichoBlue : styleFichoGreen);
+      } else {
+        const isNutibara = norm(sectionLabel).includes("NUTIBARA");
+        let vehColor = null;
+        if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
+          vehColor = fichoAssignments.get(turnNum)?.color || null;
+        }
+        if (vehColor) {
+          const vehCell = ws.getRow(currentRow).getCell(3); // Columna VEH
+          vehCell.style = {
+            ...(vehCell.style || {}),
+            fill: {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: vehColor === "blue" ? "FF2563EB" : "FF16A34A" }
+            },
+            font: { ...(vehCell.style?.font || {}), bold: true, color: { argb: "FFFFFFFF" } }
+          };
+        }
+      }
+      currentRow++;
+    });
   });
 
   let novedadesDelDia = (novedades || []).filter(n => normalizeDateToISO(n.fecha) === selectedDate);
@@ -4843,13 +5242,14 @@ document.getElementById("btnLoadHistoryProgramacion").onclick = async () => {
 document.getElementById("btnEnterBase").onclick = () => enterBase(startBaseSelect.value);
 document.getElementById("btnExitBase").onclick = exitBase;
 if (btnRefreshDebug) btnRefreshDebug.onclick = renderSupabaseDebug;
-if (btnRefreshAudit) btnRefreshAudit.onclick = () => loadAuditLogFromSupabase();
-if (auditFrom) auditFrom.onchange = renderAuditLog;
-if (auditTo) auditTo.onchange = renderAuditLog;
-if (auditTableFilter) auditTableFilter.onchange = renderAuditLog;
-if (auditOpFilter) auditOpFilter.onchange = renderAuditLog;
-if (auditUserFilter) auditUserFilter.oninput = renderAuditLog;
+if (!AUDIT_DISABLED && btnRefreshAudit) btnRefreshAudit.onclick = () => loadAuditLogFromSupabase();
+if (!AUDIT_DISABLED && auditFrom) auditFrom.onchange = renderAuditLog;
+if (!AUDIT_DISABLED && auditTo) auditTo.onchange = renderAuditLog;
+if (!AUDIT_DISABLED && auditTableFilter) auditTableFilter.onchange = renderAuditLog;
+if (!AUDIT_DISABLED && auditOpFilter) auditOpFilter.onchange = renderAuditLog;
+if (!AUDIT_DISABLED && auditUserFilter) auditUserFilter.oninput = renderAuditLog;
 if (btnRefreshVisor) btnRefreshVisor.onclick = renderLiveExcelPreview;
+if (btnExportVisor) btnExportVisor.onclick = exportLiveExcelPreviewTable;
 if (visorDateSelect) visorDateSelect.onchange = renderLiveExcelPreview;
 if (visorScopeSelect) visorScopeSelect.onchange = renderLiveExcelPreview;
 document.getElementById('filterDrivers').oninput = renderDrivers;
@@ -4926,3 +5326,4 @@ initAuth();
 </script>
 </body>
 </html>
+
