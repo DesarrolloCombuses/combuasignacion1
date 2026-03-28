@@ -1612,7 +1612,9 @@ function buildConsolidatedRowsFromHistory(records){
     const prepared = normalizeProgramacionRows(Array.isArray(rec?.rows_data) ? rec.rows_data : []);
     totalUnmapped += prepared.unmappedVehicles || 0;
     prepared.normalized.forEach(row => {
-      const key = buildProgramacionRowKey(row);
+      const slotKey = buildProgramacionSlotKey(row);
+      const rowKey = buildProgramacionRowKey(row);
+      const key = slotKey ? `S:${slotKey}` : (rowKey ? `K:${rowKey}` : "");
       if (!key) {
         consolidated.push(row);
         return;
@@ -1624,6 +1626,48 @@ function buildConsolidatedRowsFromHistory(records){
   });
 
   return { rows: consolidated, unmappedVehicles: totalUnmapped };
+}
+
+function mergeLatestRowsIntoConsolidatedRows(consolidatedRowsInput, latestRowsInput){
+  const consolidatedRows = Array.isArray(consolidatedRowsInput) ? consolidatedRowsInput : [];
+  const latestRows = Array.isArray(latestRowsInput) ? latestRowsInput : [];
+  if (consolidatedRows.length === 0) return latestRows.slice();
+  if (latestRows.length === 0) return consolidatedRows.slice();
+
+  const latestByKey = new Map();
+  latestRows.forEach(row => {
+    const slotKey = buildProgramacionSlotKey(row);
+    const rowKey = buildProgramacionRowKey(row);
+    const matchKey = slotKey ? `S:${slotKey}` : (rowKey ? `K:${rowKey}` : null);
+    if (matchKey) latestByKey.set(matchKey, row);
+  });
+
+  const merged = [];
+  const baseKeys = new Set();
+  consolidatedRows.forEach(row => {
+    const slotKey = buildProgramacionSlotKey(row);
+    const rowKey = buildProgramacionRowKey(row);
+    const matchKey = slotKey ? `S:${slotKey}` : (rowKey ? `K:${rowKey}` : null);
+    if (!matchKey) {
+      merged.push(row);
+      return;
+    }
+    baseKeys.add(matchKey);
+    if (latestByKey.has(matchKey)) {
+      merged.push(latestByKey.get(matchKey));
+    } else {
+      merged.push(row);
+    }
+  });
+
+  latestRows.forEach(row => {
+    const slotKey = buildProgramacionSlotKey(row);
+    const rowKey = buildProgramacionRowKey(row);
+    const matchKey = slotKey ? `S:${slotKey}` : (rowKey ? `K:${rowKey}` : null);
+    if (!matchKey || !baseKeys.has(matchKey)) merged.push(row);
+  });
+
+  return merged;
 }
 
 function isProgramacionFilasUnavailable(error){
@@ -1782,7 +1826,7 @@ async function loadLatestProgramacionFromSupabase(){
     .from("programaciones")
     .select("id, file_name, rows_data, uploaded_by, created_at")
     .order("id", { ascending: false })
-    .limit(100);
+    .limit(500);
   if (!canViewAllRowsByRole()) {
     query = query.eq("uploaded_by", currentUserId);
   }
@@ -1808,12 +1852,17 @@ async function loadLatestProgramacionFromSupabase(){
   const latest = programacionesHistory[0];
   currentProgramacionId = latest.id;
   currentProgramacionFileName = latest.file_name || currentProgramacionFileName;
+
+  const consolidated = buildConsolidatedRowsFromHistory(programacionesHistory);
+  let nextRows = dedupeProgramacionRows(consolidated.rows).rows;
+
   let loadedFromRowsTable = false;
   try {
     const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
     if (rowsResult?.ok && Array.isArray(rowsResult.rows) && rowsResult.rows.length > 0) {
+      const mergedWithLatestRows = mergeLatestRowsIntoConsolidatedRows(nextRows, rowsResult.rows);
       const referenceRows = Array.isArray(latest.rows_data) ? latest.rows_data : [];
-      const reordered = reorderRowsByReference(referenceRows, rowsResult.rows);
+      const reordered = reorderRowsByReference(referenceRows, mergedWithLatestRows);
       rows = dedupeProgramacionRows(reordered).rows;
       loadedFromRowsTable = true;
     }
@@ -1821,11 +1870,9 @@ async function loadLatestProgramacionFromSupabase(){
     console.warn("No se pudo leer programacion_filas en refresco realtime:", rowsError);
   }
   if (!loadedFromRowsTable) {
-    const latestRows = Array.isArray(latest.rows_data) ? latest.rows_data : [];
-    const prepared = normalizeProgramacionRows(latestRows);
-    rows = dedupeProgramacionRows(prepared.normalized).rows;
-    if (prepared.unmappedVehicles > 0) {
-      showToast(`Atencion: ${prepared.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
+    rows = nextRows;
+    if (consolidated.unmappedVehicles > 0) {
+      showToast(`Atencion: ${consolidated.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
       setSyncStatus("warn", "Mapeo parcial");
       return;
     }
@@ -3248,30 +3295,12 @@ function getConductorKeysFromArray(inputRows){
 }
 
 function buildProgramacionRowKey(rowObj){
+  const slotKey = buildProgramacionSlotKey(rowObj);
+  if (slotKey && slotKey.replace(/\|/g, "").trim()) {
+    return `SLOT:${slotKey}`;
+  }
+
   const row = rowObj || {};
-  const keys = Object.keys(row).filter(k => !isInternalRowKey(k));
-  const findByNorm = (aliases) => keys.find(k => aliases.includes(norm(k))) || null;
-  const findByCompact = (aliases) => keys.find(k => aliases.includes(normCompact(k))) || null;
-  const fechaKey = findByNorm(["FECHA"]);
-  const baseKey = findByNorm(BASE_COLUMN_ALIASES);
-  const vehiculoKey = getVehiculoKey(row);
-  const numeroKey = findByNorm(["#"]);
-  const puestoKey = findByNorm(["PUESTO"]);
-  const horaInicioKey = findByCompact(["HORAINICIO"]);
-  const horaFinKey = findByCompact(["HORAFIN", "HORAFINAL"]);
-
-  const fechaVal = fechaKey ? normalizeDateToISO(row[fechaKey]) : "";
-  const baseVal = baseKey ? getBaseCanonical(row[baseKey]) : "";
-  const vehiculoVal = vehiculoKey ? normalizeVehicleId(row[vehiculoKey]) : "";
-  const numeroVal = numeroKey ? normCompact(row[numeroKey]) : "";
-  const puestoVal = puestoKey ? normCompact(row[puestoKey]) : "";
-  const horaInicioVal = horaInicioKey ? String(row[horaInicioKey] ?? "").trim() : "";
-  const horaFinVal = horaFinKey ? String(row[horaFinKey] ?? "").trim() : "";
-
-  const keyParts = [fechaVal, baseVal, vehiculoVal, numeroVal, puestoVal, horaInicioVal, horaFinVal];
-  const hasAny = keyParts.some(v => String(v || "").trim() !== "");
-  if (hasAny) return keyParts.join("|");
-
   const fallback = { ...row };
   Object.keys(fallback).forEach(k => {
     if (isInternalRowKey(k)) delete fallback[k];
@@ -3454,7 +3483,48 @@ function sortOperationalEntries(entriesInput){
     const aNum = asNum(a.numeroRaw);
     const bNum = asNum(b.numeroRaw);
     if (aNum !== bNum) return aNum - bNum;
+    const aIsFicho = !!a.isFichoMarker;
+    const bIsFicho = !!b.isFichoMarker;
+    if (aIsFicho !== bIsFicho) return aIsFicho ? 1 : -1;
     return a.idx - b.idx;
+  });
+}
+
+const FICHO_POSITION_RULES = {
+  "SAN DIEGO": [
+    { ficho: 1, after: 14 },
+    { ficho: 2, after: 18 },
+    { ficho: 3, after: 22 },
+    { ficho: 4, after: 26 },
+    { ficho: 5, after: 30 },
+    { ficho: 6, after: 34 }
+  ],
+  "EXPOSICIONES": [
+    { ficho: 7, after: 38 },
+    { ficho: 8, after: 42 },
+    { ficho: 9, after: 46 },
+    { ficho: 10, after: 51 }
+  ]
+};
+
+function getFichoSectionByIndex(idx){
+  const n = Number(idx);
+  if (!Number.isFinite(n)) return null;
+  if (n >= 1 && n <= 6) return "SAN DIEGO";
+  if (n >= 7 && n <= 10) return "EXPOSICIONES";
+  return null;
+}
+
+function sortEntriesByNumericTurn(entriesInput){
+  const entries = Array.isArray(entriesInput) ? entriesInput.slice() : [];
+  return entries.sort((a, b) => {
+    const aNum = getNumericTurnNumber(a?.numeroRaw);
+    const bNum = getNumericTurnNumber(b?.numeroRaw);
+    const aMissing = !Number.isFinite(aNum);
+    const bMissing = !Number.isFinite(bNum);
+    if (aMissing !== bMissing) return aMissing ? 1 : -1;
+    if (!aMissing && aNum !== bNum) return aNum - bNum;
+    return (a?.idx ?? 0) - (b?.idx ?? 0);
   });
 }
 
@@ -3473,12 +3543,16 @@ function groupOperationalEntriesByPuesto(entriesInput){
   let currentSection = "SIN PUESTO";
   entries.forEach(entry => {
     const rowLabel = canonicalizePuestoLabel(entry?.puestoResolved || "SIN PUESTO");
+    const fichoIdx = entry?.isFichoMarker ? getFichoIndexFromNumero(entry?.numeroRaw) : null;
+    const fichoSection = fichoIdx ? getFichoSectionByIndex(fichoIdx) : null;
     if (!entry?.isFichoMarker) {
       currentSection = rowLabel || currentSection || "SIN PUESTO";
+    } else if (fichoSection) {
+      currentSection = fichoSection;
     } else if (!currentSection || currentSection === "SIN PUESTO") {
       currentSection = rowLabel || "SIN PUESTO";
     }
-    const sectionLabel = currentSection || "SIN PUESTO";
+    const sectionLabel = (entry?.isFichoMarker && fichoSection) ? fichoSection : (currentSection || "SIN PUESTO");
     ensureBucket(sectionLabel).push(entry);
   });
 
@@ -3498,6 +3572,50 @@ function groupOperationalEntriesByPuesto(entriesInput){
   return grouped;
 }
 
+function getSectionEntriesForOperationalView(sectionLabelInput, entriesInput){
+  const sectionLabel = canonicalizePuestoLabel(sectionLabelInput);
+  const entries = Array.isArray(entriesInput) ? entriesInput.slice() : [];
+  const nonFichoSorted = sortEntriesByNumericTurn(entries.filter(e => !e?.isFichoMarker));
+  if (sectionLabel === "NUTIBARA") return nonFichoSorted;
+
+  const fichoEntries = entries.filter(e => e?.isFichoMarker);
+  if (!fichoEntries.length) return nonFichoSorted;
+
+  const fichoByIndex = new Map();
+  fichoEntries.forEach(entry => {
+    const idx = getFichoIndexFromNumero(entry?.numeroRaw);
+    if (!idx || fichoByIndex.has(idx)) return;
+    fichoByIndex.set(idx, entry);
+  });
+
+  const rules = FICHO_POSITION_RULES[sectionLabel];
+  if (!Array.isArray(rules) || !rules.length) {
+    const extras = sortEntriesByNumericTurn(fichoEntries);
+    return nonFichoSorted.concat(extras);
+  }
+
+  const ordered = nonFichoSorted.slice();
+  const inserted = new Set();
+  rules.forEach(rule => {
+    const entry = fichoByIndex.get(rule.ficho);
+    if (!entry) return;
+    let insertAt = ordered.findIndex(item => {
+      if (item?.isFichoMarker) return false;
+      const num = getNumericTurnNumber(item?.numeroRaw);
+      return Number.isFinite(num) && num > rule.after;
+    });
+    if (insertAt < 0) insertAt = ordered.length;
+    ordered.splice(insertAt, 0, entry);
+    inserted.add(rule.ficho);
+  });
+
+  const leftovers = Array.from(fichoByIndex.entries())
+    .filter(([idx]) => !inserted.has(idx))
+    .sort((a, b) => a[0] - b[0])
+    .map(([, entry]) => entry);
+  return ordered.concat(leftovers);
+}
+
 function getFichoIndexFromNumero(value){
   const txt = String(value || "").toUpperCase();
   const m = txt.match(/FICHO\s*([0-9]+)/);
@@ -3512,8 +3630,10 @@ function getNumericTurnNumber(value){
   return Number.isFinite(n) ? n : null;
 }
 
-function buildFichoAssignmentsByIndex(groupedSections, vehiculoKey){
-  const assignments = new Map(); // idx -> { veh, color }
+function buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, opts = {}){
+  const baseKey = opts.baseKey || getBaseKey();
+  const fechaKey = opts.fechaKey || getFechaKey();
+  const assignments = new Map(); // `${base}|${fecha}` -> Map(idx -> { veh, color })
   (Array.isArray(groupedSections) ? groupedSections : []).forEach(section => {
     const sectionLabel = canonicalizePuestoLabel(section?.puesto || "SIN PUESTO");
     const sectionColor = norm(sectionLabel).includes("EXPOSICIONES") ? "blue" : "green";
@@ -3523,7 +3643,11 @@ function buildFichoAssignmentsByIndex(groupedSections, vehiculoKey){
       if (!idx) return;
       const veh = String(vehiculoKey ? (entry.row?.[vehiculoKey] || "") : "").trim();
       if (!veh) return;
-      assignments.set(idx, { veh, color: sectionColor });
+      const rowBase = getRowCanonicalBase(entry.row, baseKey);
+      const rowDate = getRowDateISO(entry.row, fechaKey);
+      const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+      if (!assignments.has(groupKey)) assignments.set(groupKey, new Map());
+      assignments.get(groupKey).set(idx, { veh, color: sectionColor });
     });
   });
   return assignments;
@@ -3600,10 +3724,8 @@ function dedupeProgramacionRows(inputRows){
   const keepByKey = new Map();
   source.forEach((row, idx) => {
     const slotKey = buildProgramacionSlotKey(row);
-    const vehKey = getVehiculoKey(row);
-    const vehNorm = vehKey ? normalizeVehicleId(row[vehKey]) : "";
     const key = slotKey && slotKey.replace(/\|/g, "").length > 0
-      ? `SLOT:${slotKey}|VEH:${vehNorm || "-"}`
+      ? `SLOT:${slotKey}`
       : buildProgramacionRowKey(row);
     if (!key) {
       keepByKey.set(`__ROWIDX__${idx}`, row);
@@ -4023,7 +4145,8 @@ function renderLiveExcelPreview(){
 
   const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
   const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
-  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey);
+  const baseKey = getBaseKey();
+  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, { baseKey, fechaKey });
 
   const formatConductorForPreview = (rowObj, conductorKey) => {
     if (!conductorKey) return "";
@@ -4045,8 +4168,10 @@ function renderLiveExcelPreview(){
 
   groupedSections.forEach(section => {
     const sectionLabel = canonicalizePuestoLabel(section.puesto);
+    const sectionEntries = getSectionEntriesForOperationalView(sectionLabel, section.entries);
+    if (!sectionEntries.length) return;
     openSection(sectionLabel);
-    section.entries.forEach(entry => {
+    sectionEntries.forEach(entry => {
       const r = entry.row;
       const isFichoMarker = entry.isFichoMarker;
       const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
@@ -4054,7 +4179,10 @@ function renderLiveExcelPreview(){
       const isNutibara = norm(sectionLabel).includes("NUTIBARA");
       let vehColor = null;
       if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
-        const assigned = fichoAssignments.get(turnNum);
+        const rowBase = getRowCanonicalBase(r, baseKey);
+        const rowDate = getRowDateISO(r, fechaKey) || visorDate;
+        const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+        const assigned = fichoAssignments.get(groupKey)?.get(turnNum);
         if (assigned?.veh) {
           vehRaw = String(assigned.veh);
           vehColor = assigned.color || null;
@@ -4949,7 +5077,7 @@ document.getElementById('btnExportFormato').onclick = async () => {
   const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
   const dateForTitle = selectedDate || (fechaKey ? normalizeDateToISO(ordered[0][fechaKey]) : "");
   const titleDate = formatDateLongEs(dateForTitle || "");
-  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey);
+  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, { baseKey, fechaKey });
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(`DIA_${selectedDate}`);
@@ -5031,15 +5159,20 @@ document.getElementById('btnExportFormato').onclick = async () => {
 
   groupedSections.forEach(section => {
     const sectionLabel = canonicalizePuestoLabel(section.puesto);
+    const sectionEntries = getSectionEntriesForOperationalView(sectionLabel, section.entries);
+    if (!sectionEntries.length) return;
     openSection(sectionLabel);
-    section.entries.forEach(entry => {
+    sectionEntries.forEach(entry => {
       const r = entry.row;
       const isFichoMarker = entry.isFichoMarker;
       const vehNote = getVehiculoNote(r);
       const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
       let vehValue = vehiculoKey ? (r[vehiculoKey] || "") : "";
       if (norm(sectionLabel).includes("NUTIBARA") && turnNum && turnNum >= 1 && turnNum <= 10) {
-        const assigned = fichoAssignments.get(turnNum);
+        const rowBase = getRowCanonicalBase(r, baseKey);
+        const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
+        const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+        const assigned = fichoAssignments.get(groupKey)?.get(turnNum);
         if (assigned?.veh) vehValue = assigned.veh;
       }
       if (vehNote) vehValue = `${vehValue}\nCOMENTARIO: ${vehNote}`;
@@ -5069,7 +5202,10 @@ document.getElementById('btnExportFormato').onclick = async () => {
         const isNutibara = norm(sectionLabel).includes("NUTIBARA");
         let vehColor = null;
         if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
-          vehColor = fichoAssignments.get(turnNum)?.color || null;
+          const rowBase = getRowCanonicalBase(r, baseKey);
+          const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
+          const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+          vehColor = fichoAssignments.get(groupKey)?.get(turnNum)?.color || null;
         }
         if (vehColor) {
           const vehCell = ws.getRow(currentRow).getCell(3); // Columna VEH
@@ -5326,4 +5462,5 @@ initAuth();
 </script>
 </body>
 </html>
+
 
