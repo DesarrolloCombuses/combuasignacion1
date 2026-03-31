@@ -1675,6 +1675,14 @@ function isProgramacionFilasUnavailable(error){
   return msg.includes("programacion_filas") && (msg.includes("does not exist") || msg.includes("relation") || msg.includes("column"));
 }
 
+function isPermissionLikeError(error){
+  const msg = String(error?.message || "").toLowerCase();
+  return msg.includes("permission denied")
+    || msg.includes("row-level security")
+    || msg.includes("violates row-level security")
+    || msg.includes("policy");
+}
+
 function chunkArray(input, size = 500){
   const list = Array.isArray(input) ? input : [];
   const chunkSize = Math.max(1, Number(size) || 500);
@@ -2001,13 +2009,16 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
   }
   if (syncRowsInProgress) {
     syncRowsPending = true;
+    savePendingRowsLocally("Cambio en cola de sincronizacion");
     return;
   }
   syncRowsInProgress = true;
+  savePendingRowsLocally("Sincronizando cambios");
   setSyncStatus("warn", "Guardando cambios...");
 
   try {
     let rowsToPersist = Array.isArray(rows) ? rows.slice() : [];
+    let rowsTableSynced = false;
     const dedupedBeforeSync = dedupeProgramacionRows(rowsToPersist);
     if (dedupedBeforeSync.removed > 0) {
       rowsToPersist = dedupedBeforeSync.rows;
@@ -2025,7 +2036,8 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
 
     if (currentProgramacionId) {
       try {
-        await syncProgramacionRowsTable(currentProgramacionId, rowsToPersist);
+        const rowsSyncResult = await syncProgramacionRowsTable(currentProgramacionId, rowsToPersist);
+        rowsTableSynced = !!rowsSyncResult?.ok;
       } catch (rowsSyncError) {
         if (!isProgramacionFilasUnavailable(rowsSyncError)) throw rowsSyncError;
       }
@@ -2033,7 +2045,13 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
         .from("programaciones")
         .update({ rows_data: rowsToPersist })
         .eq("id", currentProgramacionId);
-      if (error) throw error;
+      if (error) {
+        if (rowsTableSynced && isBaseOperator() && isPermissionLikeError(error)) {
+          console.warn("Sin permiso para actualizar programaciones.rows_data; cambios preservados en programacion_filas.");
+        } else {
+          throw error;
+        }
+      }
     } else {
       const { data, error } = await supabaseClient
         .from("programaciones")
@@ -2070,7 +2088,12 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
     console.error("Error sincronizando cambios de programacion:", error);
     savePendingRowsLocally("Error de sincronizacion");
     setSyncStatus("err", "Error guardando cambios");
-    showToast("Cambios pendientes. Se reintentara al reconectar.", "warn");
+    const detail = String(error?.message || "");
+    if (isPermissionLikeError(error)) {
+      showToast("Cambios pendientes por permisos en Supabase (RLS). Contacta al administrador.", "err");
+    } else {
+      showToast(`Cambios pendientes. Se reintentara al reconectar.${detail ? ` (${detail})` : ""}`, "warn");
+    }
   } finally {
     syncRowsInProgress = false;
     if (syncRowsPending) {
@@ -5471,12 +5494,19 @@ window.addEventListener("offline", () => {
   showToast("Sin internet. Se guardara localmente.", "warn");
 });
 
+window.addEventListener("beforeunload", () => {
+  if (syncRowsInProgress || syncRowsPending) {
+    savePendingRowsLocally("Recarga durante sincronizacion");
+  }
+});
+
 window.addEventListener("resize", adjustDynamicTableViewport);
 
 initAuth();
 </script>
 </body>
 </html>
+
 
 
 
