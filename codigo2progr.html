@@ -2647,10 +2647,25 @@ function normalizeDateToISO(value){
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   let m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) {
-    const d = m[1].padStart(2, "0");
-    const mo = m[2].padStart(2, "0");
+    let p1 = parseInt(m[1], 10);
+    let p2 = parseInt(m[2], 10);
+    if (Number.isNaN(p1) || Number.isNaN(p2)) return raw;
+
+    // Acepta ambos formatos: dd/mm/yyyy y mm/dd/yyyy.
+    // Reglas:
+    // - si p1 > 12, es dia/mes
+    // - si p2 > 12, es mes/dia
+    // - si ambos <= 12, se mantiene dia/mes por defecto local
+    let d = p1;
+    let mo = p2;
+    if (p1 <= 12 && p2 > 12) {
+      d = p2;
+      mo = p1;
+    }
+
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return raw;
     const y = m[3];
-    return `${y}-${mo}-${d}`;
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   }
   m = raw.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
   if (m) {
@@ -4867,7 +4882,7 @@ async function readFile(file){
         const data = new Uint8Array(e.target.result);
         const wb = XLSX.read(data, {type:'array'});
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
         const prepared = normalizeProgramacionRows(json);
         validateProgramacionRows(prepared.normalized);
         if (prepared.unmappedVehicles > 0) {
@@ -5462,5 +5477,6 @@ initAuth();
 </script>
 </body>
 </html>
+
 
 
