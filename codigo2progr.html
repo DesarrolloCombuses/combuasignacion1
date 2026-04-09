@@ -801,6 +801,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_khOBBj9EIe2Ahmkz_KxVUw_R-SDOpk0";
 const SUPER_ADMIN_EMAIL = "administrador@combuses.com.co";
 const BASE_USER_EMAIL_RE = /^base\s*([0-9]+)@combuses\.com\.co$/i;
 const ALLOW_PUBLIC_SIGNUP = false;
+const ENABLE_REALTIME = false;
 if (!window.XLSX) {
   throw new Error("No cargo XLSX. Verifica conexion a internet o ruta del script.");
 }
@@ -1011,6 +1012,7 @@ function unsubscribeRealtimeChannels(){
 }
 
 function queueRealtimeProgramacionesRefresh(){
+  if (!ENABLE_REALTIME) return;
   if (realtimeProgramacionesTimer) clearTimeout(realtimeProgramacionesTimer);
   realtimeProgramacionesTimer = setTimeout(async () => {
     realtimeProgramacionesTimer = null;
@@ -1038,6 +1040,7 @@ function queueRealtimeProgramacionesRefresh(){
 }
 
 function queueRealtimeNovedadesRefresh(){
+  if (!ENABLE_REALTIME) return;
   if (realtimeNovedadesTimer) clearTimeout(realtimeNovedadesTimer);
   realtimeNovedadesTimer = setTimeout(async () => {
     realtimeNovedadesTimer = null;
@@ -1054,6 +1057,7 @@ function queueRealtimeNovedadesRefresh(){
 }
 
 function queueRealtimeAuditRefresh(){
+  if (!ENABLE_REALTIME) return;
   if (AUDIT_DISABLED) return;
   if (realtimeAuditTimer) clearTimeout(realtimeAuditTimer);
   realtimeAuditTimer = setTimeout(async () => {
@@ -1071,6 +1075,7 @@ function queueRealtimeAuditRefresh(){
 
 function subscribeRealtimeChannels(){
   unsubscribeRealtimeChannels();
+  if (!ENABLE_REALTIME) return;
   if (!currentUserId) return;
 
   const suffix = `${currentUserId}-${Date.now()}`;
@@ -5506,6 +5511,7 @@ initAuth();
 </script>
 </body>
 </html>
+
 
 
 
