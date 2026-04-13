@@ -158,6 +158,10 @@
         <div class="tabs">
           <div class="tab active" data-tab="programacion">Turnos del dia</div>
           <div class="tab" data-tab="novedades">Estados del personal</div>
+          <div class="tab" data-tab="planilla-afiliados">Planilla Afiliados</div>
+          <div class="tab" data-tab="llegadas-aeropuerto">Llegadas Aeropuerto</div>
+          <div class="tab" data-tab="llegadas-san-diego">Llegadas San Diego</div>
+          <div class="tab" data-tab="llegadas-nutibara">Llegadas Nutibara</div>
           <div class="tab" data-tab="consulta">Consulta por fechas</div>
           <div class="tab" data-tab="visor">Visor Excel en linea</div>
           <div class="tab" data-tab="audit">Auditoria</div>
@@ -202,6 +206,110 @@
               </thead>
               <tbody id="novedadesBody">
                 <!-- Se llena dinamicamente -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Planilla Afiliados -->
+        <div id="tab-planilla-afiliados" class="tab-content">
+          <div class="row planilla-toolbar" style="margin-bottom:10px">
+            <input id="planillaFilterInterno" type="text" placeholder="Filtrar interno..." />
+            <input id="planillaFilterBase" type="text" placeholder="Filtrar base..." />
+            <select id="planillaFilterTipo">
+              <option value="">Todos los tipos</option>
+              <option value="Llegada Aeropuerto">Llegada Aeropuerto</option>
+              <option value="Llegada San Diego">Llegada San Diego</option>
+              <option value="Llegada Nutibara">Llegada Nutibara</option>
+            </select>
+            <input id="planillaFilterHoraLlegada" type="text" placeholder="Filtrar hora llegada..." />
+            <button class="btn btn-ghost" id="btnRefreshPlanilla">Actualizar planilla</button>
+            <span class="muted">Registros: <strong id="planillaCount">0</strong></span>
+            <span class="muted" id="planillaStatus">Sin cargar</span>
+          </div>
+          <div class="planilla-wrap" style="overflow:auto;max-height:60vh">
+            <table id="planillaTable">
+              <thead id="planillaHead"></thead>
+              <tbody id="planillaBody">
+                <tr><td class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas Aeropuerto -->
+        <div id="tab-llegadas-aeropuerto" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasAeropuertoTitle" style="margin:0">Ultimas Llegadas Aeropuerto (104)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasAeropuerto">Actualizar</button>
+            <span class="muted">Registros: <strong id="llegadasAeropuertoCount">0</strong></span>
+            <span class="muted" id="llegadasAeropuertoStatus">Sin cargar</span>
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasAeropuertoTable">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasAeropuertoBody">
+                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas San Diego -->
+        <div id="tab-llegadas-san-diego" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasSanDiegoTitle" style="margin:0">Ultimas Llegadas San Diego (101)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasSanDiego">Actualizar</button>
+            <span class="muted">Registros: <strong id="llegadasSanDiegoCount">0</strong></span>
+            <span class="muted" id="llegadasSanDiegoStatus">Sin cargar</span>
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasSanDiegoTable">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasSanDiegoBody">
+                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas Nutibara -->
+        <div id="tab-llegadas-nutibara" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasNutibaraTitle" style="margin:0">Ultimas Llegadas Nutibara (110)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasNutibara">Actualizar</button>
+            <span class="muted">Registros: <strong id="llegadasNutibaraCount">0</strong></span>
+            <span class="muted" id="llegadasNutibaraStatus">Sin cargar</span>
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasNutibaraTable">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasNutibaraBody">
+                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
               </tbody>
             </table>
           </div>
@@ -382,6 +490,8 @@
 <script src="js/main.js"></script>
 </body>
 </html>
+
+
 
 
 
