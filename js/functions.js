@@ -1,5 +1,8 @@
-﻿const SUPABASE_URL = "https://jtnlcckphveeqhyrxlku.supabase.co";
+const SUPABASE_URL = "https://jtnlcckphveeqhyrxlku.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_khOBBj9EIe2Ahmkz_KxVUw_R-SDOpk0";
+const PLANILLA_SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
+const PLANILLA_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
+const PLANILLA_TABLE_NAME = "planilla_afiliados";
 const SUPER_ADMIN_EMAIL = "administrador@combuses.com.co";
 const BASE_USER_EMAIL_RE = /^base\s*([0-9]+)@combuses\.com\.co$/i;
 const ALLOW_PUBLIC_SIGNUP = false;
@@ -10,7 +13,7 @@ if (!window.supabase || typeof window.supabase.createClient !== "function") {
   throw new Error("No cargo Supabase JS. Verifica conexion a internet o ruta del script.");
 }
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
+const planillaSupabaseClient = window.supabase.createClient(PLANILLA_SUPABASE_URL, PLANILLA_SUPABASE_ANON_KEY);
 const authPanel = document.getElementById("authPanel");
 const appWrap = document.getElementById("appWrap");
 const authEmail = document.getElementById("authEmail");
@@ -907,40 +910,62 @@ function buildProgramacionFilaPayload(rowsInput, programacionId){
 
 async function loadProgramacionRowsFromSupabase(programacionId){
   if (!programacionId) return { ok: true, rows: [] };
-  const { data, error } = await supabaseClient
-    .from("programacion_filas")
-    .select("row_data")
-    .eq("programacion_id", programacionId)
-    .order("id", { ascending: true });
-  if (error) {
-    if (isProgramacionFilasUnavailable(error)) {
-      return { ok: false, unavailable: true, rows: [] };
+  const pageSize = 1000;
+  const allRows = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabaseClient
+      .from("programacion_filas")
+      .select("row_data")
+      .eq("programacion_id", programacionId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) {
+      if (isProgramacionFilasUnavailable(error)) {
+        return { ok: false, unavailable: true, rows: [] };
+      }
+      throw error;
     }
-    throw error;
+    const chunk = Array.isArray(data) ? data : [];
+    allRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
   }
+
   return {
     ok: true,
-    rows: (data || []).map(r => r?.row_data).filter(r => r && typeof r === "object")
+    rows: allRows.map(r => r?.row_data).filter(r => r && typeof r === "object")
   };
 }
 
 async function syncProgramacionRowsTable(programacionId, rowsInput){
   if (!programacionId || !currentUserId) return { ok: false, skipped: true };
   const payload = buildProgramacionFilaPayload(rowsInput, programacionId);
+  const pageSize = 1000;
+  const existingRows = [];
+  let offset = 0;
+  while (true) {
+    const existingResult = await supabaseClient
+      .from("programacion_filas")
+      .select("row_key")
+      .eq("programacion_id", programacionId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
 
-  const existingResult = await supabaseClient
-    .from("programacion_filas")
-    .select("row_key")
-    .eq("programacion_id", programacionId);
-
-  if (existingResult.error) {
-    if (isProgramacionFilasUnavailable(existingResult.error)) {
-      return { ok: false, unavailable: true };
+    if (existingResult.error) {
+      if (isProgramacionFilasUnavailable(existingResult.error)) {
+        return { ok: false, unavailable: true };
+      }
+      throw existingResult.error;
     }
-    throw existingResult.error;
+    const chunk = Array.isArray(existingResult.data) ? existingResult.data : [];
+    existingRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
   }
 
-  const existingKeys = new Set((existingResult.data || []).map(r => String(r.row_key || "")).filter(Boolean));
+  const existingKeys = new Set(existingRows.map(r => String(r.row_key || "")).filter(Boolean));
   const nextKeys = new Set(payload.map(r => String(r.row_key || "")).filter(Boolean));
   const toDelete = Array.from(existingKeys).filter(k => !nextKeys.has(k));
 
@@ -1380,6 +1405,13 @@ let assignedByBase = {};    // { "2": Set(["..."]) }
 let basesCatalog = [];
 let isLoadingDrivers = false;
 let programacionesHistory = [];
+let planillaAfiliadosRows = [];
+let planillaAfiliadosLoading = false;
+let planillaAfiliadosLoadedOnce = false;
+let planillaLastLoadedAt = 0;
+let planillaAutoRefreshTimer = null;
+const PLANILLA_REFRESH_MAX_AGE_MS = 15000;
+const PLANILLA_AUTO_REFRESH_MS = 30000;
 
 // Estructura para novedades (conductores con estado)
 let novedades = []; // Array de objetos { nombre, base, estado, fecha }
@@ -1468,6 +1500,30 @@ const auditOpFilter = document.getElementById("auditOpFilter");
 const btnRefreshAudit = document.getElementById("btnRefreshAudit");
 let auditLogRows = [];
 const AUDIT_DISABLED = true;
+const planillaFilterInterno = document.getElementById("planillaFilterInterno");
+const planillaFilterBase = document.getElementById("planillaFilterBase");
+const planillaFilterTipo = document.getElementById("planillaFilterTipo");
+const planillaFilterHoraLlegada = document.getElementById("planillaFilterHoraLlegada");
+const btnRefreshPlanilla = document.getElementById("btnRefreshPlanilla");
+const planillaStatus = document.getElementById("planillaStatus");
+const planillaCount = document.getElementById("planillaCount");
+const planillaHead = document.getElementById("planillaHead");
+const planillaBody = document.getElementById("planillaBody");
+const btnRefreshLlegadasAeropuerto = document.getElementById("btnRefreshLlegadasAeropuerto");
+const llegadasAeropuertoTitle = document.getElementById("llegadasAeropuertoTitle");
+const llegadasAeropuertoCount = document.getElementById("llegadasAeropuertoCount");
+const llegadasAeropuertoStatus = document.getElementById("llegadasAeropuertoStatus");
+const llegadasAeropuertoBody = document.getElementById("llegadasAeropuertoBody");
+const btnRefreshLlegadasSanDiego = document.getElementById("btnRefreshLlegadasSanDiego");
+const llegadasSanDiegoTitle = document.getElementById("llegadasSanDiegoTitle");
+const llegadasSanDiegoCount = document.getElementById("llegadasSanDiegoCount");
+const llegadasSanDiegoStatus = document.getElementById("llegadasSanDiegoStatus");
+const llegadasSanDiegoBody = document.getElementById("llegadasSanDiegoBody");
+const btnRefreshLlegadasNutibara = document.getElementById("btnRefreshLlegadasNutibara");
+const llegadasNutibaraTitle = document.getElementById("llegadasNutibaraTitle");
+const llegadasNutibaraCount = document.getElementById("llegadasNutibaraCount");
+const llegadasNutibaraStatus = document.getElementById("llegadasNutibaraStatus");
+const llegadasNutibaraBody = document.getElementById("llegadasNutibaraBody");
 
 /* ===================== UTIL ===================== */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
@@ -1699,6 +1755,308 @@ function escapeHtml(value){
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function formatPlanillaCell(value){
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function mapTipoLlegada(value){
+  const code = String(value ?? "").trim();
+  if (code === "104") return "Llegada Aeropuerto";
+  if (code === "101") return "Llegada San Diego";
+  if (code === "110") return "Llegada Nutibara";
+  return code || "-";
+}
+
+const PLANILLA_VIEW_COLUMNS = [
+  { title: "Hora llegada", value: (row) => row?.hora_llegada },
+  { title: "Tipo", value: (row) => mapTipoLlegada(row?.tipo_llegada) },
+  { title: "Base", value: (row) => row?.base },
+  { title: "Interno", value: (row) => row?.interno },
+  { title: "Itinerario llegada", value: (row) => row?.itinerario_llegada },
+  { title: "Hora despacho", value: (row) => row?.hora_despacho },
+  { title: "Itinerario despacho", value: (row) => row?.itinerario_despacho },
+  { title: "Conductor", value: (row) => row?.conductor },
+  { title: "Estado", value: (row) => row?.estado },
+  { title: "Espera", value: (row) => row?.espera },
+  { title: "Generado en", value: (row) => row?.generado_en }
+];
+
+function getPlanillaFilteredRows(rowsInput){
+  const rowsList = Array.isArray(rowsInput) ? rowsInput : [];
+  const internoTerm = String(planillaFilterInterno?.value || "").trim().toLowerCase();
+  const baseTerm = String(planillaFilterBase?.value || "").trim().toLowerCase();
+  const tipoTerm = String(planillaFilterTipo?.value || "").trim().toLowerCase();
+  const horaLlegadaTerm = String(planillaFilterHoraLlegada?.value || "").trim().toLowerCase();
+  const filtered = rowsList.filter(row => {
+    const internoOk = !internoTerm || formatPlanillaCell(row?.interno).toLowerCase().includes(internoTerm);
+    const baseOk = !baseTerm || formatPlanillaCell(row?.base).toLowerCase().includes(baseTerm);
+    const tipoTxt = mapTipoLlegada(row?.tipo_llegada).toLowerCase();
+    const tipoOk = !tipoTerm || tipoTxt.includes(tipoTerm);
+    const horaLlegadaOk = !horaLlegadaTerm || formatPlanillaCell(row?.hora_llegada).toLowerCase().includes(horaLlegadaTerm);
+    return internoOk && baseOk && tipoOk && horaLlegadaOk;
+  });
+  return filtered.sort(comparePlanillaRowsByCurrentDateTime);
+}
+
+function parsePlanillaDateTime(value){
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function isSameLocalDate(a, b){
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate();
+}
+
+function comparePlanillaRowsByCurrentDateTime(a, b){
+  const now = new Date();
+  const aDate = parsePlanillaDateTime(a?.hora_llegada || a?.generado_en || a?.hora_despacho);
+  const bDate = parsePlanillaDateTime(b?.hora_llegada || b?.generado_en || b?.hora_despacho);
+  if (!aDate && !bDate) return 0;
+  if (!aDate) return 1;
+  if (!bDate) return -1;
+
+  const aIsToday = isSameLocalDate(aDate, now);
+  const bIsToday = isSameLocalDate(bDate, now);
+  if (aIsToday !== bIsToday) return aIsToday ? -1 : 1;
+
+  if (aIsToday && bIsToday) {
+    const aDiff = Math.abs(aDate.getTime() - now.getTime());
+    const bDiff = Math.abs(bDate.getTime() - now.getTime());
+    if (aDiff !== bDiff) return aDiff - bDiff;
+  }
+
+  return bDate.getTime() - aDate.getTime();
+}
+
+function formatPlanillaDateTime(value){
+  const date = parsePlanillaDateTime(value);
+  if (!date) return formatPlanillaCell(value);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mi = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function formatTimeAgoEs(dateInput){
+  const date = dateInput instanceof Date ? dateInput : parsePlanillaDateTime(dateInput);
+  if (!date) return "-";
+  const diffMs = Date.now() - date.getTime();
+  const mins = Math.max(0, Math.floor(diffMs / 60000));
+  if (mins < 1) return "hace 0 min";
+  if (mins < 60) return `hace ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (rem === 0) return `hace ${hours} h`;
+  return `hace ${hours} h ${rem} min`;
+}
+
+function getLlegadasRowsByTipo(tipoCode){
+  const allRows = Array.isArray(planillaAfiliadosRows) ? planillaAfiliadosRows : [];
+  const rowsFiltered = allRows.filter(r => String(r?.tipo_llegada ?? "").trim() === String(tipoCode));
+  const now = new Date();
+  const todayRows = rowsFiltered.filter(r => {
+    const date = parsePlanillaDateTime(r?.hora_llegada || r?.generado_en || r?.hora_despacho);
+    return !!date && isSameLocalDate(date, now);
+  });
+  const source = todayRows.length > 0 ? todayRows : rowsFiltered;
+  return source
+    .slice()
+    .sort((a, b) => {
+      const da = parsePlanillaDateTime(a?.hora_llegada || a?.generado_en || a?.hora_despacho);
+      const db = parsePlanillaDateTime(b?.hora_llegada || b?.generado_en || b?.hora_despacho);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return db.getTime() - da.getTime();
+    });
+}
+
+function renderLlegadasAeropuerto(){
+  if (!llegadasAeropuertoBody) return;
+  const rows = getLlegadasRowsByTipo("104");
+  if (llegadasAeropuertoCount) llegadasAeropuertoCount.textContent = String(rows.length);
+  if (llegadasAeropuertoTitle) llegadasAeropuertoTitle.textContent = "Ultimas Llegadas Aeropuerto (104)";
+  if (rows.length === 0) {
+    llegadasAeropuertoBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin llegadas de aeropuerto.</td></tr>`;
+    return;
+  }
+  llegadasAeropuertoBody.innerHTML = rows.map(row => {
+    const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const haceTxt = formatTimeAgoEs(date);
+    const baseTxt = formatPlanillaCell(row?.base);
+    const internoTxt = formatPlanillaCell(row?.interno);
+    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    return `<tr>
+      <td>${escapeHtml(horaTxt)}</td>
+      <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
+      <td>${escapeHtml(baseTxt)}</td>
+      <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
+      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderLlegadasSanDiego(){
+  if (!llegadasSanDiegoBody) return;
+  const rows = getLlegadasRowsByTipo("101");
+  if (llegadasSanDiegoCount) llegadasSanDiegoCount.textContent = String(rows.length);
+  if (llegadasSanDiegoTitle) llegadasSanDiegoTitle.textContent = "Ultimas Llegadas San Diego (101)";
+  if (rows.length === 0) {
+    llegadasSanDiegoBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin llegadas de San Diego.</td></tr>`;
+    return;
+  }
+  llegadasSanDiegoBody.innerHTML = rows.map(row => {
+    const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const haceTxt = formatTimeAgoEs(date);
+    const baseTxt = formatPlanillaCell(row?.base);
+    const internoTxt = formatPlanillaCell(row?.interno);
+    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    return `<tr>
+      <td>${escapeHtml(horaTxt)}</td>
+      <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
+      <td>${escapeHtml(baseTxt)}</td>
+      <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
+      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderLlegadasNutibara(){
+  if (!llegadasNutibaraBody) return;
+  const rows = getLlegadasRowsByTipo("110");
+  if (llegadasNutibaraCount) llegadasNutibaraCount.textContent = String(rows.length);
+  if (llegadasNutibaraTitle) llegadasNutibaraTitle.textContent = "Ultimas Llegadas Nutibara (110)";
+  if (rows.length === 0) {
+    llegadasNutibaraBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin llegadas de Nutibara.</td></tr>`;
+    return;
+  }
+  llegadasNutibaraBody.innerHTML = rows.map(row => {
+    const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    const haceTxt = formatTimeAgoEs(date);
+    const baseTxt = formatPlanillaCell(row?.base);
+    const internoTxt = formatPlanillaCell(row?.interno);
+    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    return `<tr>
+      <td>${escapeHtml(horaTxt)}</td>
+      <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
+      <td>${escapeHtml(baseTxt)}</td>
+      <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
+      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderPlanillaAfiliados(){
+  if (!planillaHead || !planillaBody) return;
+  const filtered = getPlanillaFilteredRows(planillaAfiliadosRows);
+
+  if (planillaCount) planillaCount.textContent = String(filtered.length);
+
+  planillaHead.innerHTML = `<tr>${PLANILLA_VIEW_COLUMNS.map(c => `<th>${escapeHtml(c.title)}</th>`).join("")}</tr>`;
+  if (filtered.length === 0) {
+    planillaBody.innerHTML = `<tr><td colspan="${PLANILLA_VIEW_COLUMNS.length}" class="muted" style="text-align:center;padding:12px">No hay coincidencias.</td></tr>`;
+    return;
+  }
+
+  planillaBody.innerHTML = filtered.map(row => {
+    const cells = PLANILLA_VIEW_COLUMNS.map(col => `<td>${escapeHtml(formatPlanillaCell(col.value(row)))}</td>`).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+}
+
+function getActiveTabId(){
+  return document.querySelector(".tab.active")?.getAttribute("data-tab") || "";
+}
+
+function isPlanillaRelatedTab(tabId){
+  const id = String(tabId || "");
+  return id === "planilla-afiliados"
+    || id === "llegadas-aeropuerto"
+    || id === "llegadas-san-diego"
+    || id === "llegadas-nutibara";
+}
+
+async function ensureFreshPlanillaData(options = {}){
+  const force = !!options.force;
+  const maxAgeMs = Number(options.maxAgeMs || PLANILLA_REFRESH_MAX_AGE_MS);
+  const stale = !planillaAfiliadosLoadedOnce || !planillaLastLoadedAt || ((Date.now() - planillaLastLoadedAt) > maxAgeMs);
+  if (force || stale) {
+    await loadPlanillaAfiliadosFromSupabase();
+    return;
+  }
+  renderPlanillaAfiliados();
+  renderLlegadasAeropuerto();
+  renderLlegadasSanDiego();
+  renderLlegadasNutibara();
+}
+
+async function loadPlanillaAfiliadosFromSupabase(){
+  if (planillaAfiliadosLoading) return;
+  if (!currentUserId) return;
+  planillaAfiliadosLoading = true;
+  if (planillaStatus) planillaStatus.textContent = "Consultando Supabase...";
+  try {
+    const { data, error } = await planillaSupabaseClient
+      .from(PLANILLA_TABLE_NAME)
+      .select("*")
+      .order("hora_llegada", { ascending: false, nullsFirst: false })
+      .limit(2000);
+    if (error) throw error;
+    planillaAfiliadosRows = Array.isArray(data) ? data : [];
+    planillaAfiliadosLoadedOnce = true;
+    planillaLastLoadedAt = Date.now();
+    renderPlanillaAfiliados();
+    renderLlegadasAeropuerto();
+    renderLlegadasSanDiego();
+    renderLlegadasNutibara();
+    if (planillaStatus) {
+      const stamp = new Date().toLocaleString("es-CO");
+      planillaStatus.textContent = `Actualizado: ${stamp}`;
+    }
+    if (llegadasAeropuertoStatus) {
+      const stamp2 = new Date().toLocaleString("es-CO");
+      llegadasAeropuertoStatus.textContent = `Actualizado: ${stamp2}`;
+    }
+    if (llegadasSanDiegoStatus) {
+      const stampSd = new Date().toLocaleString("es-CO");
+      llegadasSanDiegoStatus.textContent = `Actualizado: ${stampSd}`;
+    }
+    if (llegadasNutibaraStatus) {
+      const stamp3 = new Date().toLocaleString("es-CO");
+      llegadasNutibaraStatus.textContent = `Actualizado: ${stamp3}`;
+    }
+  } catch (error) {
+    console.error("Error cargando planilla_afiliados:", error);
+    if (planillaStatus) planillaStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
+    if (llegadasAeropuertoStatus) llegadasAeropuertoStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
+    if (llegadasSanDiegoStatus) llegadasSanDiegoStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
+    if (llegadasNutibaraStatus) llegadasNutibaraStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
+    showToast("No se pudo cargar planilla_afiliados desde Supabase.", "err");
+  } finally {
+    planillaAfiliadosLoading = false;
+  }
 }
 
 function summarizeAuditChange(row){
@@ -4037,6 +4395,18 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tabId === 'novedades') {
       renderNovedades();
     }
+    if (tabId === 'planilla-afiliados') {
+      ensureFreshPlanillaData({ force: true });
+    }
+    if (tabId === 'llegadas-aeropuerto') {
+      ensureFreshPlanillaData({ force: true });
+    }
+    if (tabId === 'llegadas-san-diego') {
+      ensureFreshPlanillaData({ force: true });
+    }
+    if (tabId === 'llegadas-nutibara') {
+      ensureFreshPlanillaData({ force: true });
+    }
     if (tabId === 'consulta') {
       renderConsultaBaseView();
     }
@@ -4738,6 +5108,23 @@ function bindUIEvents(){
   if (clearFilter) {
     clearFilter.addEventListener("click", handleClearFilterClick);
   }
+
+  if (btnRefreshPlanilla) {
+    btnRefreshPlanilla.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
+  }
+  if (btnRefreshLlegadasAeropuerto) {
+    btnRefreshLlegadasAeropuerto.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
+  }
+  if (btnRefreshLlegadasSanDiego) {
+    btnRefreshLlegadasSanDiego.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
+  }
+  if (btnRefreshLlegadasNutibara) {
+    btnRefreshLlegadasNutibara.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
+  }
+  if (planillaFilterInterno) planillaFilterInterno.addEventListener("input", renderPlanillaAfiliados);
+  if (planillaFilterBase) planillaFilterBase.addEventListener("input", renderPlanillaAfiliados);
+  if (planillaFilterHoraLlegada) planillaFilterHoraLlegada.addEventListener("input", renderPlanillaAfiliados);
+  if (planillaFilterTipo) planillaFilterTipo.addEventListener("change", renderPlanillaAfiliados);
 }
 
 // ==================== INIT ====================
@@ -4794,6 +5181,10 @@ function bindWindowEvents(){
       clearInterval(autoRefreshTimer);
       autoRefreshTimer = null;
     }
+    if (planillaAutoRefreshTimer) {
+      clearInterval(planillaAutoRefreshTimer);
+      planillaAutoRefreshTimer = null;
+    }
   });
 
   window.addEventListener("focus", async () => {
@@ -4822,6 +5213,18 @@ function bindWindowEvents(){
     }, AUTO_REFRESH_DELAY_MS);
   }
 
+  if (!planillaAutoRefreshTimer) {
+    planillaAutoRefreshTimer = setInterval(async () => {
+      if (!navigator.onLine || !currentUserId) return;
+      const activeTab = getActiveTabId();
+      if (!isPlanillaRelatedTab(activeTab)) return;
+      await ensureFreshPlanillaData({ maxAgeMs: PLANILLA_REFRESH_MAX_AGE_MS });
+    }, PLANILLA_AUTO_REFRESH_MS);
+  }
+
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
 
