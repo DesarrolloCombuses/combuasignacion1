@@ -1,114 +1,390 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Fuera de servicio</title>
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:,">
+<title>Asignacion de Conductores con Pestanas</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-    body {
-      font-family: Arial, sans-serif;
-      background: linear-gradient(135deg, #0f172a, #1e293b, #334155);
-      color: #ffffff;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-
-    .contenedor {
-      width: 100%;
-      max-width: 700px;
-      background: rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(8px);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 20px;
-      padding: 50px 35px;
-      text-align: center;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
-    }
-
-    .icono {
-      font-size: 70px;
-      margin-bottom: 20px;
-    }
-
-    h1 {
-      font-size: 42px;
-      margin-bottom: 15px;
-      color: #facc15;
-    }
-
-    p {
-      font-size: 18px;
-      line-height: 1.6;
-      color: #e2e8f0;
-      margin-bottom: 15px;
-    }
-
-    .subtexto {
-      font-size: 15px;
-      color: #cbd5e1;
-      margin-top: 10px;
-    }
-
-    .boton {
-      display: inline-block;
-      margin-top: 25px;
-      padding: 14px 28px;
-      background: #facc15;
-      color: #0f172a;
-      text-decoration: none;
-      font-weight: bold;
-      border-radius: 10px;
-      transition: 0.3s ease;
-    }
-
-    .boton:hover {
-      background: #eab308;
-      transform: translateY(-2px);
-    }
-
-    @media (max-width: 600px) {
-      h1 {
-        font-size: 30px;
-      }
-
-      p {
-        font-size: 16px;
-      }
-
-      .contenedor {
-        padding: 35px 20px;
-      }
-    }
-  </style>
+<link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-  <div class="contenedor">
-    <div class="icono">⚠️</div>
-    <h1>Fuera de Servicio</h1>
-    <p>
-      En este momento la plataforma no se encuentra disponible.
-    </p>
-    <p>
-      Estamos realizando labores de mantenimiento o actualización.
-      Por favor, inténtelo nuevamente más tarde.
-    </p>
-    <p class="subtexto">
-      Gracias por su comprensión.
-    </p>
 
-    <a href="javascript:location.reload()" class="boton">Reintentar</a>
+<div id="authPanel" class="auth-wrap">
+  <div class="card auth-card">
+    <div class="auth-brand">Portal Afiliados</div>
+    <h2 class="auth-title">Acceso</h2>
+    <p class="auth-sub">Ingresa con tu correo corporativo para operar tu base asignada.</p>
+    <div class="auth-field">
+      <label class="auth-label" for="authEmail">Correo afiliado</label>
+      <input id="authEmail" type="email" placeholder="usuario@combuses.com.co" autocomplete="email" />
+    </div>
+    <div class="auth-field">
+      <label class="auth-label" for="authPassword">Contrasena</label>
+      <input id="authPassword" type="password" placeholder="Tu contrasena" autocomplete="current-password" />
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" id="btnSignIn">Iniciar sesion</button>
+      <button class="btn btn-ghost hidden" id="btnSignUp" disabled>Crear cuenta</button>
+    </div>
+    <div class="auth-help">
+      <div class="auth-help-item">Acceso solo para usuarios creados por administracion.</div>
+      <div class="auth-help-item">Si no puedes ingresar, solicita validacion de cuenta.</div>
+    </div>
+    <div id="authStatus" class="auth-status warn">Inicia sesion para continuar.</div>
   </div>
+</div>
+
+<div id="appWrap" class="wrap hidden">
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="row">
+      <button class="btn btn-primary" id="btnGoOperativo">Operacion diaria</button>
+      <button class="btn btn-ghost" id="btnGoAdmin">Panel Administrativo</button>
+      <button class="btn btn-ghost hidden" id="btnGoConverter">Convertidor</button>
+    </div>
+    <div class="row">
+      <span class="pill" id="lblGlobal">Sin archivo cargado</span>
+      <span class="pill" id="lblCurrentBase">Base: -</span>
+      <span class="pill" id="lblDriversCount">Conductores: -</span>
+      <span class="pill pill-warn" id="lblSync">Sin validar</span>
+      <span class="pill" id="authUserLabel">No autenticado</span>
+      <button class="btn btn-danger hidden" id="btnLogout">Cerrar sesion</button>
+    </div>
+  </div>
+
+  <!-- ===================== ADMIN PANEL ===================== -->
+  <div id="adminPanel" class="card hidden">
+    <h2>Panel Administrativo</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>Subir Programacion</h3>
+        <input id="fileProg" type="file" accept=".xlsx,.xls,.csv"/>
+        <label for="fileProg" class="file">Cargar Excel Programacion</label>
+        <div class="row" style="margin-top:10px">
+          <input id="adminDayDate" type="date" placeholder="Dia a editar">
+          <button class="btn btn-danger" id="btnDeleteDay">Eliminar dia</button>
+        </div>
+        <div class="muted" style="margin-top:6px">
+          Si seleccionas un dia arriba y cargas un Excel, solo se reemplaza ese dia.
+        </div>
+        <div class="row" style="margin-top:10px">
+          <select id="historyProgramacion" style="min-width:320px">
+            <option value="">Historial de programaciones...</option>
+          </select>
+          <button class="btn btn-ghost" id="btnLoadHistoryProgramacion">Cargar historial</button>
+        </div>
+        <div style="margin-top:10px" class="row">
+          <button class="btn btn-success" id="btnExport" disabled>Descargar Excel</button>
+          <button class="btn btn-success" id="btnExportFormato" disabled>Descargar Formato Operativo</button>
+          <button class="btn btn-danger" id="clearProg">Limpiar</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Gestion de Bases</h3>
+        <div class="row">
+          <input id="newBase" type="text" placeholder="Ej: 1, 2, 3..." />
+          <button class="btn btn-primary" id="btnAddBase">Agregar</button>
+        </div>
+        <select id="basesList" size="4" style="width:100%;margin:10px 0"></select>
+        <div class="row">
+          <button class="btn btn-danger" id="btnRemoveBase">Eliminar</button>
+          <button class="btn btn-primary" id="btnReloadDrivers">Recargar CSV</button>
+        </div>
+        <div id="csvStatus" class="muted" style="margin-top:10px">Cargando conductores...</div>
+      </div>
+    </div>
+    <div class="card" id="adminComplianceCard" style="margin-top:12px">
+      <div class="admin-progress-head">
+        <h3 style="margin:0">Cumplimiento por base</h3>
+        <div class="row">
+          <select id="adminComplianceDate" style="min-width:220px">
+            <option value="">Selecciona fecha...</option>
+          </select>
+          <button class="btn btn-ghost" id="btnRefreshCompliance">Actualizar</button>
+          <span class="admin-progress-badge" id="adminComplianceSummary">Sin datos</span>
+        </div>
+      </div>
+      <div style="overflow:auto;max-height:42vh">
+        <table id="adminComplianceGrid">
+          <thead>
+            <tr>
+              <th>Base</th>
+              <th>Estado</th>
+              <th>Turnos</th>
+              <th>Pendientes</th>
+              <th>Sobrantes</th>
+            </tr>
+          </thead>
+          <tbody id="adminComplianceBody">
+            <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos de cumplimiento.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="converterPanel" class="card hidden">
+    <h2 style="margin:0 0 10px">Convertidor de programacion</h2>
+    <iframe
+      class="converter-frame"
+      src="https://desarrollocombuses.github.io/converter/programacionlocal.html"
+      title="Convertidor de programacion"
+      loading="lazy"
+    ></iframe>
+  </div>
+
+  <!-- ===================== OPERATIVO ===================== -->
+  <div id="operativoPanel" class="card">
+    <h2>Panel de operacion</h2>
+    
+    <!-- Selector de base -->
+    <div class="row" style="margin-bottom:12px">
+      <select id="startBase">
+        <option value="">Selecciona una base operativa...</option>
+      </select>
+      <button class="btn btn-primary" id="btnEnterBase">Abrir base</button>
+      <button class="btn btn-ghost" id="btnExitBase">Salir de base</button>
+    </div>
+
+    <!-- Panel interno operativo -->
+    <div id="operativoInner" class="layout hidden">
+      
+      <!-- Columna izquierda: Pestanas -->
+      <div class="card">
+        <div class="tabs">
+          <div class="tab active" data-tab="programacion">Turnos del dia</div>
+          <div class="tab" data-tab="novedades">Estados del personal</div>
+          <div class="tab" data-tab="consulta">Consulta por fechas</div>
+          <div class="tab" data-tab="visor">Visor Excel en linea</div>
+          <div class="tab" data-tab="audit">Auditoria</div>
+          <div class="tab" data-tab="debugsupabase">Diagnostico Supabase</div>
+        </div>
+        
+        <!-- Contenido Programacion -->
+        <div id="tab-programacion" class="tab-content active">
+          <div class="workflow" id="workflowGuide">
+            <span class="workflow-step active" id="stepSelectDate">1. Selecciona fecha</span>
+            <span class="workflow-step" id="stepAssignDrivers">2. Llena turnos</span>
+            <span class="workflow-step" id="stepRegisterStates">3. Sobrantes a estados</span>
+            <span class="workflow-note" id="workflowNote">Primero elige una fecha disponible para habilitar asignaciones.</span>
+          </div>
+          <div class="row" style="margin-bottom:10px">
+            <select id="filterDate">
+              <option value="">Selecciona fecha...</option>
+            </select>
+            <button class="btn btn-ghost" id="clearFilter">Limpiar filtro</button>
+            <span class="muted">Intercambio de vehiculo por arrastre: disponible en BASE 3 y para administrador en todas las bases.</span>
+          </div>
+          <div id="gridViewport" style="overflow:visible;max-height:none">
+            <table id="grid"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+        
+        <!-- Contenido Novedades -->
+        <div id="tab-novedades" class="tab-content">
+          <div class="stats-bar">
+            <span>Base seleccionada: <strong id="novedadesBaseDisplay">-</strong></span>
+            <span>Conductores con novedad: <strong id="novedadesCount">0</strong></span>
+          </div>
+          <div id="novedadesViewport" style="overflow:auto;max-height:60vh">
+            <table class="novedades-table" id="novedadesGrid">
+              <thead>
+                <tr>
+                  <th>Conductor</th>
+                  <th>Base</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="novedadesBody">
+                <!-- Se llena dinamicamente -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Consulta por fechas -->
+        <div id="tab-consulta" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <label class="consulta-mini" for="consultaFrom">Desde</label>
+            <input id="consultaFrom" type="date" />
+            <label class="consulta-mini" for="consultaTo">Hasta</label>
+            <input id="consultaTo" type="date" />
+            <button class="btn btn-ghost" id="btnApplyConsulta">Ver resumen</button>
+          </div>
+          <div class="stats-bar" id="consultaSummaryBar">
+            <span>Base: <strong id="consultaBaseLabel">-</strong></span>
+            <span>Programados: <strong id="consultaProgramadosCount">0</strong></span>
+            <span>Estados personal: <strong id="consultaEstadosCount">0</strong></span>
+          </div>
+          <div class="consulta-grid">
+            <div class="consulta-box">
+              <h4>Conductores programados</h4>
+              <div style="overflow:auto;max-height:46vh">
+                <table id="consultaProgramadosTable">
+                  <thead>
+                    <tr><th>Conductor</th><th>Turnos</th><th>Fechas</th></tr>
+                  </thead>
+                  <tbody id="consultaProgramadosBody">
+                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="consulta-box">
+              <h4>Estados del personal</h4>
+              <div style="overflow:auto;max-height:46vh">
+                <table id="consultaEstadosTable">
+                  <thead>
+                    <tr><th>Fecha</th><th>Conductor</th><th>Estado</th></tr>
+                  </thead>
+                  <tbody id="consultaEstadosBody">
+                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="gantt-wrap">
+            <h4 style="margin:0 0 8px">Vista operativa (timeline)</h4>
+            <div class="consulta-mini" style="margin-bottom:8px">Muestra vehiculo programado y destaca fichos de salida por fecha.</div>
+            <div id="consultaTimeline"></div>
+          </div>
+        </div>
+
+        <!-- Contenido Visor Excel -->
+        <div id="tab-visor" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <label class="consulta-mini" for="visorDateSelect">Fecha</label>
+            <select id="visorDateSelect">
+              <option value="">Selecciona fecha...</option>
+            </select>
+            <label class="consulta-mini" for="visorScopeSelect">Alcance</label>
+            <select id="visorScopeSelect">
+              <option value="all">Ver todo</option>
+              <option value="base">Ver base logueada</option>
+            </select>
+            <button class="btn btn-ghost" id="btnRefreshVisor">Actualizar visor</button>
+            <button class="btn btn-success" id="btnExportVisor">Descargar visor Excel</button>
+            <span class="muted">Vista previa en tiempo real de como se va formando el formato operativo (todas las bases).</span>
+          </div>
+          <div id="liveExcelPreview" style="overflow:auto;max-height:60vh">
+            <div class="muted" style="padding:12px;text-align:center">Sin datos para visualizar.</div>
+          </div>
+        </div>
+
+        <!-- Contenido Auditoria -->
+        <div id="tab-audit" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <input id="auditFrom" type="date" />
+            <input id="auditTo" type="date" />
+            <input id="auditUserFilter" type="text" placeholder="Filtrar por correo..." />
+            <select id="auditTableFilter">
+              <option value="">Todas las tablas</option>
+              <option value="programaciones">programaciones</option>
+              <option value="programacion_filas">programacion_filas</option>
+              <option value="novedades">novedades</option>
+            </select>
+            <select id="auditOpFilter">
+              <option value="">Todas las operaciones</option>
+              <option value="INSERT">INSERT</option>
+              <option value="UPDATE">UPDATE</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+            <button class="btn btn-ghost" id="btnRefreshAudit">Actualizar</button>
+            <span class="muted">Eventos: <strong id="auditCount">0</strong></span>
+          </div>
+          <div style="overflow:auto;max-height:52vh">
+            <table id="auditGrid">
+              <thead>
+                <tr>
+                  <th>Fecha/Hora</th>
+                  <th>Usuario</th>
+                  <th>Tabla</th>
+                  <th>Operacion</th>
+                  <th>Registro</th>
+                  <th>Cambio</th>
+                </tr>
+              </thead>
+              <tbody id="auditBody">
+                <tr><td colspan="6" class="muted" style="text-align:center;padding:14px">Sin datos de auditoria.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Diagnostico Supabase -->
+        <div id="tab-debugsupabase" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <button class="btn btn-ghost" id="btnRefreshDebug">Actualizar diagnostico</button>
+            <span class="muted">Lee la ultima programacion guardada en Supabase</span>
+          </div>
+          <pre id="debugOutput" class="muted" style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;max-height:52vh;overflow:auto">Sin datos de diagnostico.</pre>
+        </div>
+      </div>
+
+      <!-- Columna derecha: Conductores disponibles -->
+      <div class="card drivers">
+        <h3>Conductores disponibles - <span id="currentBaseDisplay">Base -</span></h3>
+        <input id="filterDrivers" type="text" placeholder="Buscar por nombre...">
+        <div class="list" id="driversList"></div>
+        <p class="muted" style="margin-top:8px;text-align:center">
+          Arrastra un conductor a la tabla de estados<br>
+          <span style="font-size:11px">Asignacion solo por arrastre a CONDUCTOR 1/2</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="appToast" class="toast" aria-live="polite"></div>
+<div id="swapModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="swapModalTitle">
+  <div class="modal-card">
+    <h3 id="swapModalTitle" class="modal-title">Confirmar cambio de carro</h3>
+    <div class="modal-sub">Verifica la posicion origen y destino antes de confirmar.</div>
+    <div class="swap-grid">
+      <div class="swap-box">
+        <h4>Origen</h4>
+        <div class="swap-line" id="swapSourceLabel">-</div>
+        <div class="swap-line">Vehiculo actual:</div>
+        <div class="swap-veh" id="swapSourceVeh">-</div>
+      </div>
+      <div class="swap-box">
+        <h4>Destino</h4>
+        <div class="swap-line" id="swapTargetLabel">-</div>
+        <div class="swap-line">Vehiculo actual:</div>
+        <div class="swap-veh" id="swapTargetVeh">-</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btnSwapCancel">Cancelar</button>
+      <button class="btn btn-primary" id="btnSwapConfirm">Confirmar cambio</button>
+    </div>
+  </div>
+</div>
+<div id="noteModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="noteModalTitle">
+  <div class="modal-card">
+    <h3 id="noteModalTitle" class="modal-title">Nota en casilla sin conductor</h3>
+    <div class="modal-sub" id="noteModalSub">Escribe una nota para este turno.</div>
+    <textarea id="noteModalInput" class="note-input" maxlength="1200" placeholder="Ej: conductor pendiente por confirmar..."></textarea>
+    <div class="modal-actions" style="margin-top:10px">
+      <button class="btn btn-ghost" id="btnNoteClear">Limpiar nota</button>
+      <button class="btn btn-ghost" id="btnNoteCancel">Cancelar</button>
+      <button class="btn btn-primary" id="btnNoteSave">Guardar nota</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/functions.js"></script>
+<script src="js/main.js"></script>
 </body>
 </html>
+
+
+
 
 
 
