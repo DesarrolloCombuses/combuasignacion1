@@ -1,4 +1,4 @@
-﻿  body{font-family:'Segoe UI',Roboto,sans-serif;background:#f7f8fa;color:#222;margin:0;padding:0}
+  body{font-family:'Segoe UI',Roboto,sans-serif;background:#f7f8fa;color:#222;margin:0;padding:0}
   .wrap{max-width:1500px;margin:auto;padding:16px}
 
   .topbar{
@@ -414,4 +414,6 @@
     table{font-size:12px}
     th,td{padding:6px}
   }
+
+
 
