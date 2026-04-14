@@ -224,6 +224,8 @@
             </select>
             <input id="planillaFilterHoraLlegada" type="text" placeholder="Filtrar hora llegada..." />
             <button class="btn btn-ghost" id="btnRefreshPlanilla">Actualizar planilla</button>
+            <button class="btn btn-success" id="btnDownloadLlegadas">Descargar llegadas</button>
+            <button class="btn btn-success" id="btnDownloadDespachos">Descargar despachos</button>
             <span class="muted">Registros: <strong id="planillaCount">0</strong></span>
             <span class="muted" id="planillaStatus">Sin cargar</span>
           </div>
@@ -242,14 +244,24 @@
           <div class="row" style="margin-bottom:10px">
             <h3 id="llegadasAeropuertoTitle" style="margin:0">Ultimas Llegadas Aeropuerto (104)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasAeropuerto">Actualizar</button>
+            <input id="aeropuertoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <label class="consulta-mini" for="aeropuertoUploadFrom">Subida desde</label>
+            <input id="aeropuertoUploadFrom" type="date" />
+            <label class="consulta-mini" for="aeropuertoUploadTo">hasta</label>
+            <input id="aeropuertoUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasAeropuerto">Descargar aeropuerto</button>
             <span class="muted">Registros: <strong id="llegadasAeropuertoCount">0</strong></span>
             <span class="muted" id="llegadasAeropuertoStatus">Sin cargar</span>
           </div>
+          <div id="llegadasAeropuertoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasAeropuertoTable">
               <thead>
                 <tr>
                   <th>Hora</th>
+                  <th>Subida</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
@@ -257,7 +269,7 @@
                 </tr>
               </thead>
               <tbody id="llegadasAeropuertoBody">
-                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
               </tbody>
             </table>
           </div>
@@ -268,14 +280,24 @@
           <div class="row" style="margin-bottom:10px">
             <h3 id="llegadasSanDiegoTitle" style="margin:0">Ultimas Llegadas San Diego (101)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasSanDiego">Actualizar</button>
+            <input id="sanDiegoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <label class="consulta-mini" for="sanDiegoUploadFrom">Subida desde</label>
+            <input id="sanDiegoUploadFrom" type="date" />
+            <label class="consulta-mini" for="sanDiegoUploadTo">hasta</label>
+            <input id="sanDiegoUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasSanDiego">Descargar San Diego</button>
             <span class="muted">Registros: <strong id="llegadasSanDiegoCount">0</strong></span>
             <span class="muted" id="llegadasSanDiegoStatus">Sin cargar</span>
           </div>
+          <div id="llegadasSanDiegoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasSanDiegoTable">
               <thead>
                 <tr>
                   <th>Hora</th>
+                  <th>Subida</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
@@ -283,7 +305,7 @@
                 </tr>
               </thead>
               <tbody id="llegadasSanDiegoBody">
-                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
               </tbody>
             </table>
           </div>
@@ -294,14 +316,24 @@
           <div class="row" style="margin-bottom:10px">
             <h3 id="llegadasNutibaraTitle" style="margin:0">Ultimas Llegadas Nutibara (110)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasNutibara">Actualizar</button>
+            <input id="nutibaraSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <label class="consulta-mini" for="nutibaraUploadFrom">Subida desde</label>
+            <input id="nutibaraUploadFrom" type="date" />
+            <label class="consulta-mini" for="nutibaraUploadTo">hasta</label>
+            <input id="nutibaraUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasNutibara">Descargar Nutibara</button>
             <span class="muted">Registros: <strong id="llegadasNutibaraCount">0</strong></span>
             <span class="muted" id="llegadasNutibaraStatus">Sin cargar</span>
           </div>
+          <div id="llegadasNutibaraTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasNutibaraTable">
               <thead>
                 <tr>
                   <th>Hora</th>
+                  <th>Subida</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
@@ -309,7 +341,7 @@
                 </tr>
               </thead>
               <tbody id="llegadasNutibaraBody">
-                <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
               </tbody>
             </table>
           </div>
@@ -490,6 +522,9 @@
 <script src="js/main.js"></script>
 </body>
 </html>
+
+
+
 
 
 
