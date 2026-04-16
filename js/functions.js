@@ -1077,6 +1077,8 @@ async function loadLatestProgramacionFromSupabase(){
   currentProgramacionId = latest.id;
   currentProgramacionFileName = latest.file_name || currentProgramacionFileName;
 
+  // Reconstruye una vista consolidada desde el historial (mas reciente gana por clave),
+  // para evitar perder dias cuando se cargan archivos parciales en distintos momentos.
   const consolidated = buildConsolidatedRowsFromHistory(programacionesHistory);
   let nextRows = dedupeProgramacionRows(consolidated.rows).rows;
 
@@ -1084,9 +1086,8 @@ async function loadLatestProgramacionFromSupabase(){
   try {
     const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
     if (rowsResult?.ok && Array.isArray(rowsResult.rows) && rowsResult.rows.length > 0) {
-      const mergedWithLatestRows = mergeLatestRowsIntoConsolidatedRows(nextRows, rowsResult.rows);
-      const referenceRows = Array.isArray(latest.rows_data) ? latest.rows_data : [];
-      const reordered = reorderRowsByReference(referenceRows, mergedWithLatestRows);
+      const merged = mergeLatestRowsIntoConsolidatedRows(nextRows, rowsResult.rows);
+      const reordered = reorderRowsByReference(nextRows, merged);
       rows = dedupeProgramacionRows(reordered).rows;
       loadedFromRowsTable = true;
     }
@@ -1416,6 +1417,8 @@ let nutibaraSelectedItinerary = "";
 let lastAeropuertoRenderedRows = [];
 let lastSanDiegoRenderedRows = [];
 let lastNutibaraRenderedRows = [];
+let operativoViewMode = "operativo";
+const ARRIVALS_PANEL_TAB_IDS = ["llegadas-aeropuerto", "llegadas-san-diego", "llegadas-nutibara"];
 const PLANILLA_REFRESH_MAX_AGE_MS = 15000;
 const PLANILLA_AUTO_REFRESH_MS = 30000;
 
@@ -1519,6 +1522,7 @@ const planillaHead = document.getElementById("planillaHead");
 const planillaBody = document.getElementById("planillaBody");
 const btnRefreshLlegadasAeropuerto = document.getElementById("btnRefreshLlegadasAeropuerto");
 const aeropuertoSearch = document.getElementById("aeropuertoSearch");
+const aeropuertoEstadoFilter = document.getElementById("aeropuertoEstadoFilter");
 const aeropuertoUploadFrom = document.getElementById("aeropuertoUploadFrom");
 const aeropuertoUploadTo = document.getElementById("aeropuertoUploadTo");
 const btnDownloadLlegadasAeropuerto = document.getElementById("btnDownloadLlegadasAeropuerto");
@@ -1529,6 +1533,7 @@ const llegadasAeropuertoBody = document.getElementById("llegadasAeropuertoBody")
 const llegadasAeropuertoTabs = document.getElementById("llegadasAeropuertoTabs");
 const btnRefreshLlegadasSanDiego = document.getElementById("btnRefreshLlegadasSanDiego");
 const sanDiegoSearch = document.getElementById("sanDiegoSearch");
+const sanDiegoEstadoFilter = document.getElementById("sanDiegoEstadoFilter");
 const sanDiegoUploadFrom = document.getElementById("sanDiegoUploadFrom");
 const sanDiegoUploadTo = document.getElementById("sanDiegoUploadTo");
 const btnDownloadLlegadasSanDiego = document.getElementById("btnDownloadLlegadasSanDiego");
@@ -1539,6 +1544,7 @@ const llegadasSanDiegoBody = document.getElementById("llegadasSanDiegoBody");
 const llegadasSanDiegoTabs = document.getElementById("llegadasSanDiegoTabs");
 const btnRefreshLlegadasNutibara = document.getElementById("btnRefreshLlegadasNutibara");
 const nutibaraSearch = document.getElementById("nutibaraSearch");
+const nutibaraEstadoFilter = document.getElementById("nutibaraEstadoFilter");
 const nutibaraUploadFrom = document.getElementById("nutibaraUploadFrom");
 const nutibaraUploadTo = document.getElementById("nutibaraUploadTo");
 const btnDownloadLlegadasNutibara = document.getElementById("btnDownloadLlegadasNutibara");
@@ -1632,7 +1638,7 @@ function applyRoleRestrictions(){
   const tabAudit = document.querySelector('.tab[data-tab="audit"]');
   const tabVisor = document.querySelector('.tab[data-tab="visor"]');
   const tabNovedades = document.querySelector('.tab[data-tab="novedades"]');
-  const operativoTitle = document.querySelector("#operativoPanel h2");
+  const operativoTitle = document.getElementById("operativoMainTitle") || document.querySelector("#operativoPanel h2");
   const auditContent = document.getElementById("tab-audit");
 
   if (AUDIT_DISABLED) {
@@ -1681,7 +1687,7 @@ function applyRoleRestrictions(){
       if (progContent) progContent.classList.add("active");
     }
   }
-  if (operativoTitle) operativoTitle.textContent = "Panel de operacion";
+  if (operativoTitle) operativoTitle.textContent = operativoViewMode === "llegadas" ? "Panel de llegadas vehiculos" : "Panel de operacion";
   updateExportAccess();
   renderAdminComplianceDashboard();
 }
@@ -1912,6 +1918,99 @@ function getOperacionEstadoText(row){
   return "En espera";
 }
 
+function getDisplayItinerarioByEstado(row){
+  const itinLlegada = formatPlanillaCell(row?.itinerario_llegada).trim();
+  const itinDespacho = getItinerarioDespachoText(row);
+  if (!hasValidDespacho(row)) {
+    return itinLlegada || "-";
+  }
+  return itinDespacho || itinLlegada || "-";
+}
+
+function getItinerarioLlegadaText(row){
+  const itin = formatPlanillaCell(row?.itinerario_llegada).trim();
+  return itin || "-";
+}
+
+function getItinerarioDespachoText(row){
+  const itin = formatPlanillaCell(row?.itinerario_despacho).trim();
+  return itin || "-";
+}
+
+function getItinerarioLlegadaCellHtml(row){
+  const itin = escapeHtml(getItinerarioLlegadaText(row));
+  const itinColor = getItinerarioTextColorByRow(row);
+  if (hasValidDespacho(row)) {
+    return `<strong style="color:${itinColor}">${itin}</strong>`;
+  }
+  return `<strong style="color:${itinColor}">${itin}</strong> <span style="display:inline-block;margin-left:6px;padding:2px 8px;border:1px solid #fdba74;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:12px;line-height:1.2" title="Vehiculo en espera por este itinerario de llegada">En espera</span>`;
+}
+
+function getItineraryGroupLabel(itinValue){
+  const raw = String(itinValue || "").trim();
+  if (!raw || raw === "-" || raw.toLowerCase() === "sin itinerario") {
+    return "Proximos a despachar";
+  }
+  return raw;
+}
+
+function getItineraryThemeByRows(rowsInput, estadoMode){
+  const mode = String(estadoMode || "").trim().toLowerCase();
+  if (mode === "en_espera") return "espera";
+  if (mode === "despachado") return "despachado";
+  const rows = Array.isArray(rowsInput) ? rowsInput : [];
+  if (!rows.length) return "mixed";
+  const hasDesp = rows.some(r => hasValidDespacho(r));
+  const hasEspera = rows.some(r => !hasValidDespacho(r));
+  if (hasDesp && !hasEspera) return "despachado";
+  if (!hasDesp && hasEspera) return "espera";
+  return "mixed";
+}
+
+function getItineraryButtonStyle(theme, active){
+  if (theme === "espera") {
+    return active
+      ? "background:#b45309;border-color:#b45309;color:#ffffff"
+      : "background:#fff7ed;border-color:#fdba74;color:#9a3412";
+  }
+  if (theme === "despachado") {
+    return active
+      ? "background:#047857;border-color:#047857;color:#ffffff"
+      : "background:#ecfdf5;border-color:#86efac;color:#065f46";
+  }
+  return "";
+}
+
+function getItinerarioTextColorByRow(row){
+  return hasValidDespacho(row) ? "#065f46" : "#9a3412";
+}
+
+function normalizeItineraryKey(value){
+  return String(value || "").trim().toLowerCase();
+}
+
+function getGroupingItineraryForRow(row, estadoMode){
+  const mode = String(estadoMode || "").trim().toLowerCase();
+  if (mode === "en_espera") {
+    if (hasValidDespacho(row)) return getItinerarioDespachoText(row);
+    return getItinerarioLlegadaText(row);
+  }
+  return getDisplayItinerarioByEstado(row);
+}
+
+function rowMatchesSelectedItinerary(row, selectedItinerary, estadoMode){
+  const selectedKey = normalizeItineraryKey(selectedItinerary);
+  if (!selectedKey) return false;
+  const mode = String(estadoMode || "").trim().toLowerCase();
+  if (mode === "en_espera") {
+    if (hasValidDespacho(row)) {
+      return normalizeItineraryKey(getItinerarioDespachoText(row)) === selectedKey;
+    }
+    return normalizeItineraryKey(getItinerarioLlegadaText(row)) === selectedKey;
+  }
+  return normalizeItineraryKey(getGroupingItineraryForRow(row, mode)) === selectedKey;
+}
+
 function getRowsFilteredByUploadDate(rowsInput, fromIso, toIso){
   const rows = Array.isArray(rowsInput) ? rowsInput : [];
   if (!fromIso && !toIso) return rows;
@@ -1921,6 +2020,45 @@ function getRowsFilteredByUploadDate(rowsInput, fromIso, toIso){
     if (fromIso && uploadIso < fromIso) return false;
     if (toIso && uploadIso > toIso) return false;
     return true;
+  });
+}
+
+function getRowsFilteredByEstado(rowsInput, estadoMode){
+  const rows = Array.isArray(rowsInput) ? rowsInput : [];
+  const mode = String(estadoMode || "").trim().toLowerCase();
+  if (!mode) return rows;
+  let filtered = rows.filter(row => {
+    const isDespachado = hasValidDespacho(row);
+    if (mode === "en_espera") return !isDespachado;
+    if (mode === "despachado") return isDespachado;
+    return true;
+  });
+  if (mode === "en_espera") {
+    filtered = getRowsFilteredByEsperaOperationalDay(filtered);
+  }
+  return filtered;
+}
+
+function isSameLocalCalendarDate(a, b){
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate();
+}
+
+function getRowsFilteredByEsperaOperationalDay(rowsInput){
+  const rows = Array.isArray(rowsInput) ? rowsInput : [];
+  if (!rows.length) return rows;
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  return rows.filter(row => {
+    const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
+    if (!date) return false;
+
+    if (isSameLocalCalendarDate(date, now)) return true;
+    if (isSameLocalCalendarDate(date, yesterday) && date.getHours() >= 21) return true;
+    return false;
   });
 }
 
@@ -1935,7 +2073,8 @@ function getRowsFilteredBySearchTerm(rowsInput, searchTerm){
       formatTimeAgoEs(parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho)),
       formatPlanillaCell(row?.base),
       formatPlanillaCell(row?.interno),
-      formatPlanillaCell(row?.itinerario_llegada),
+      getItinerarioLlegadaText(row),
+      getItinerarioDespachoText(row),
       getDespachoDateTimeText(row),
       getOperacionEstadoText(row),
       formatPlanillaCell(row?.conductor),
@@ -1950,9 +2089,11 @@ function getLlegadasRowsForView(tipoCode, options = {}){
   const searchTerm = String(options.searchTerm || "");
   const fromIso = String(options.fromIso || "").trim();
   const toIso = String(options.toIso || "").trim();
-  const hasExplicitFilters = !!searchTerm.trim() || !!fromIso || !!toIso;
+  const estadoMode = String(options.estadoMode || "");
+  const hasExplicitFilters = !!searchTerm.trim() || !!fromIso || !!toIso || !!estadoMode;
   const rows = getLlegadasRowsByTipo(tipoCode, { preferToday: !hasExplicitFilters });
-  const byDate = getRowsFilteredByUploadDate(rows, fromIso, toIso);
+  const byEstado = getRowsFilteredByEstado(rows, estadoMode);
+  const byDate = getRowsFilteredByUploadDate(byEstado, fromIso, toIso);
   return getRowsFilteredBySearchTerm(byDate, searchTerm);
 }
 
@@ -2033,10 +2174,21 @@ function getLlegadaRowPriorityTime(row){
   );
 }
 
+function hasItinerarioDespacho(row){
+  const txt = formatPlanillaCell(row?.itinerario_despacho).trim();
+  return !!txt && txt !== "-";
+}
+
 function shouldPreferLlegadaRow(candidate, current){
   const currentHasDespacho = hasValidDespacho(current);
   const candidateHasDespacho = hasValidDespacho(candidate);
   if (candidateHasDespacho !== currentHasDespacho) return candidateHasDespacho;
+
+  if (candidateHasDespacho && currentHasDespacho) {
+    const currentHasItinDesp = hasItinerarioDespacho(current);
+    const candidateHasItinDesp = hasItinerarioDespacho(candidate);
+    if (candidateHasItinDesp !== currentHasItinDesp) return candidateHasItinDesp;
+  }
 
   const currentTime = getLlegadaRowPriorityTime(current);
   const candidateTime = getLlegadaRowPriorityTime(candidate);
@@ -2103,11 +2255,16 @@ function getLlegadasRowsByTipo(tipoCode, options = {}){
 
 function renderLlegadasAeropuerto(){
   if (!llegadasAeropuertoBody) return;
-  const rows = getLlegadasRowsForView("104", {
+  const estadoMode = aeropuertoEstadoFilter?.value || "";
+  const rowsSource = getLlegadasRowsForView("104", {
     searchTerm: aeropuertoSearch?.value || "",
+    estadoMode: estadoMode === "en_espera" ? "" : estadoMode,
     fromIso: aeropuertoUploadFrom?.value || "",
     toIso: aeropuertoUploadTo?.value || ""
   });
+  const rows = estadoMode === "en_espera"
+    ? getRowsFilteredByEsperaOperationalDay(rowsSource)
+    : rowsSource;
   lastAeropuertoRenderedRows = rows.slice();
   if (llegadasAeropuertoCount) llegadasAeropuertoCount.textContent = String(rows.length);
   if (llegadasAeropuertoTitle) llegadasAeropuertoTitle.textContent = "Ultimas Llegadas Aeropuerto (104)";
@@ -2118,7 +2275,7 @@ function renderLlegadasAeropuerto(){
   }
   const grouped = new Map();
   rows.forEach(row => {
-    const itin = formatPlanillaCell(row?.itinerario_llegada) || "Sin itinerario";
+    const itin = getGroupingItineraryForRow(row, estadoMode);
     if (!grouped.has(itin)) grouped.set(itin, []);
     grouped.get(itin).push(row);
   });
@@ -2132,7 +2289,10 @@ function renderLlegadasAeropuerto(){
       const active = itin === aeropuertoSelectedItinerary;
       const count = grouped.get(itin)?.length || 0;
       const cls = active ? "btn btn-primary" : "btn btn-ghost";
-      return `<button type="button" class="${cls}" data-aep-itin="${escapeHtml(itin)}">${escapeHtml(itin)} (${count})</button>`;
+      const theme = getItineraryThemeByRows(grouped.get(itin), estadoMode);
+      const style = getItineraryButtonStyle(theme, active);
+      const label = getItineraryGroupLabel(itin);
+      return `<button type="button" class="${cls}" style="${style}" data-aep-itin="${escapeHtml(itin)}">${escapeHtml(label)} (${count})</button>`;
     }).join("");
     llegadasAeropuertoTabs.querySelectorAll("[data-aep-itin]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -2142,7 +2302,7 @@ function renderLlegadasAeropuerto(){
     });
   }
 
-  const selectedRows = grouped.get(aeropuertoSelectedItinerary) || [];
+  const selectedRows = rows.filter(row => rowMatchesSelectedItinerary(row, aeropuertoSelectedItinerary, estadoMode));
   lastAeropuertoRenderedRows = selectedRows.slice();
   if (selectedRows.length === 0) {
     llegadasAeropuertoBody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos para el itinerario seleccionado.</td></tr>`;
@@ -2151,33 +2311,38 @@ function renderLlegadasAeropuerto(){
   llegadasAeropuertoBody.innerHTML = selectedRows.map(row => {
     const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
     const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
-    const subidaTxt = getPlanillaUploadDateText(row);
     const despachoTxt = getDespachoDateTimeText(row);
     const operacionTxt = getOperacionEstadoText(row);
     const haceTxt = formatTimeAgoEs(date);
     const baseTxt = formatPlanillaCell(row?.base);
     const internoTxt = formatPlanillaCell(row?.interno);
-    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    const itinLlegadaHtml = getItinerarioLlegadaCellHtml(row);
+    const itinDespachoTxt = getItinerarioDespachoText(row);
     return `<tr>
       <td>${escapeHtml(horaTxt)}</td>
-      <td>${escapeHtml(subidaTxt)}</td>
       <td>${escapeHtml(despachoTxt)}</td>
       <td><strong style="color:${operacionTxt === "Despachado" ? "#065f46" : "#b45309"}">${escapeHtml(operacionTxt)}</strong></td>
       <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
       <td>${escapeHtml(baseTxt)}</td>
       <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
-      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+      <td>${itinLlegadaHtml}</td>
+      <td><strong>${escapeHtml(itinDespachoTxt)}</strong></td>
     </tr>`;
   }).join("");
 }
 
 function renderLlegadasSanDiego(){
   if (!llegadasSanDiegoBody) return;
-  const rows = getLlegadasRowsForView("101", {
+  const estadoMode = sanDiegoEstadoFilter?.value || "";
+  const rowsSource = getLlegadasRowsForView("101", {
     searchTerm: sanDiegoSearch?.value || "",
+    estadoMode: estadoMode === "en_espera" ? "" : estadoMode,
     fromIso: sanDiegoUploadFrom?.value || "",
     toIso: sanDiegoUploadTo?.value || ""
   });
+  const rows = estadoMode === "en_espera"
+    ? getRowsFilteredByEsperaOperationalDay(rowsSource)
+    : rowsSource;
   lastSanDiegoRenderedRows = rows.slice();
   if (llegadasSanDiegoCount) llegadasSanDiegoCount.textContent = String(rows.length);
   if (llegadasSanDiegoTitle) llegadasSanDiegoTitle.textContent = "Ultimas Llegadas San Diego (101)";
@@ -2189,7 +2354,7 @@ function renderLlegadasSanDiego(){
 
   const grouped = new Map();
   rows.forEach(row => {
-    const itin = formatPlanillaCell(row?.itinerario_llegada) || "Sin itinerario";
+    const itin = getGroupingItineraryForRow(row, estadoMode);
     if (!grouped.has(itin)) grouped.set(itin, []);
     grouped.get(itin).push(row);
   });
@@ -2204,7 +2369,10 @@ function renderLlegadasSanDiego(){
       const active = itin === sanDiegoSelectedItinerary;
       const count = grouped.get(itin)?.length || 0;
       const cls = active ? "btn btn-primary" : "btn btn-ghost";
-      return `<button type="button" class="${cls}" data-sd-itin="${escapeHtml(itin)}">${escapeHtml(itin)} (${count})</button>`;
+      const theme = getItineraryThemeByRows(grouped.get(itin), estadoMode);
+      const style = getItineraryButtonStyle(theme, active);
+      const label = getItineraryGroupLabel(itin);
+      return `<button type="button" class="${cls}" style="${style}" data-sd-itin="${escapeHtml(itin)}">${escapeHtml(label)} (${count})</button>`;
     }).join("");
     llegadasSanDiegoTabs.querySelectorAll("[data-sd-itin]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -2214,7 +2382,7 @@ function renderLlegadasSanDiego(){
     });
   }
 
-  const selectedRows = grouped.get(sanDiegoSelectedItinerary) || [];
+  const selectedRows = rows.filter(row => rowMatchesSelectedItinerary(row, sanDiegoSelectedItinerary, estadoMode));
   lastSanDiegoRenderedRows = selectedRows.slice();
   if (selectedRows.length === 0) {
     llegadasSanDiegoBody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos para el itinerario seleccionado.</td></tr>`;
@@ -2223,33 +2391,38 @@ function renderLlegadasSanDiego(){
   llegadasSanDiegoBody.innerHTML = selectedRows.map(row => {
     const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
     const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
-    const subidaTxt = getPlanillaUploadDateText(row);
     const despachoTxt = getDespachoDateTimeText(row);
     const operacionTxt = getOperacionEstadoText(row);
     const haceTxt = formatTimeAgoEs(date);
     const baseTxt = formatPlanillaCell(row?.base);
     const internoTxt = formatPlanillaCell(row?.interno);
-    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    const itinLlegadaHtml = getItinerarioLlegadaCellHtml(row);
+    const itinDespachoTxt = getItinerarioDespachoText(row);
     return `<tr>
       <td>${escapeHtml(horaTxt)}</td>
-      <td>${escapeHtml(subidaTxt)}</td>
       <td>${escapeHtml(despachoTxt)}</td>
       <td><strong style="color:${operacionTxt === "Despachado" ? "#065f46" : "#b45309"}">${escapeHtml(operacionTxt)}</strong></td>
       <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
       <td>${escapeHtml(baseTxt)}</td>
       <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
-      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+      <td>${itinLlegadaHtml}</td>
+      <td><strong>${escapeHtml(itinDespachoTxt)}</strong></td>
     </tr>`;
   }).join("");
 }
 
 function renderLlegadasNutibara(){
   if (!llegadasNutibaraBody) return;
-  const rows = getLlegadasRowsForView("110", {
+  const estadoMode = nutibaraEstadoFilter?.value || "";
+  const rowsSource = getLlegadasRowsForView("110", {
     searchTerm: nutibaraSearch?.value || "",
+    estadoMode: estadoMode === "en_espera" ? "" : estadoMode,
     fromIso: nutibaraUploadFrom?.value || "",
     toIso: nutibaraUploadTo?.value || ""
   });
+  const rows = estadoMode === "en_espera"
+    ? getRowsFilteredByEsperaOperationalDay(rowsSource)
+    : rowsSource;
   lastNutibaraRenderedRows = rows.slice();
   if (llegadasNutibaraCount) llegadasNutibaraCount.textContent = String(rows.length);
   if (llegadasNutibaraTitle) llegadasNutibaraTitle.textContent = "Ultimas Llegadas Nutibara (110)";
@@ -2260,7 +2433,7 @@ function renderLlegadasNutibara(){
   }
   const grouped = new Map();
   rows.forEach(row => {
-    const itin = formatPlanillaCell(row?.itinerario_llegada) || "Sin itinerario";
+    const itin = getGroupingItineraryForRow(row, estadoMode);
     if (!grouped.has(itin)) grouped.set(itin, []);
     grouped.get(itin).push(row);
   });
@@ -2274,7 +2447,10 @@ function renderLlegadasNutibara(){
       const active = itin === nutibaraSelectedItinerary;
       const count = grouped.get(itin)?.length || 0;
       const cls = active ? "btn btn-primary" : "btn btn-ghost";
-      return `<button type="button" class="${cls}" data-nut-itin="${escapeHtml(itin)}">${escapeHtml(itin)} (${count})</button>`;
+      const theme = getItineraryThemeByRows(grouped.get(itin), estadoMode);
+      const style = getItineraryButtonStyle(theme, active);
+      const label = getItineraryGroupLabel(itin);
+      return `<button type="button" class="${cls}" style="${style}" data-nut-itin="${escapeHtml(itin)}">${escapeHtml(label)} (${count})</button>`;
     }).join("");
     llegadasNutibaraTabs.querySelectorAll("[data-nut-itin]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -2284,7 +2460,7 @@ function renderLlegadasNutibara(){
     });
   }
 
-  const selectedRows = grouped.get(nutibaraSelectedItinerary) || [];
+  const selectedRows = rows.filter(row => rowMatchesSelectedItinerary(row, nutibaraSelectedItinerary, estadoMode));
   lastNutibaraRenderedRows = selectedRows.slice();
   if (selectedRows.length === 0) {
     llegadasNutibaraBody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos para el itinerario seleccionado.</td></tr>`;
@@ -2293,22 +2469,22 @@ function renderLlegadasNutibara(){
   llegadasNutibaraBody.innerHTML = selectedRows.map(row => {
     const date = parsePlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
     const horaTxt = formatPlanillaDateTime(row?.hora_llegada || row?.generado_en || row?.hora_despacho);
-    const subidaTxt = getPlanillaUploadDateText(row);
     const despachoTxt = getDespachoDateTimeText(row);
     const operacionTxt = getOperacionEstadoText(row);
     const haceTxt = formatTimeAgoEs(date);
     const baseTxt = formatPlanillaCell(row?.base);
     const internoTxt = formatPlanillaCell(row?.interno);
-    const itinTxt = formatPlanillaCell(row?.itinerario_llegada);
+    const itinLlegadaHtml = getItinerarioLlegadaCellHtml(row);
+    const itinDespachoTxt = getItinerarioDespachoText(row);
     return `<tr>
       <td>${escapeHtml(horaTxt)}</td>
-      <td>${escapeHtml(subidaTxt)}</td>
       <td>${escapeHtml(despachoTxt)}</td>
       <td><strong style="color:${operacionTxt === "Despachado" ? "#065f46" : "#b45309"}">${escapeHtml(operacionTxt)}</strong></td>
       <td><strong style="color:#1d4ed8">${escapeHtml(haceTxt)}</strong></td>
       <td>${escapeHtml(baseTxt)}</td>
       <td><strong style="color:#065f46">${escapeHtml(internoTxt)}</strong></td>
-      <td><strong>${escapeHtml(itinTxt)}</strong></td>
+      <td>${itinLlegadaHtml}</td>
+      <td><strong>${escapeHtml(itinDespachoTxt)}</strong></td>
     </tr>`;
   }).join("");
 }
@@ -3428,10 +3604,17 @@ function getRowsOrderedByCurrentReference(sourceRows){
 function canonicalizePuestoLabel(value){
   const raw = String(value || "").trim();
   const n = norm(raw);
-  if (n.includes("NUTIBARA")) return "NUTIBARA";
-  if (n.includes("SAN DIEGO")) return "SAN DIEGO";
   if (n.includes("EXPOSICIONES")) return "EXPOSICIONES";
+  if (n.includes("SAN DIEGO")) return "SAN DIEGO";
+  if (n.includes("NUTIBARA") || n.includes("TERMINAL DEL NORTE")) return "NUTIBARA";
   return raw || "SIN PUESTO";
+}
+
+function getOperationalSectionDisplayName(value){
+  const canonical = canonicalizePuestoLabel(value);
+  if (canonical === "NUTIBARA") return "TERMINAL DEL NORTE";
+  if (canonical === "EXPOSICIONES") return "NUTIBARA -EXPOSICIONES";
+  return canonical;
 }
 
 function buildOperationalEntries(rowsInput, puestoKey, numeroKey){
@@ -4144,8 +4327,9 @@ function renderLiveExcelPreview(){
   const leftRows = [];
   const titleDate = formatDateLongEs(visorDate);
   const openSection = (puestoLabel) => {
+    const sectionDisplay = getOperationalSectionDisplayName(puestoLabel);
     if (leftRows.length > 0) leftRows.push({ type: "spacer" });
-    leftRows.push({ type: "sectionTitle", title: `${String(puestoLabel || "SIN PUESTO").toUpperCase()} ${titleDate}` });
+    leftRows.push({ type: "sectionTitle", title: `${String(sectionDisplay || "SIN PUESTO").toUpperCase()} ${titleDate}` });
     leftRows.push({ type: "header" });
   };
 
@@ -4196,9 +4380,6 @@ function renderLiveExcelPreview(){
   if (scopeMode === "base") {
     const baseScope = getBaseCanonical(currentUserBase);
     if (baseScope) novedadesDelDia = novedadesDelDia.filter(n => sameBase(n.base, baseScope));
-  }
-  if (novedadesDelDia.length === 0 && currentBase) {
-    novedadesDelDia = (novedades || []).filter(n => sameBase(n.base, currentBase));
   }
   const novRows = novedadesDelDia.length
     ? novedadesDelDia.map(n => [n.base || "-", n.nombre || "-", n.estado || "-"])
@@ -4899,12 +5080,17 @@ async function readFile(file){
     );
   } else {
     const mergeResult = mergeImportedRowsPreservingAssignments(parsedRows, rows);
+    // Mantener el historial de dias: combina lo importado con lo existente
+    // en lugar de reemplazar por completo cuando no se usa "Dia a editar".
+    nextRows = mergeLatestRowsIntoConsolidatedRows(rows, mergeResult.mergedRows);
     if (mergeResult.matchedRows > 0) {
-      nextRows = mergeResult.mergedRows;
       showToast(
         `Importacion combinada: ${mergeResult.preservedAssignments} asignaciones conservadas (${mergeResult.matchedRows} filas coinciden).`,
         "ok"
       );
+    } else if (rows.length > 0) {
+      const addedRows = Math.max(0, nextRows.length - rows.length);
+      showToast(`Importacion anexada: ${addedRows} filas nuevas agregadas.`, "ok");
     }
   }
 
@@ -4972,23 +5158,94 @@ function exitBase(){
 }
 
 /* ===================== EVENTOS ===================== */
+function markTopNavActive(activeButtonId){
+  const ids = ["btnGoOperativo", "btnGoLlegadasVehiculos", "btnGoAdmin", "btnGoConverter"];
+  ids.forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn || btn.classList.contains("hidden")) return;
+    const isActive = id === activeButtonId;
+    btn.classList.toggle("btn-primary", isActive);
+    btn.classList.toggle("btn-ghost", !isActive);
+  });
+}
+
+function setOperativoViewMode(mode){
+  operativoViewMode = mode === "llegadas" ? "llegadas" : "operativo";
+
+  const tabs = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  const contents = Array.from(document.querySelectorAll(".tab-content[id^='tab-']"));
+
+  tabs.forEach(tab => {
+    const tabId = tab.getAttribute("data-tab") || "";
+    const isArrivalTab = ARRIVALS_PANEL_TAB_IDS.includes(tabId);
+    if (operativoViewMode === "llegadas" && !isArrivalTab) {
+      tab.classList.add("hidden");
+      tab.dataset.hiddenByLlegadasPanel = "1";
+    } else if (tab.dataset.hiddenByLlegadasPanel === "1") {
+      tab.classList.remove("hidden");
+      delete tab.dataset.hiddenByLlegadasPanel;
+    }
+  });
+
+  contents.forEach(content => {
+    const contentId = content.id || "";
+    const tabId = contentId.startsWith("tab-") ? contentId.slice(4) : "";
+    const isArrivalContent = ARRIVALS_PANEL_TAB_IDS.includes(tabId);
+    if (operativoViewMode === "llegadas" && !isArrivalContent) {
+      content.classList.remove("active");
+      content.classList.add("hidden");
+      content.dataset.hiddenByLlegadasPanel = "1";
+    } else if (content.dataset.hiddenByLlegadasPanel === "1") {
+      content.classList.remove("hidden");
+      delete content.dataset.hiddenByLlegadasPanel;
+    }
+  });
+
+  if (operativoViewMode === "llegadas") {
+    const activeId = getActiveTabId();
+    if (!ARRIVALS_PANEL_TAB_IDS.includes(activeId)) {
+      const firstArrivalTab = document.querySelector(`.tab[data-tab="${ARRIVALS_PANEL_TAB_IDS[0]}"]`);
+      if (firstArrivalTab) firstArrivalTab.click();
+    }
+  }
+
+  const operativoTitle = document.getElementById("operativoMainTitle") || document.querySelector("#operativoPanel h2");
+  if (operativoTitle && !isBaseOperator()) {
+    operativoTitle.textContent = operativoViewMode === "llegadas" ? "Panel de llegadas vehiculos" : "Panel de operacion";
+  }
+}
+
 function showAdminPanel(){
+  setOperativoViewMode("operativo");
   adminPanel.classList.remove("hidden");
   if (converterPanel) converterPanel.classList.add("hidden");
   operativoPanel.classList.add("hidden");
+  markTopNavActive("btnGoAdmin");
 }
 
 function showOperativoPanel(){
+  setOperativoViewMode("operativo");
   adminPanel.classList.add("hidden");
   if (converterPanel) converterPanel.classList.add("hidden");
   operativoPanel.classList.remove("hidden");
+  markTopNavActive("btnGoOperativo");
+}
+
+function showLlegadasVehiculosPanel(){
+  adminPanel.classList.add("hidden");
+  if (converterPanel) converterPanel.classList.add("hidden");
+  operativoPanel.classList.remove("hidden");
+  setOperativoViewMode("llegadas");
+  markTopNavActive("btnGoLlegadasVehiculos");
 }
 
 function showConverterPanel(){
   if (!isSuperAdmin()) return;
+  setOperativoViewMode("operativo");
   adminPanel.classList.add("hidden");
   operativoPanel.classList.add("hidden");
   if (converterPanel) converterPanel.classList.remove("hidden");
+  markTopNavActive("btnGoConverter");
 }
 
 async function handleProgramacionFileChange(e){
@@ -5139,6 +5396,10 @@ function bindUIEvents(){
   if (btnGoOperativo) {
     btnGoOperativo.addEventListener("click", showOperativoPanel);
   }
+  const btnGoLlegadasVehiculos = document.getElementById("btnGoLlegadasVehiculos");
+  if (btnGoLlegadasVehiculos) {
+    btnGoLlegadasVehiculos.addEventListener("click", showLlegadasVehiculosPanel);
+  }
 
   const btnGoConverter = document.getElementById("btnGoConverter");
   if (btnGoConverter) {
@@ -5268,9 +5529,10 @@ function bindUIEvents(){
 
   let currentRow = 1;
   const openSection = (puestoLabel) => {
+    const sectionDisplay = getOperationalSectionDisplayName(puestoLabel);
     if (currentRow > 1) currentRow++;
     ws.mergeCells(currentRow, 1, currentRow, 7);
-    ws.getRow(currentRow).getCell(1).value = `${String(puestoLabel || "SIN PUESTO").toUpperCase()} ${titleDate}`;
+    ws.getRow(currentRow).getCell(1).value = `${String(sectionDisplay || "SIN PUESTO").toUpperCase()} ${titleDate}`;
     applyRowStyle(currentRow, styleTitle);
     applyBorderRow(currentRow, 1, 7);
     currentRow++;
@@ -5348,9 +5610,6 @@ function bindUIEvents(){
   });
 
   let novedadesDelDia = (novedades || []).filter(n => normalizeDateToISO(n.fecha) === selectedDate);
-  if (novedadesDelDia.length === 0 && currentBase) {
-    novedadesDelDia = (novedades || []).filter(n => sameBase(n.base, currentBase));
-  }
   ws.mergeCells(1, 9, 1, 11);
   ws.getRow(1).getCell(9).value = "NOVEDADES DEL DIA";
   ws.getRow(1).getCell(9).style = styleTitle;
@@ -5495,6 +5754,7 @@ function bindUIEvents(){
     btnRefreshLlegadasAeropuerto.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
   }
   if (aeropuertoSearch) aeropuertoSearch.addEventListener("input", renderLlegadasAeropuerto);
+  if (aeropuertoEstadoFilter) aeropuertoEstadoFilter.addEventListener("change", renderLlegadasAeropuerto);
   if (aeropuertoUploadFrom) aeropuertoUploadFrom.addEventListener("change", renderLlegadasAeropuerto);
   if (aeropuertoUploadTo) aeropuertoUploadTo.addEventListener("change", renderLlegadasAeropuerto);
   if (btnDownloadLlegadasAeropuerto) {
@@ -5504,6 +5764,7 @@ function bindUIEvents(){
     btnRefreshLlegadasSanDiego.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
   }
   if (sanDiegoSearch) sanDiegoSearch.addEventListener("input", renderLlegadasSanDiego);
+  if (sanDiegoEstadoFilter) sanDiegoEstadoFilter.addEventListener("change", renderLlegadasSanDiego);
   if (sanDiegoUploadFrom) sanDiegoUploadFrom.addEventListener("change", renderLlegadasSanDiego);
   if (sanDiegoUploadTo) sanDiegoUploadTo.addEventListener("change", renderLlegadasSanDiego);
   if (btnDownloadLlegadasSanDiego) {
@@ -5513,6 +5774,7 @@ function bindUIEvents(){
     btnRefreshLlegadasNutibara.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
   }
   if (nutibaraSearch) nutibaraSearch.addEventListener("input", renderLlegadasNutibara);
+  if (nutibaraEstadoFilter) nutibaraEstadoFilter.addEventListener("change", renderLlegadasNutibara);
   if (nutibaraUploadFrom) nutibaraUploadFrom.addEventListener("change", renderLlegadasNutibara);
   if (nutibaraUploadTo) nutibaraUploadTo.addEventListener("change", renderLlegadasNutibara);
   if (btnDownloadLlegadasNutibara) {
@@ -5548,6 +5810,8 @@ async function initializeApp(){
   adminPanel.classList.add("hidden");
   if (converterPanel) converterPanel.classList.add("hidden");
   operativoPanel.classList.remove("hidden");
+  setOperativoViewMode("operativo");
+  markTopNavActive("btnGoOperativo");
   applyRoleRestrictions();
   updateWorkflowGuide();
   renderTable();
@@ -5621,6 +5885,9 @@ function bindWindowEvents(){
 
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
 
 
 
