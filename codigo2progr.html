@@ -43,6 +43,7 @@
   <div class="topbar">
     <div class="row">
       <button class="btn btn-primary" id="btnGoOperativo">Operacion diaria</button>
+      <button class="btn btn-ghost" id="btnGoLlegadasVehiculos">Panel de llegadas vehiculos</button>
       <button class="btn btn-ghost" id="btnGoAdmin">Panel Administrativo</button>
       <button class="btn btn-ghost hidden" id="btnGoConverter">Convertidor</button>
     </div>
@@ -139,7 +140,7 @@
 
   <!-- ===================== OPERATIVO ===================== -->
   <div id="operativoPanel" class="card">
-    <h2>Panel de operacion</h2>
+    <h2 id="operativoMainTitle">Panel de operacion</h2>
     
     <!-- Selector de base -->
     <div class="row" style="margin-bottom:12px">
@@ -245,6 +246,11 @@
             <h3 id="llegadasAeropuertoTitle" style="margin:0">Ultimas Llegadas Aeropuerto (104)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasAeropuerto">Actualizar</button>
             <input id="aeropuertoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="aeropuertoEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
             <label class="consulta-mini" for="aeropuertoUploadFrom">Subida desde</label>
             <input id="aeropuertoUploadFrom" type="date" />
             <label class="consulta-mini" for="aeropuertoUploadTo">hasta</label>
@@ -253,19 +259,22 @@
             <span class="muted">Registros: <strong id="llegadasAeropuertoCount">0</strong></span>
             <span class="muted" id="llegadasAeropuertoStatus">Sin cargar</span>
           </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
           <div id="llegadasAeropuertoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasAeropuertoTable">
               <thead>
                 <tr>
-                  <th>Hora</th>
-                  <th>Subida</th>
+                  <th>Hora ultima llegada Aeropuerto</th>
                   <th>Despacho</th>
                   <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
-                  <th>Itinerario</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
                 </tr>
               </thead>
               <tbody id="llegadasAeropuertoBody">
@@ -281,6 +290,11 @@
             <h3 id="llegadasSanDiegoTitle" style="margin:0">Ultimas Llegadas San Diego (101)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasSanDiego">Actualizar</button>
             <input id="sanDiegoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="sanDiegoEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
             <label class="consulta-mini" for="sanDiegoUploadFrom">Subida desde</label>
             <input id="sanDiegoUploadFrom" type="date" />
             <label class="consulta-mini" for="sanDiegoUploadTo">hasta</label>
@@ -289,19 +303,22 @@
             <span class="muted">Registros: <strong id="llegadasSanDiegoCount">0</strong></span>
             <span class="muted" id="llegadasSanDiegoStatus">Sin cargar</span>
           </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
           <div id="llegadasSanDiegoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasSanDiegoTable">
               <thead>
                 <tr>
-                  <th>Hora</th>
-                  <th>Subida</th>
+                  <th>Hora ultima llegada San Diego</th>
                   <th>Despacho</th>
                   <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
-                  <th>Itinerario</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
                 </tr>
               </thead>
               <tbody id="llegadasSanDiegoBody">
@@ -317,6 +334,11 @@
             <h3 id="llegadasNutibaraTitle" style="margin:0">Ultimas Llegadas Nutibara (110)</h3>
             <button class="btn btn-ghost" id="btnRefreshLlegadasNutibara">Actualizar</button>
             <input id="nutibaraSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="nutibaraEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
             <label class="consulta-mini" for="nutibaraUploadFrom">Subida desde</label>
             <input id="nutibaraUploadFrom" type="date" />
             <label class="consulta-mini" for="nutibaraUploadTo">hasta</label>
@@ -325,19 +347,22 @@
             <span class="muted">Registros: <strong id="llegadasNutibaraCount">0</strong></span>
             <span class="muted" id="llegadasNutibaraStatus">Sin cargar</span>
           </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
           <div id="llegadasNutibaraTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
           <div style="overflow:auto;max-height:60vh">
             <table id="llegadasNutibaraTable">
               <thead>
                 <tr>
-                  <th>Hora</th>
-                  <th>Subida</th>
+                  <th>Hora ultima llegada Nutibara</th>
                   <th>Despacho</th>
                   <th>Estado</th>
                   <th>Hace</th>
                   <th>Base</th>
                   <th>Interno</th>
-                  <th>Itinerario</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
                 </tr>
               </thead>
               <tbody id="llegadasNutibaraBody">
@@ -522,6 +547,9 @@
 <script src="js/main.js"></script>
 </body>
 </html>
+
+
+
 
 
 
