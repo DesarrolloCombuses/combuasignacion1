@@ -2800,11 +2800,31 @@ function excelDateToISO(serial){
 
 function normalizeDateToISO(value){
   if (value === null || value === undefined) return value;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const y = value.getFullYear();
+    const mo = String(value.getMonth() + 1).padStart(2, "0");
+    const d = String(value.getDate()).padStart(2, "0");
+    return `${y}-${mo}-${d}`;
+  }
   if (typeof value === "number" && !isNaN(value)) return excelDateToISO(value);
   const raw = String(value).trim();
   if (!raw) return raw;
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const asNum = Number(raw);
+    if (!Number.isNaN(asNum)) return excelDateToISO(asNum);
+  }
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  let m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  let m = raw.match(/^(\d{4}-\d{1,2}-\d{1,2})(?:[T\s].*)$/);
+  if (m) {
+    const isoPart = normalizeDateToISO(m[1]);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(isoPart || ""))) return isoPart;
+  }
+  m = raw.match(/^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})(?:[T\s].*)$/);
+  if (m) {
+    const datePart = normalizeDateToISO(m[1]);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(datePart || ""))) return datePart;
+  }
+  m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) {
     let p1 = parseInt(m[1], 10);
     let p2 = parseInt(m[2], 10);
@@ -2831,6 +2851,13 @@ function normalizeDateToISO(value){
     const y = m[1];
     const mo = m[2].padStart(2, "0");
     const d = m[3].padStart(2, "0");
+    return `${y}-${mo}-${d}`;
+  }
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const mo = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
     return `${y}-${mo}-${d}`;
   }
   return raw;
@@ -3085,13 +3112,9 @@ function getDateStatusForBase(dateIso, baseValue = currentBase){
 function getAvailableDatesForCurrentBase(){
   const fechaKey = getFechaKey();
   if (!fechaKey || rows.length === 0) return [];
-  const baseKey = getBaseKey();
   const dates = new Set();
-  const canonicalCurrentBase = getBaseCanonical(currentBase);
 
   rows.forEach(r => {
-    const rowBase = getRowCanonicalBase(r, baseKey);
-    if (canonicalCurrentBase && rowBase !== canonicalCurrentBase) return;
     const iso = normalizeDateToISO(r[fechaKey]);
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) {
       dates.add(iso);
@@ -5083,7 +5106,17 @@ async function readFile(file){
     const existingFechaKey = getFechaKeyFromArray(rows);
     const incomingParts = partitionRowsByDate(parsedRows, adminDayDate, incomingFechaKey);
     if (incomingParts.selected.length === 0) {
-      throw new Error(`El archivo no contiene filas para ${excelDateToReadable(adminDayDate)}.`);
+      const detectedDates = Array.from(new Set(
+        parsedRows
+          .map(r => getRowDateISO(r, incomingFechaKey))
+          .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || "")))
+      )).sort((a, b) => a.localeCompare(b));
+      const detectedText = detectedDates.length
+        ? detectedDates.map(excelDateToReadable).join(", ")
+        : "ninguna fecha valida";
+      throw new Error(
+        `El archivo no contiene filas para ${excelDateToReadable(adminDayDate)}. Fechas detectadas: ${detectedText}.`
+      );
     }
 
     const existingParts = partitionRowsByDate(rows, adminDayDate, existingFechaKey);
@@ -5375,9 +5408,14 @@ function handleFilterDateChange(){
   if (!filterDate) return;
   const previousValue = filterDate.dataset.prevValue || "";
   const newValue = filterDate.value || "";
-  if (previousValue && newValue !== previousValue && !canMoveOnFromSelectedDate("cambiar de fecha", previousValue)) {
-    filterDate.value = previousValue;
-    return;
+  if (previousValue && newValue !== previousValue) {
+    const status = getDateStatusForBase(previousValue);
+    if (status.state === "in_progress" || status.state === "needs_states") {
+      showToast(
+        `Cambio de fecha permitido. Ojo: ${excelDateToReadable(previousValue)} quedo en estado "${status.label}".`,
+        "warn"
+      );
+    }
   }
   filterDate.dataset.prevValue = newValue;
   const clearFilter = document.getElementById("clearFilter");
@@ -5388,7 +5426,16 @@ function handleFilterDateChange(){
 }
 
 function handleClearFilterClick(){
-  if (!canMoveOnFromSelectedDate("limpiar la fecha")) return;
+  const previousValue = getSelectedOperativeDateISO();
+  if (previousValue) {
+    const status = getDateStatusForBase(previousValue);
+    if (status.state === "in_progress" || status.state === "needs_states") {
+      showToast(
+        `Filtro limpiado. Ojo: ${excelDateToReadable(previousValue)} quedo en estado "${status.label}".`,
+        "warn"
+      );
+    }
+  }
   const filterDateInput = document.getElementById("filterDate");
   if (filterDateInput) {
     filterDateInput.value = "";
@@ -5900,6 +5947,12 @@ function bindWindowEvents(){
 
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
+
+
+
 
 
 
