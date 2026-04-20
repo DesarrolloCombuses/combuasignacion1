@@ -2,7 +2,22 @@ const SUPABASE_URL = "https://jtnlcckphveeqhyrxlku.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_khOBBj9EIe2Ahmkz_KxVUw_R-SDOpk0";
 const PLANILLA_SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
 const PLANILLA_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
-const PLANILLA_TABLE_NAME = "planilla_afiliados";
+const PLANILLA_TABLE_NAME = "planilla_afiliados_2";
+const PLANILLA_SELECT_COLUMNS = [
+  "hora_llegada",
+  "tipo_llegada",
+  "base",
+  "interno",
+  "itinerario_llegada",
+  "hora_despacho",
+  "itinerario_despacho",
+  "conductor",
+  "estado",
+  "espera",
+  "generado_en",
+  "created_at"
+].join(", ");
+const PLANILLA_FETCH_LIMIT = 1200;
 const SUPER_ADMIN_EMAIL = "administrador@combuses.com.co";
 const BASE_USER_EMAIL_RE = /^base\s*([0-9]+)@combuses\.com\.co$/i;
 const ALLOW_PUBLIC_SIGNUP = false;
@@ -2569,9 +2584,9 @@ async function loadPlanillaAfiliadosFromSupabase(){
   try {
     const { data, error } = await planillaSupabaseClient
       .from(PLANILLA_TABLE_NAME)
-      .select("*")
+      .select(PLANILLA_SELECT_COLUMNS)
       .order("hora_llegada", { ascending: false, nullsFirst: false })
-      .limit(2000);
+      .limit(PLANILLA_FETCH_LIMIT);
     if (error) throw error;
     planillaAfiliadosRows = Array.isArray(data) ? data : [];
     planillaAfiliadosLoadedOnce = true;
@@ -2597,12 +2612,12 @@ async function loadPlanillaAfiliadosFromSupabase(){
       llegadasNutibaraStatus.textContent = `Actualizado: ${stamp3}`;
     }
   } catch (error) {
-    console.error("Error cargando planilla_afiliados:", error);
+    console.error(`Error cargando ${PLANILLA_TABLE_NAME}:`, error);
     if (planillaStatus) planillaStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
     if (llegadasAeropuertoStatus) llegadasAeropuertoStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
     if (llegadasSanDiegoStatus) llegadasSanDiegoStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
     if (llegadasNutibaraStatus) llegadasNutibaraStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
-    showToast("No se pudo cargar planilla_afiliados desde Supabase.", "err");
+    showToast(`No se pudo cargar ${PLANILLA_TABLE_NAME} desde Supabase.`, "err");
   } finally {
     planillaAfiliadosLoading = false;
   }
@@ -5885,6 +5900,9 @@ function bindWindowEvents(){
 
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
 
 
 
