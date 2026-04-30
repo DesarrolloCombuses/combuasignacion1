@@ -415,6 +415,403 @@
     th,td{padding:6px}
   }
 
+  /* ===== Mobile hardening ===== */
+  @media (max-width: 900px){
+    .topbar .row{
+      width:100%;
+      justify-content:flex-start;
+    }
+    .pill{
+      max-width:100%;
+      white-space:normal;
+      word-break:break-word;
+      line-height:1.2;
+    }
+    #operativoInner.layout{
+      grid-template-columns:1fr;
+      gap:10px;
+    }
+    .drivers{
+      order:2;
+      min-height:220px;
+    }
+    .drivers .list{
+      max-height:32vh;
+      min-height:150px;
+    }
+    .workflow{
+      gap:6px;
+    }
+    .workflow-note{
+      width:100%;
+      margin-left:0;
+      margin-top:4px;
+    }
+    .tabs{
+      position:relative;
+      top:auto;
+      overflow-x:auto;
+      overflow-y:hidden;
+      -webkit-overflow-scrolling:touch;
+      scrollbar-width:thin;
+      padding-bottom:6px;
+    }
+    .tab{
+      flex:0 0 auto;
+      min-width:120px;
+    }
+    .tab-content{
+      overflow-x:auto;
+      -webkit-overflow-scrolling:touch;
+    }
+    table{
+      min-width:980px;
+    }
+    #novedadesGrid, #novedadesGrid2{
+      min-width:680px;
+    }
+    #llegadasAeropuertoTable, #llegadasSanDiegoTable, #llegadasNutibaraTable, #llegadasNovedadesTable{
+      min-width:980px;
+    }
+  }
+
+  @media (max-width: 640px){
+    body{
+      font-size:14px;
+    }
+    .wrap{
+      padding:8px;
+    }
+    .card{
+      padding:10px;
+      border-radius:12px;
+    }
+    h2{
+      font-size:24px;
+      line-height:1.1;
+    }
+    h3{
+      font-size:20px;
+      line-height:1.15;
+    }
+    .btn{
+      width:100%;
+      justify-content:center;
+      text-align:center;
+      padding:10px 12px;
+    }
+    .row{
+      gap:8px;
+    }
+    .row > select,
+    .row > input,
+    .row > .btn{
+      width:100%;
+      min-width:0;
+    }
+    #startBase{
+      width:100%;
+    }
+    .topbar{
+      gap:8px;
+      margin-bottom:10px;
+    }
+    .topbar .row{
+      gap:6px;
+    }
+    .pill{
+      width:100%;
+      border-radius:12px;
+      padding:7px 9px;
+      font-size:11px;
+    }
+    .auth-wrap{
+      padding:0 10px;
+      margin:20px auto;
+    }
+    .auth-card{
+      padding:14px;
+    }
+    .auth-title{
+      font-size:26px;
+    }
+    .modal-card{
+      width:100%;
+      max-height:90vh;
+      overflow:auto;
+      border-radius:12px;
+      padding:12px;
+    }
+    .swap-grid{
+      grid-template-columns:1fr;
+    }
+    .modal-actions{
+      flex-wrap:wrap;
+    }
+    .modal-actions .btn{
+      width:100%;
+    }
+    .stats-bar{
+      flex-direction:column;
+      align-items:flex-start;
+      gap:6px;
+    }
+    .driver-item{
+      font-size:12px;
+      padding:8px;
+    }
+  }
+
+  /* ===== Responsive fit fixes ===== */
+  *,
+  *::before,
+  *::after{
+    box-sizing:border-box;
+  }
+
+  html,
+  body{
+    width:100%;
+    max-width:100%;
+    overflow-x:hidden;
+  }
+
+  .wrap,
+  .card,
+  .layout,
+  .layout > *,
+  .grid2,
+  .grid2 > *,
+  .tab-content,
+  .topbar,
+  .row{
+    min-width:0;
+    max-width:100%;
+  }
+
+  input,
+  select,
+  textarea,
+  button{
+    max-width:100%;
+  }
+
+  .tabs{
+    flex-wrap:wrap;
+  }
+
+  .tab{
+    max-width:100%;
+    overflow-wrap:anywhere;
+    text-align:center;
+  }
+
+  #gridViewport,
+  #gridViewport2,
+  #novedadesViewport,
+  #novedadesViewport2,
+  .planilla-wrap,
+  #liveExcelPreview{
+    width:100%;
+    max-width:100%;
+    overflow-x:auto !important;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  #grid,
+  #grid2,
+  #planillaTable,
+  #adminComplianceGrid,
+  #consultaProgramadosTable,
+  #consultaEstadosTable,
+  #auditGrid,
+  #liveExcelPreview table{
+    width:max-content;
+    min-width:100%;
+  }
+
+  td,
+  th{
+    overflow-wrap:anywhere;
+  }
+
+  .driver-item{
+    gap:8px;
+    overflow-wrap:anywhere;
+  }
+
+  @media (max-width: 1180px){
+    .tabs{
+      position:relative;
+      top:auto;
+    }
+    .layout{
+      grid-template-columns:minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 900px){
+    .row > *{
+      min-width:0 !important;
+    }
+    select[style*="min-width"],
+    input[style*="min-width"]{
+      min-width:0 !important;
+    }
+    .tabs{
+      flex-wrap:nowrap;
+      max-width:100%;
+    }
+    .tab{
+      min-width:112px;
+      max-width:180px;
+      white-space:normal;
+      line-height:1.15;
+    }
+    #gridViewport,
+    #gridViewport2{
+      max-height:62vh !important;
+      overflow:auto !important;
+    }
+    #grid,
+    #grid2,
+    #planillaTable,
+    #llegadasAeropuertoTable,
+    #llegadasSanDiegoTable,
+    #llegadasNutibaraTable,
+    #llegadasNovedadesTable{
+      min-width:760px;
+    }
+    #consultaProgramadosTable,
+    #consultaEstadosTable,
+    #auditGrid,
+    #adminComplianceGrid{
+      min-width:620px;
+    }
+    .converter-frame{
+      height:70vh;
+    }
+    .gantt-track{
+      min-width:520px;
+    }
+  }
+
+  @media (max-width: 640px){
+    .wrap{
+      width:100%;
+      padding:8px;
+    }
+    .topbar,
+    .topbar .row,
+    .row{
+      width:100%;
+    }
+    .row > *,
+    .topbar .row > *,
+    .auth-actions > *{
+      width:100%;
+    }
+    label.file{
+      width:100%;
+      text-align:center;
+    }
+    .tabs{
+      margin-left:-2px;
+      margin-right:-2px;
+    }
+    .tab{
+      flex-basis:108px;
+      min-width:108px;
+      padding:9px 10px;
+      font-size:12px;
+    }
+    .tab-content{
+      width:100%;
+    }
+    table{
+      font-size:11px;
+    }
+    th,
+    td{
+      padding:5px;
+    }
+    td.drop{
+      min-width:130px;
+    }
+    #grid,
+    #grid2,
+    #planillaTable,
+    #llegadasAeropuertoTable,
+    #llegadasSanDiegoTable,
+    #llegadasNutibaraTable,
+    #llegadasNovedadesTable{
+      min-width:680px;
+    }
+    #novedadesGrid,
+    #novedadesGrid2{
+      min-width:560px;
+    }
+    #consultaProgramadosTable,
+    #consultaEstadosTable,
+    #auditGrid,
+    #adminComplianceGrid{
+      min-width:560px;
+    }
+    .drivers{
+      min-height:180px;
+    }
+    .drivers .list{
+      max-height:38vh;
+    }
+    .workflow-step{
+      flex:1 1 140px;
+      justify-content:center;
+      border-radius:10px;
+      text-align:center;
+    }
+    .workflow-note{
+      font-size:11px;
+    }
+    .converter-frame{
+      height:68vh;
+      border-radius:10px;
+    }
+    .toast{
+      left:8px;
+      right:8px;
+      bottom:8px;
+      max-width:none;
+    }
+  }
+
+  @media (max-width: 420px){
+    h2{
+      font-size:21px;
+    }
+    h3{
+      font-size:17px;
+    }
+    .card{
+      padding:8px;
+    }
+    .btn{
+      padding:9px 10px;
+    }
+    .pill{
+      font-size:10px;
+    }
+    #grid,
+    #grid2,
+    #planillaTable,
+    #llegadasAeropuertoTable,
+    #llegadasSanDiegoTable,
+    #llegadasNutibaraTable,
+    #llegadasNovedadesTable{
+      min-width:620px;
+    }
+  }
+
+
 
 
 
