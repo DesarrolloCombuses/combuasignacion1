@@ -1,7 +1,10 @@
-const SUPABASE_URL = "https://jtnlcckphveeqhyrxlku.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_khOBBj9EIe2Ahmkz_KxVUw_R-SDOpk0";
+const USE_ONLY_NEW_DB = true;
+const SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
 const PLANILLA_SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
 const PLANILLA_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
+const PROGRAMACIONES_TARGET_SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
+const PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
 const PLANILLA_TABLE_NAME = "planilla_afiliados_2";
 const PLANILLA_SELECT_COLUMNS = [
   "hora_llegada",
@@ -17,15 +20,24 @@ const PLANILLA_SELECT_COLUMNS = [
   "generado_en",
   "created_at"
 ].join(", ");
-const PLANILLA_FETCH_LIMIT = 1200;
-const PLANILLA_FETCH_LIMIT_RANGED = 700;
-const PLANILLA_FETCH_LIMIT_WAITING = 500;
+const PLANILLA_FETCH_LIMIT = 500;
+const PLANILLA_FETCH_LIMIT_RANGED = 300;
+const PLANILLA_FETCH_LIMIT_WAITING = 200;
 const ARRIVAL_OMIT_WINDOW_MINUTES = 30;
 const WAITING_NOVEDAD_THRESHOLD_MINUTES = 180;
 const MAX_COHERENT_DISPATCH_MINUTES = 360;
+const STORE_ROWS_DATA_INLINE = false;
 const SUPER_ADMIN_EMAIL = "administrador@combuses.com.co";
 const BASE_USER_EMAIL_RE = /^base\s*([0-9]+)@combuses\.com\.co$/i;
 const ALLOW_PUBLIC_SIGNUP = false;
+function getProjectRefFromUrl(url){
+  try {
+    const host = new URL(String(url || "")).hostname || "";
+    return host.split(".")[0] || host || "(sin-ref)";
+  } catch (e) {
+    return String(url || "(sin-ref)");
+  }
+}
 if (!window.XLSX) {
   throw new Error("No cargo XLSX. Verifica conexion a internet o ruta del script.");
 }
@@ -34,6 +46,10 @@ if (!window.supabase || typeof window.supabase.createClient !== "function") {
 }
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const planillaSupabaseClient = window.supabase.createClient(PLANILLA_SUPABASE_URL, PLANILLA_SUPABASE_ANON_KEY);
+const programacionesTargetClient = window.supabase.createClient(PROGRAMACIONES_TARGET_SUPABASE_URL, PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY);
+const authClient = programacionesTargetClient;
+const PROGRAMACIONES_SOURCE_REF = USE_ONLY_NEW_DB ? "(desactivado)" : getProjectRefFromUrl(SUPABASE_URL);
+const PROGRAMACIONES_TARGET_REF = getProjectRefFromUrl(PROGRAMACIONES_TARGET_SUPABASE_URL);
 const authPanel = document.getElementById("authPanel");
 const appWrap = document.getElementById("appWrap");
 const authEmail = document.getElementById("authEmail");
@@ -76,12 +92,19 @@ const UNASSIGNED_LABEL = "SIN CONDUCTOR PROGRAMADO";
 let syncRowsInProgress = false;
 let syncRowsPending = false;
 let syncRetryTimer = null;
+let syncRowsInProgressTarget = false;
+let syncRowsPendingTarget = false;
+let syncRetryTimerTarget = null;
 let autoRefreshTimer = null;
 const SYNC_RETRY_DELAY_MS = 8000;
-const AUTO_REFRESH_DELAY_MS = 45000;
+const AUTO_REFRESH_DELAY_MS = 120000;
 
 function getPendingRowsStorageKey(){
   return `pending_programacion_rows_${currentUserId || "anon"}`;
+}
+
+function getPendingTargetRowsStorageKey(){
+  return `pending_programacion_rows_target_${currentUserId || "anon"}`;
 }
 
 function savePendingRowsLocally(reason = "Cambios pendientes"){
@@ -119,10 +142,51 @@ function hasPendingRowsLocal(){
   return !!(pending && Array.isArray(pending.rows_data) && pending.rows_data.length > 0);
 }
 
+function savePendingTargetRowsLocally(reason = "Cambios pendientes DB nueva", rowsInput = null, programacionId = null, fileName = null){
+  try {
+    const payload = {
+      reason,
+      saved_at: new Date().toISOString(),
+      programacion_id: programacionId ?? currentProgramacionIdTarget ?? null,
+      file_name: fileName ?? currentProgramacionFileNameTarget ?? "programacion_online",
+      rows_data: Array.isArray(rowsInput) ? rowsInput : (Array.isArray(rowsTarget) ? rowsTarget : [])
+    };
+    localStorage.setItem(getPendingTargetRowsStorageKey(), JSON.stringify(payload));
+  } catch (e) {
+    console.error("No se pudo guardar pendiente local (DB nueva):", e);
+  }
+}
+
+function readPendingTargetRowsLocal(){
+  try {
+    const raw = localStorage.getItem(getPendingTargetRowsStorageKey());
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearPendingTargetRowsLocal(){
+  try {
+    localStorage.removeItem(getPendingTargetRowsStorageKey());
+  } catch (e) {}
+}
+
+function hasPendingTargetRowsLocal(){
+  const pending = readPendingTargetRowsLocal();
+  return !!(pending && Array.isArray(pending.rows_data) && pending.rows_data.length > 0);
+}
+
 function clearSyncRetryTimer(){
   if (!syncRetryTimer) return;
   clearTimeout(syncRetryTimer);
   syncRetryTimer = null;
+}
+
+function clearTargetSyncRetryTimer(){
+  if (!syncRetryTimerTarget) return;
+  clearTimeout(syncRetryTimerTarget);
+  syncRetryTimerTarget = null;
 }
 
 function scheduleSyncRetry(reason = "Reintento automatico"){
@@ -131,6 +195,15 @@ function scheduleSyncRetry(reason = "Reintento automatico"){
     syncRetryTimer = null;
     if (!navigator.onLine || !currentUserId || !hasPendingRowsLocal()) return;
     await syncProgramacionRowsToSupabase(reason);
+  }, SYNC_RETRY_DELAY_MS);
+}
+
+function scheduleTargetSyncRetry(reason = "Reintento automatico DB nueva"){
+  if (syncRetryTimerTarget || !currentUserId) return;
+  syncRetryTimerTarget = setTimeout(async () => {
+    syncRetryTimerTarget = null;
+    if (!navigator.onLine || !currentUserId || !hasPendingTargetRowsLocal()) return;
+    await syncProgramacionRowsToTargetSupabase(reason, { skipQueueSave: true });
   }, SYNC_RETRY_DELAY_MS);
 }
 
@@ -452,6 +525,56 @@ function syncFichoVehicleLinksAfterSwap(opts = {}){
   return updated;
 }
 
+function syncFichoVehicleLinksAfterSwapInDataset(datasetRows, opts = {}){
+  const sourceVeh = String(opts.sourceVeh ?? "").trim();
+  const targetVeh = String(opts.targetVeh ?? "").trim();
+  if (!sourceVeh || !targetVeh || sourceVeh === targetVeh) return 0;
+
+  const rowsData = Array.isArray(datasetRows) ? datasetRows : [];
+  const fechaFiltro = normalizeDateToISO(opts.selectedDate || "");
+  const baseFiltro = getBaseCanonical(opts.currentBase || "");
+  const excludedRows = Array.isArray(opts.excludedRows) ? opts.excludedRows : [];
+  const sourceNorm = normalizeVehicleId(sourceVeh);
+  const targetNorm = normalizeVehicleId(targetVeh);
+  const conductorKeys = [opts.conductorKey1, opts.conductorKey2].filter(Boolean);
+  let updated = 0;
+
+  rowsData.forEach(row => {
+    if (!row || excludedRows.includes(row)) return;
+    if (!isFichoRowByContent(row)) return;
+
+    if (baseFiltro) {
+      const rowBase = getRowCanonicalBase(row, opts.baseKey || null);
+      if (rowBase !== baseFiltro) return;
+    }
+    if (fechaFiltro) {
+      const rowDate = getRowDateISO(row, opts.fechaKey || null);
+      if (rowDate !== fechaFiltro) return;
+    }
+
+    const vehKey = getVehiculoKey(row);
+    if (!vehKey) return;
+    const rowVehNorm = normalizeVehicleId(row[vehKey]);
+    if (rowVehNorm === sourceNorm) {
+      row[vehKey] = targetVeh;
+      conductorKeys.forEach(k => {
+        row[k] = UNASSIGNED_LABEL;
+        setConductorNote(row, k, "");
+      });
+      updated++;
+    } else if (rowVehNorm === targetNorm) {
+      row[vehKey] = sourceVeh;
+      conductorKeys.forEach(k => {
+        row[k] = UNASSIGNED_LABEL;
+        setConductorNote(row, k, "");
+      });
+      updated++;
+    }
+  });
+
+  return updated;
+}
+
 function syncConductoresAfterVehicleSwap(sourceRow, targetRow, conductorKey1, conductorKey2){
   const keys = [conductorKey1, conductorKey2].filter(Boolean);
   if (!sourceRow || !targetRow || keys.length === 0) {
@@ -489,6 +612,31 @@ function syncConductoresAfterVehicleSwap(sourceRow, targetRow, conductorKey1, co
   });
 
   return { swapped: true, blockedByFicho: false };
+}
+
+function sanitizeFichoConductorSlots(datasetRows, conductorKey1, conductorKey2){
+  const rowsList = Array.isArray(datasetRows) ? datasetRows : [];
+  const keys = [conductorKey1, conductorKey2].filter(Boolean);
+  if (!rowsList.length || !keys.length) return 0;
+  let changed = 0;
+  rowsList.forEach(row => {
+    if (!isFichoRowByContent(row)) return;
+    keys.forEach(k => {
+      const hadValue = String(row?.[k] || "").trim();
+      const hadNote = getConductorNote(row, k);
+      if (hadValue && norm(hadValue) !== UNASSIGNED_LABEL) {
+        row[k] = UNASSIGNED_LABEL;
+        changed++;
+      } else if (!hadValue) {
+        row[k] = UNASSIGNED_LABEL;
+      }
+      if (hadNote) {
+        setConductorNote(row, k, "");
+        changed++;
+      }
+    });
+  });
+  return changed;
 }
 
 function validateProgramacionRows(parsedRows){
@@ -636,7 +784,7 @@ btnSignIn.onclick = async () => {
     return;
   }
   setAuthStatus("Validando acceso...", "warn");
-  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  const { error } = await authClient.auth.signInWithPassword({ email, password });
   if(error){
     setAuthStatus(error.message, "err");
     return;
@@ -656,7 +804,7 @@ btnSignUp.onclick = async () => {
     return;
   }
   setAuthStatus("Creando cuenta...", "warn");
-  const { error } = await supabaseClient.auth.signUp({ email, password });
+  const { error } = await authClient.auth.signUp({ email, password });
   if(error){
     setAuthStatus(error.message, "err");
     return;
@@ -671,21 +819,21 @@ if (btnSignUp && !ALLOW_PUBLIC_SIGNUP) {
 }
 
 btnLogout.onclick = async () => {
-  const { error } = await supabaseClient.auth.signOut();
+  const { error } = await authClient.auth.signOut();
   if(error){
     setAuthStatus(error.message, "err");
   }
 };
 
 async function initAuth(){
-  const { data, error } = await supabaseClient.auth.getSession();
+  const { data, error } = await authClient.auth.getSession();
   if(error){
     setAuthStatus(error.message, "err");
     applyAuthState(null);
   }else{
     applyAuthState(data.session);
   }
-  supabaseClient.auth.onAuthStateChange((_event, session) => {
+  authClient.auth.onAuthStateChange((_event, session) => {
     applyAuthState(session);
   });
 }
@@ -863,66 +1011,25 @@ async function verifyProgramacionPersisted(programacionId, expectedRows){
   let lastResult = { ok: false, method: "none", message: "Sin resultado de verificacion." };
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    let rowsTableResult = null;
-    let rowsDataResult = null;
     try {
       const rowsResult = await loadProgramacionRowsFromSupabase(programacionId);
       if (rowsResult?.ok) {
         const actualScoped = getRowsScopedForCurrentUser(rowsResult.rows || []);
         const ok = rowsSignature(expectedScoped) === rowsSignature(actualScoped);
-        rowsTableResult = {
+        lastResult = {
           ok,
           method: "programacion_filas",
           message: ok
             ? "Guardado verificado en programacion_filas."
             : `Diferencia detectada (${actualScoped.length}/${expectedScoped.length} filas).`
         };
+        if (ok) return lastResult;
       } else if (rowsResult?.unavailable) {
-        rowsTableResult = {
-          ok: false,
-          method: "programacion_filas",
-          message: "Tabla programacion_filas no disponible."
-        };
-      }
-
-      if (rowsTableResult?.ok) return rowsTableResult;
-
-      const { data, error } = await supabaseClient
-        .from("programaciones")
-        .select("rows_data")
-        .eq("id", programacionId)
-        .limit(1)
-        .maybeSingle();
-
-      if (error) {
-        rowsDataResult = {
-          ok: false,
-          method: "programaciones.rows_data",
-          message: error.message || "Error leyendo respaldo."
-        };
-      } else {
-        const actualRows = Array.isArray(data?.rows_data) ? data.rows_data : [];
-        const actualScoped = getRowsScopedForCurrentUser(actualRows);
-        const ok = rowsSignature(expectedScoped) === rowsSignature(actualScoped);
-        rowsDataResult = {
-          ok,
-          method: "programaciones.rows_data",
-          message: ok
-            ? "Guardado verificado en rows_data."
-            : `Diferencia detectada (${actualScoped.length}/${expectedScoped.length} filas).`
-        };
-      }
-
-      if (rowsDataResult?.ok) return rowsDataResult;
-
-      if (rowsTableResult && rowsDataResult) {
         lastResult = {
           ok: false,
-          method: "programacion_filas+programaciones.rows_data",
-          message: `${rowsTableResult.message} | ${rowsDataResult.message}`
+          method: "programacion_filas",
+          message: "Tabla programacion_filas no disponible para verificar."
         };
-      } else {
-        lastResult = rowsTableResult || rowsDataResult || lastResult;
       }
     } catch (verifyError) {
       lastResult = {
@@ -1099,9 +1206,9 @@ function mergeRowsForBaseOperator(latestRowsInput, localRowsInput, baseCanonical
 async function loadLatestProgramacionFromSupabase(){
   let query = supabaseClient
     .from("programaciones")
-    .select("id, file_name, rows_data, uploaded_by, created_at")
+    .select("id, file_name, uploaded_by, created_at")
     .order("id", { ascending: false })
-    .limit(500);
+    .limit(120);
   if (!canViewAllRowsByRole()) {
     query = query.eq("uploaded_by", currentUserId);
   }
@@ -1128,31 +1235,32 @@ async function loadLatestProgramacionFromSupabase(){
   currentProgramacionId = latest.id;
   currentProgramacionFileName = latest.file_name || currentProgramacionFileName;
 
-  // Reconstruye una vista consolidada desde el historial (mas reciente gana por clave),
-  // para evitar perder dias cuando se cargan archivos parciales en distintos momentos.
-  const consolidated = buildConsolidatedRowsFromHistory(programacionesHistory);
-  let nextRows = dedupeProgramacionRows(consolidated.rows).rows;
-
-  let loadedFromRowsTable = false;
   try {
     const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
     if (rowsResult?.ok && Array.isArray(rowsResult.rows) && rowsResult.rows.length > 0) {
-      const merged = mergeLatestRowsIntoConsolidatedRows(nextRows, rowsResult.rows);
-      const reordered = reorderRowsByReference(nextRows, merged);
-      rows = dedupeProgramacionRows(reordered).rows;
-      loadedFromRowsTable = true;
+      rows = dedupeProgramacionRows(rowsResult.rows).rows;
+    } else {
+      rows = [];
     }
   } catch (rowsError) {
     console.warn("No se pudo leer programacion_filas durante la carga:", rowsError);
+    rows = [];
   }
-  if (!loadedFromRowsTable) {
-    rows = nextRows;
-    if (consolidated.unmappedVehicles > 0) {
-      showToast(`Atencion: ${consolidated.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
-      setSyncStatus("warn", "Mapeo parcial");
-      return;
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    // Respaldo liviano: intenta leer solo el rows_data del ultimo registro.
+    const fallback = await supabaseClient
+      .from("programaciones")
+      .select("rows_data")
+      .eq("id", currentProgramacionId)
+      .limit(1)
+      .maybeSingle();
+    if (!fallback.error && Array.isArray(fallback.data?.rows_data) && fallback.data.rows_data.length > 0) {
+      const prepared = normalizeProgramacionRows(fallback.data.rows_data);
+      rows = dedupeProgramacionRows(prepared.normalized).rows;
     }
   }
+
   lblGlobal.textContent = `Programacion en linea: ${programacionesHistory.length} archivos | Filas: ${rows.length}`;
   updateExportAccess();
   fillStartBases();
@@ -1182,15 +1290,25 @@ async function applyProgramacionRecord(record){
   if (!record) return;
   currentProgramacionId = record.id;
   currentProgramacionFileName = record.file_name || currentProgramacionFileName;
-  const prepared = normalizeProgramacionRows(Array.isArray(record.rows_data) ? record.rows_data : []);
   try {
     const rowsResult = await loadProgramacionRowsFromSupabase(currentProgramacionId);
-    rows = rowsResult.ok ? reorderRowsByReference(prepared.normalized, rowsResult.rows) : prepared.normalized;
+    rows = rowsResult.ok ? dedupeProgramacionRows(rowsResult.rows).rows : [];
   } catch (rowsError) {
     console.error("Error cargando filas del historial:", rowsError);
-    rows = prepared.normalized;
+    rows = [];
   }
-  rows = dedupeProgramacionRows(rows).rows;
+  if (!rows.length) {
+    const fallback = await supabaseClient
+      .from("programaciones")
+      .select("rows_data")
+      .eq("id", currentProgramacionId)
+      .limit(1)
+      .maybeSingle();
+    if (!fallback.error && Array.isArray(fallback.data?.rows_data) && fallback.data.rows_data.length > 0) {
+      const prepared = normalizeProgramacionRows(fallback.data.rows_data);
+      rows = dedupeProgramacionRows(prepared.normalized).rows;
+    }
+  }
   lblGlobal.textContent = `Programacion en linea: ${record.file_name} | Filas: ${rows.length}`;
   updateExportAccess();
   fillStartBases();
@@ -1198,21 +1316,12 @@ async function applyProgramacionRecord(record){
   renderTable();
   renderDrivers();
   renderNovedades();
-  setSyncStatus(prepared.unmappedVehicles > 0 ? "warn" : "ok", prepared.unmappedVehicles > 0 ? "Mapeo parcial" : "Programacion online");
+  setSyncStatus("ok", "Programacion online");
 }
 
 async function saveProgramacionToSupabase(file, parsedRows){
   if (!currentUserId) {
     throw new Error("No hay sesion activa.");
-  }
-
-  const storagePath = `${currentUserId}/${Date.now()}_${safeFileName(file.name)}`;
-  const uploadResult = await supabaseClient.storage
-    .from("programaciones")
-    .upload(storagePath, file, { upsert: false });
-
-  if (uploadResult.error) {
-    console.error("Error subiendo archivo a Storage:", uploadResult.error);
   }
 
   // Historial: cada archivo cargado crea un nuevo registro de programacion.
@@ -1221,8 +1330,10 @@ async function saveProgramacionToSupabase(file, parsedRows){
     .insert({
       uploaded_by: currentUserId,
       file_name: file.name,
-      file_path: uploadResult.error ? null : storagePath,
-      rows_data: parsedRows
+      // No almacenamos el archivo binario en Supabase Storage.
+      // Solo persistimos metadatos y filas normalizadas.
+      file_path: null,
+      rows_data: STORE_ROWS_DATA_INLINE ? parsedRows : []
     })
     .select("id")
     .single();
@@ -1253,7 +1364,7 @@ async function saveProgramacionToSupabase(file, parsedRows){
       {
         id: currentProgramacionId,
         file_name: file?.name || currentProgramacionFileName,
-        rows_data: parsedRows,
+        rows_data: STORE_ROWS_DATA_INLINE ? parsedRows : [],
         uploaded_by: currentUserId,
         created_at: new Date().toISOString()
       },
@@ -1265,6 +1376,88 @@ async function saveProgramacionToSupabase(file, parsedRows){
   }
   setSyncStatus("ok", "Archivo guardado");
   showToast("Archivo validado y sincronizado en Supabase.", "ok");
+}
+
+async function saveProgramacionToTargetSupabase(file, parsedRows){
+  if (!currentUserId) {
+    throw new Error("No hay sesion activa.");
+  }
+  let targetAuth = await ensureTargetMigrationSession();
+  let insertResult = await programacionesTargetClient
+    .from("programaciones")
+    .insert({
+      uploaded_by: targetAuth.userId,
+      file_name: file?.name || "programacion_online",
+      file_path: null,
+      rows_data: STORE_ROWS_DATA_INLINE ? parsedRows : []
+    })
+    .select("id")
+    .single();
+
+  const insertErrorText = String(insertResult?.error?.message || "").toLowerCase();
+  const shouldRetryAuth = !!insertResult?.error && (
+    isPermissionLikeError(insertResult.error)
+    || insertErrorText.includes("jwt")
+    || insertErrorText.includes("token")
+    || insertErrorText.includes("auth")
+    || insertErrorText.includes("invalid login")
+  );
+  if (shouldRetryAuth) {
+    try {
+      targetAuth = await ensureTargetMigrationSession({ forceReauth: true });
+      insertResult = await programacionesTargetClient
+        .from("programaciones")
+        .insert({
+          uploaded_by: targetAuth.userId,
+          file_name: file?.name || "programacion_online",
+          file_path: null,
+          rows_data: STORE_ROWS_DATA_INLINE ? parsedRows : []
+        })
+        .select("id")
+        .single();
+    } catch (reauthError) {
+      console.warn("No se pudo reautenticar DB nueva:", reauthError);
+    }
+  }
+
+  if (insertResult.error) {
+    setSyncStatus("err", "Error guardando en DB nueva");
+    throw new Error(`DB nueva (${PROGRAMACIONES_TARGET_REF}): ${insertResult.error.message || "sin detalle"}`);
+  }
+  const targetProgramacionId = insertResult?.data?.id || null;
+  if (!targetProgramacionId) {
+    throw new Error("No se obtuvo ID de programacion en DB nueva.");
+  }
+  currentProgramacionIdTarget = targetProgramacionId;
+  currentProgramacionFileNameTarget = file?.name || currentProgramacionFileNameTarget;
+
+  const rowsSyncResult = await syncProgramacionRowsTableWithClient(
+    programacionesTargetClient,
+    targetProgramacionId,
+    parsedRows,
+    targetAuth.userId
+  );
+  if (!rowsSyncResult?.ok) {
+    throw new Error(rowsSyncResult?.unavailable
+      ? "Tabla programacion_filas no disponible en DB nueva."
+      : "No se pudieron guardar filas en DB nueva.");
+  }
+
+  const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, targetProgramacionId);
+  if (!verifyRowsResult?.ok) {
+    throw new Error("No se pudo verificar programacion_filas en DB nueva.");
+  }
+  const ok = rowsSignature(parsedRows) === rowsSignature(verifyRowsResult.rows || []);
+  if (!ok) {
+    throw new Error(`Diferencia detectada en DB nueva (${(verifyRowsResult.rows || []).length}/${parsedRows.length} filas).`);
+  }
+
+  const prepared = normalizeProgramacionRows(parsedRows);
+  rowsTarget = dedupeProgramacionRows(prepared.normalized).rows;
+  renderTable2();
+
+  setSyncStatus("ok", "Archivo guardado en DB nueva");
+  showToast(`Archivo cargado en DB nueva (${PROGRAMACIONES_TARGET_REF}) y verificado.`, "ok");
 }
 
 async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Supabase."){
@@ -1312,7 +1505,7 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
       }
       const { error } = await supabaseClient
         .from("programaciones")
-        .update({ rows_data: rowsToPersist })
+        .update({ rows_data: STORE_ROWS_DATA_INLINE ? rowsToPersist : [] })
         .eq("id", currentProgramacionId);
       if (error) {
         if (rowsTableSynced && isBaseOperator() && isPermissionLikeError(error)) {
@@ -1328,7 +1521,7 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
           uploaded_by: currentUserId,
           file_name: currentProgramacionFileName || "programacion_online",
           file_path: null,
-          rows_data: rowsToPersist
+          rows_data: STORE_ROWS_DATA_INLINE ? rowsToPersist : []
         })
         .select("id")
         .single();
@@ -1352,7 +1545,7 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
     if (currentProgramacionId && Array.isArray(programacionesHistory)) {
       programacionesHistory = programacionesHistory.map(rec =>
         String(rec.id) === String(currentProgramacionId)
-          ? { ...rec, rows_data: rowsToPersist }
+          ? { ...rec, rows_data: STORE_ROWS_DATA_INLINE ? rowsToPersist : [] }
           : rec
       );
     }
@@ -1505,6 +1698,12 @@ async function deleteNovedadInSupabase(id){
 }
 /* ===================== DATA ===================== */
 let rows = [];
+let rowsTarget = [];
+let targetDbDateCatalog = [];
+let targetDateCatalogLoadedAt = 0;
+const TARGET_DATE_CATALOG_TTL_MS = 180000;
+let currentProgramacionIdTarget = null;
+let currentProgramacionFileNameTarget = "programacion_online";
 let currentBase = "";
 let driversByBase = {};     // { "2": ["NOMBRE", ...] }
 let assignedByBase = {};    // { "2": Set(["..."]) }
@@ -1525,8 +1724,27 @@ let lastNutibaraRenderedRows = [];
 let lastNovedadesLlegadasRows = [];
 let operativoViewMode = "operativo";
 const ARRIVALS_PANEL_TAB_IDS = ["llegadas-aeropuerto", "llegadas-san-diego", "llegadas-nutibara", "llegadas-novedades"];
-const PLANILLA_REFRESH_MAX_AGE_MS = 60000;
-const PLANILLA_AUTO_REFRESH_MS = 30000;
+const PLANILLA_REFRESH_MAX_AGE_MS = 180000;
+const PLANILLA_AUTO_REFRESH_MS = 120000;
+const DRIVERS_CACHE_KEY = "driversByBaseCacheV1";
+
+function loadDriversCache(){
+  try {
+    const raw = localStorage.getItem(DRIVERS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") return false;
+    driversByBase = parsed;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveDriversCache(){
+  try {
+    localStorage.setItem(DRIVERS_CACHE_KEY, JSON.stringify(driversByBase || {}));
+  } catch (e) {}
+}
 
 // Estructura para novedades (conductores con estado)
 let novedades = []; // Array de objetos { nombre, base, estado, fecha }
@@ -1577,10 +1795,27 @@ const novedadesBody = document.getElementById('novedadesBody');
 const currentBaseDisplay = document.getElementById("currentBaseDisplay");
 const novedadesBaseDisplay = document.getElementById("novedadesBaseDisplay");
 const novedadesCount = document.getElementById("novedadesCount");
+const novedadesBody2 = document.getElementById("novedadesBody2");
+const novedadesBaseDisplay2 = document.getElementById("novedadesBaseDisplay2");
+const novedadesCount2 = document.getElementById("novedadesCount2");
+const novedadManualInput2 = document.getElementById("novedadManualInput2");
+const novedadManualList2 = document.getElementById("novedadManualList2");
+const btnAddNovedadManual2 = document.getElementById("btnAddNovedadManual2");
 const debugOutput = document.getElementById("debugOutput");
 const btnRefreshDebug = document.getElementById("btnRefreshDebug");
+const migrationDbInfo = document.getElementById("migrationDbInfo");
+const migrationOutput = document.getElementById("migrationOutput");
+const btnMigrationStatus = document.getElementById("btnMigrationStatus");
+const btnMigrateLatestProgramacion = document.getElementById("btnMigrateLatestProgramacion");
+const btnMigrateSelectedProgramacion = document.getElementById("btnMigrateSelectedProgramacion");
+const filterDate2 = document.getElementById("filterDate2");
+const clearFilter2 = document.getElementById("clearFilter2");
+const btnRefreshProgramacion2 = document.getElementById("btnRefreshProgramacion2");
+const gridHead2 = document.querySelector("#grid2 thead");
+const gridBody2 = document.querySelector("#grid2 tbody");
 const gridViewport = document.getElementById("gridViewport");
 const novedadesViewport = document.getElementById("novedadesViewport");
+const novedadesViewport2 = document.getElementById("novedadesViewport2");
 const workflowGuide = document.getElementById("workflowGuide");
 const stepSelectDate = document.getElementById("stepSelectDate");
 const stepAssignDrivers = document.getElementById("stepAssignDrivers");
@@ -1739,6 +1974,7 @@ function adjustDynamicTableViewport(){
     gridViewport.style.overflow = "visible";
   }
   applyTo(novedadesViewport);
+  applyTo(novedadesViewport2);
 }
 
 function applyRoleRestrictions(){
@@ -1749,15 +1985,26 @@ function applyRoleRestrictions(){
   const tabAudit = document.querySelector('.tab[data-tab="audit"]');
   const tabVisor = document.querySelector('.tab[data-tab="visor"]');
   const tabNovedades = document.querySelector('.tab[data-tab="novedades"]');
+  const tabNovedades2 = document.querySelector('.tab[data-tab="novedades2"]');
+  const novedadesContent = document.getElementById("tab-novedades");
+  const novedadesContent2 = document.getElementById("tab-novedades2");
   const operativoTitle = document.getElementById("operativoMainTitle") || document.querySelector("#operativoPanel h2");
   const auditContent = document.getElementById("tab-audit");
+
+  if (tabNovedades) tabNovedades.classList.add("hidden");
+  if (novedadesContent?.classList.contains("active")) {
+    novedadesContent.classList.remove("active");
+    if (tabNovedades) tabNovedades.classList.remove("active");
+    if (tabNovedades2) tabNovedades2.classList.add("active");
+    if (novedadesContent2) novedadesContent2.classList.add("active");
+  }
 
   if (AUDIT_DISABLED) {
     if (tabAudit) tabAudit.classList.add("hidden");
     if (auditContent?.classList.contains("active")) {
       auditContent.classList.remove("active");
-      const progTab = document.querySelector('.tab[data-tab="programacion"]');
-      const progContent = document.getElementById("tab-programacion");
+      const progTab = document.querySelector('.tab[data-tab="programacion2"]');
+      const progContent = document.getElementById("tab-programacion2");
       if (progTab) progTab.classList.add("active");
       if (progContent) progContent.classList.add("active");
     }
@@ -1773,7 +2020,8 @@ function applyRoleRestrictions(){
     if (tabDebug) tabDebug.classList.add("hidden");
     if (tabAudit) tabAudit.classList.add("hidden");
     if (tabVisor) tabVisor.classList.remove("hidden");
-    if (tabNovedades) tabNovedades.classList.remove("hidden");
+    if (tabNovedades) tabNovedades.classList.add("hidden");
+    if (tabNovedades2) tabNovedades2.classList.remove("hidden");
     if (operativoTitle) operativoTitle.textContent = `Ingreso de conductores - ${formatBaseLabel(currentUserBase)}`;
     if (getBaseCanonical(currentBase) !== getBaseCanonical(currentUserBase)) {
       enterBase(currentUserBase);
@@ -1792,11 +2040,18 @@ function applyRoleRestrictions(){
   if (!isSuperAdmin()) {
     if (auditContent?.classList.contains("active")) {
       auditContent.classList.remove("active");
-      const progTab = document.querySelector('.tab[data-tab="programacion"]');
-      const progContent = document.getElementById("tab-programacion");
+      const progTab = document.querySelector('.tab[data-tab="programacion2"]');
+      const progContent = document.getElementById("tab-programacion2");
       if (progTab) progTab.classList.add("active");
       if (progContent) progContent.classList.add("active");
     }
+  }
+  const canMigrate = isSuperAdmin() && !USE_ONLY_NEW_DB;
+  if (btnMigrationStatus) btnMigrationStatus.disabled = !canMigrate;
+  if (btnMigrateLatestProgramacion) btnMigrateLatestProgramacion.disabled = !canMigrate;
+  if (btnMigrateSelectedProgramacion) btnMigrateSelectedProgramacion.disabled = !canMigrate;
+  if (migrationOutput && !canMigrate) {
+    migrationOutput.textContent = "Migracion manual disponible solo para el super administrador.";
   }
   if (operativoTitle) operativoTitle.textContent = operativoViewMode === "llegadas" ? "Panel de llegadas vehiculos" : "Panel de operacion";
   updateExportAccess();
@@ -1812,7 +2067,7 @@ async function renderSupabaseDebug(){
   debugOutput.textContent = "Consultando Supabase...";
   let query = supabaseClient
     .from("programaciones")
-    .select("id, file_name, rows_data, uploaded_by")
+    .select("id, file_name, rows_data, uploaded_by, created_at")
     .order("id", { ascending: false })
     .limit(1);
   if (!canViewAllRowsByRole()) {
@@ -1855,6 +2110,9 @@ async function renderSupabaseDebug(){
   const selected = getBaseCanonical(currentBase);
   const selectedCount = selected ? (countsByCanonical[selected] || 0) : 0;
   const lines = [];
+  lines.push(`Proyecto origen (viejo): ${PROGRAMACIONES_SOURCE_REF}`);
+  lines.push(`Proyecto destino (nuevo): ${PROGRAMACIONES_TARGET_REF}`);
+  lines.push("");
   lines.push(`Archivo: ${latest.file_name}`);
   lines.push(`Registro ID: ${latest.id}`);
   lines.push(`Creado: ${latest.created_at || "(columna created_at no disponible)"}`);
@@ -1886,6 +2144,1042 @@ async function renderSupabaseDebug(){
   });
 
   debugOutput.textContent = lines.join("\n");
+}
+
+function refreshFilterDateOptions2(){
+  if (!filterDate2) return;
+  const prev = filterDate2.value || "";
+  const daySet = new Set();
+  (Array.isArray(targetDbDateCatalog) ? targetDbDateCatalog : []).forEach(d => {
+    const iso = normalizeDateToISO(d);
+    if (iso) daySet.add(iso);
+  });
+  const fechaKey = getFechaKeyFromArray(rowsTarget);
+  (Array.isArray(rowsTarget) ? rowsTarget : []).forEach(r => {
+    const iso = getRowDateISO(r, fechaKey);
+    if (iso) daySet.add(iso);
+  });
+  const dates = Array.from(daySet).sort((a, b) => a.localeCompare(b));
+  filterDate2.innerHTML = `<option value="">Selecciona fecha...</option>`;
+  dates.forEach(iso => {
+    const op = document.createElement("option");
+    op.value = iso;
+    op.textContent = excelDateToReadable(iso);
+    filterDate2.appendChild(op);
+  });
+  if (prev && dates.includes(prev)) filterDate2.value = prev;
+}
+
+async function loadTargetDateCatalogFromSupabase(force = false){
+  if (!force && targetDateCatalogLoadedAt && (Date.now() - targetDateCatalogLoadedAt) < TARGET_DATE_CATALOG_TTL_MS) {
+    return;
+  }
+  const pageSize = 1000;
+  const maxPages = 8;
+  const allRows = [];
+  let offset = 0;
+  let page = 0;
+  while (page < maxPages) {
+    const { data, error } = await programacionesTargetClient
+      .from("programacion_filas")
+      .select("fecha")
+      .not("fecha", "is", null)
+      .order("fecha", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+    if (error) {
+      if (isProgramacionFilasUnavailable(error)) {
+        targetDbDateCatalog = [];
+        targetDateCatalogLoadedAt = Date.now();
+        return;
+      }
+      throw error;
+    }
+    const chunk = Array.isArray(data) ? data : [];
+    allRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
+    page += 1;
+  }
+  const uniq = new Set();
+  allRows.forEach(r => {
+    const iso = normalizeDateToISO(r?.fecha || "");
+    if (iso) uniq.add(iso);
+  });
+  targetDbDateCatalog = Array.from(uniq).sort((a, b) => b.localeCompare(a));
+  targetDateCatalogLoadedAt = Date.now();
+}
+
+async function loadTargetProgramacionByDate(dateIsoInput){
+  const dateIso = normalizeDateToISO(dateIsoInput || "");
+  if (!dateIso) {
+    rowsTarget = [];
+    currentProgramacionIdTarget = null;
+    return;
+  }
+
+  const latestIdProbe = await programacionesTargetClient
+    .from("programacion_filas")
+    .select("programacion_id")
+    .eq("fecha", dateIso)
+    .order("programacion_id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestIdProbe.error) {
+    if (isProgramacionFilasUnavailable(latestIdProbe.error)) {
+      rowsTarget = [];
+      currentProgramacionIdTarget = null;
+      return;
+    }
+    throw latestIdProbe.error;
+  }
+  const latestProgramacionId = Number(latestIdProbe.data?.programacion_id || 0);
+  if (!latestProgramacionId) {
+    rowsTarget = [];
+    currentProgramacionIdTarget = null;
+    return;
+  }
+
+  const pageSize = 1000;
+  const allRows = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await programacionesTargetClient
+      .from("programacion_filas")
+      .select("row_data")
+      .eq("fecha", dateIso)
+      .eq("programacion_id", latestProgramacionId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) {
+      if (isProgramacionFilasUnavailable(error)) {
+        rowsTarget = [];
+        currentProgramacionIdTarget = null;
+        return;
+      }
+      throw error;
+    }
+    const chunk = Array.isArray(data) ? data : [];
+    allRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  if (allRows.length === 0) {
+    rowsTarget = [];
+    currentProgramacionIdTarget = null;
+    return;
+  }
+  const rowsForSelectedProgramacion = allRows
+    .map(r => r?.row_data)
+    .filter(r => r && typeof r === "object");
+
+  const prepared = normalizeProgramacionRows(rowsForSelectedProgramacion);
+  rowsTarget = dedupeProgramacionRows(prepared.normalized).rows;
+  {
+    const { key1, key2 } = getConductorKeysFromArray(rowsTarget);
+    sanitizeFichoConductorSlots(rowsTarget, key1, key2);
+  }
+  currentProgramacionIdTarget = latestProgramacionId || null;
+
+  if (currentProgramacionIdTarget) {
+    const info = await programacionesTargetClient
+      .from("programaciones")
+      .select("file_name")
+      .eq("id", currentProgramacionIdTarget)
+      .maybeSingle();
+    if (!info.error && info.data?.file_name) {
+      currentProgramacionFileNameTarget = info.data.file_name;
+    }
+  }
+}
+
+async function loadLatestProgramacionFromTargetSupabase(){
+  await loadTargetDateCatalogFromSupabase();
+  let query = programacionesTargetClient
+    .from("programaciones")
+    .select("id, file_name, uploaded_by, created_at")
+    .order("id", { ascending: false })
+    .limit(1);
+  const { data, error } = await query;
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length === 0) {
+    rowsTarget = [];
+    currentProgramacionIdTarget = null;
+    return;
+  }
+  const latest = data[0];
+  currentProgramacionIdTarget = latest.id;
+  currentProgramacionFileNameTarget = latest.file_name || currentProgramacionFileNameTarget;
+
+  let nextRows = [];
+  try {
+    const rowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget);
+    if (rowsResult?.ok && Array.isArray(rowsResult.rows) && rowsResult.rows.length > 0) {
+      nextRows = rowsResult.rows;
+    } else {
+      const fallback = await programacionesTargetClient
+        .from("programaciones")
+        .select("rows_data")
+        .eq("id", currentProgramacionIdTarget)
+        .limit(1)
+        .maybeSingle();
+      if (!fallback.error && Array.isArray(fallback.data?.rows_data)) {
+        nextRows = fallback.data.rows_data;
+      }
+    }
+  } catch (rowsError) {
+    console.warn("No se pudo leer programacion_filas del destino:", rowsError);
+  }
+  const prepared = normalizeProgramacionRows(nextRows);
+  rowsTarget = dedupeProgramacionRows(prepared.normalized).rows;
+  {
+    const { key1, key2 } = getConductorKeysFromArray(rowsTarget);
+    sanitizeFichoConductorSlots(rowsTarget, key1, key2);
+  }
+}
+
+async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados en DB nueva.", options = {}){
+  if (!Array.isArray(rowsTarget) || !currentProgramacionIdTarget) return false;
+  const skipQueueSave = !!options?.skipQueueSave;
+  if (!skipQueueSave) {
+    savePendingTargetRowsLocally("Pendiente de confirmacion en DB nueva", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+    setSyncStatus("warn", "Pendiente DB nueva");
+  }
+  if (!navigator.onLine) {
+    savePendingTargetRowsLocally("Sin internet (DB nueva)", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+    setSyncStatus("warn", "Sin internet - pendiente DB nueva");
+    scheduleTargetSyncRetry(reason);
+    return false;
+  }
+  if (syncRowsInProgressTarget) {
+    syncRowsPendingTarget = true;
+    if (!skipQueueSave) savePendingTargetRowsLocally("Cambio en cola de sincronizacion (DB nueva)", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+    return false;
+  }
+  syncRowsInProgressTarget = true;
+  setSyncStatus("warn", "Guardando DB nueva...");
+  const targetAuth = await ensureTargetMigrationSession();
+  const rowsToPersist = dedupeProgramacionRows(rowsTarget).rows;
+  rowsTarget = rowsToPersist;
+  try {
+    const rowsSyncResult = await syncProgramacionRowsTableWithClient(
+      programacionesTargetClient,
+      currentProgramacionIdTarget,
+      rowsToPersist,
+      targetAuth.userId
+    );
+    if (!rowsSyncResult?.ok) {
+      throw new Error(rowsSyncResult?.unavailable
+        ? "Tabla programacion_filas no disponible en DB nueva."
+        : "No se pudieron guardar filas en DB nueva.");
+    }
+
+    const updateResult = await programacionesTargetClient
+      .from("programaciones")
+      .update({ rows_data: STORE_ROWS_DATA_INLINE ? rowsToPersist : [] })
+      .eq("id", currentProgramacionIdTarget);
+    if (updateResult.error) throw updateResult.error;
+
+    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget);
+    if (!verifyRowsResult?.ok) {
+      throw new Error("No se pudo verificar programacion_filas en DB nueva.");
+    }
+    const ok = rowsSignature(rowsToPersist) === rowsSignature(verifyRowsResult.rows || []);
+    if (!ok) {
+      throw new Error(`Diferencia detectada en DB nueva (${(verifyRowsResult.rows || []).length}/${rowsToPersist.length} filas).`);
+    }
+    clearPendingTargetRowsLocal();
+    setSyncStatus("ok", "Confirmado DB nueva");
+    showToast(`${reason} (confirmado)`, "ok");
+    return true;
+  } catch (error) {
+    savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsToPersist, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+    setSyncStatus("warn", "Pendiente DB nueva");
+    showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn");
+    scheduleTargetSyncRetry(reason);
+    return false;
+  } finally {
+    syncRowsInProgressTarget = false;
+    if (syncRowsPendingTarget) {
+      syncRowsPendingTarget = false;
+      try {
+        await syncProgramacionRowsToTargetSupabase("Sincronizando cola DB nueva...", { skipQueueSave: true });
+      } catch (queueErr) {
+        console.warn("No se pudo sincronizar cola pendiente DB nueva:", queueErr);
+      }
+    }
+  }
+}
+
+function renderTable2(){
+  if (!gridHead2 || !gridBody2) return;
+  gridHead2.innerHTML = "";
+  gridBody2.innerHTML = "";
+  refreshFilterDateOptions2();
+
+  if (!Array.isArray(rowsTarget) || rowsTarget.length === 0) {
+    gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
+      No hay programacion en la base nueva.
+    </td></tr>`;
+    return;
+  }
+
+  const rawHeaders = Object.keys(rowsTarget[0]).filter(h => h.toUpperCase() !== "HOJA" && !isInternalRowKey(h));
+  const preferredHeaderOrder = ["#", "INICIA", "VEH", "CONDUCTOR 1", "INICIA 2", "CONDUCTOR 2", "HORA FIN"];
+  const normalizeHeaderToken = (h) => normCompact(h).replace(/[^A-Z0-9]/g, "");
+  const headerTokens = new Map(rawHeaders.map(h => [h, normalizeHeaderToken(h)]));
+  const aliases = {
+    "#": ["#"],
+    "INICIA": ["INICIA", "INICIO", "HORAINICIO1", "HORAINICIO"],
+    "VEH": ["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"],
+    "CONDUCTOR 1": ["CONDUCTOR1", "CONDUCTOI1", "CONDUCTOR", "CONDUCTOI"],
+    "INICIA 2": ["INICIA2", "INICIO2", "HORAINICIO2"],
+    "CONDUCTOR 2": ["CONDUCTOR2", "CONDUCTOI2"],
+    "HORA FIN": ["HORAFIN", "HORAFINAL", "FIN"]
+  };
+  const used = new Set();
+  const headers = [];
+  preferredHeaderOrder.forEach(label => {
+    const bucket = aliases[label] || [];
+    const found = rawHeaders.find(h => {
+      if (used.has(h)) return false;
+      const t = headerTokens.get(h);
+      return bucket.some(a => t === normalizeHeaderToken(a));
+    });
+    if (found) {
+      used.add(found);
+      headers.push(found);
+    }
+  });
+  rawHeaders.forEach(h => {
+    if (!used.has(h)) headers.push(h);
+  });
+  const headRow = document.createElement("tr");
+  headers.forEach(h => {
+    const th = document.createElement("th");
+    th.textContent = h;
+    headRow.appendChild(th);
+  });
+  gridHead2.appendChild(headRow);
+
+  const baseKey = getBaseKeyFromRows(rowsTarget);
+  const fechaKey = getFechaKeyFromArray(rowsTarget);
+  const vehiculoKey = headers.find(h => {
+    const n = norm(h);
+    return n === "VEH" || n === "VEHICULO" || n === "VEHÍCULO" || n === "MOVIL" || n === "MÓVIL";
+  }) || null;
+  const puestoKey = headers.find(h => norm(h) === "PUESTO") || null;
+  const numeroKey = headers.find(h => norm(h) === "#") || null;
+  const iniciaKey = headers.find(h => {
+    const t = normCompact(h).replace(/[^A-Z0-9]/g, "");
+    return t === "INICIA" || t === "INICIO" || t === "HORAINICIO1" || t === "HORAINICIO";
+  }) || null;
+  const vehiculoSwapEnabled = isSuperAdmin() || getBaseCanonical(currentBase) === "3";
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(rowsTarget);
+  const token = (h) => normCompact(h).replace(/[^A-Z0-9]/g, "");
+  const resolvedConductor1Key = conductor1Key || headers.find(h => {
+    const t = token(h);
+    return t.includes("CONDUCT") && (t.includes("1") || t === "CONDUCTOR");
+  }) || null;
+  const resolvedConductor2Key = conductor2Key || headers.find(h => {
+    const t = token(h);
+    return t.includes("CONDUCT") && t.includes("2");
+  }) || null;
+  const fichoSanitized = sanitizeFichoConductorSlots(rowsTarget, resolvedConductor1Key, resolvedConductor2Key);
+  if (fichoSanitized > 0 && currentProgramacionIdTarget && !syncRowsInProgressTarget) {
+    syncProgramacionRowsToTargetSupabase("FICHO sin conductor guardado en DB nueva.").catch((error) => {
+      console.warn("No se pudo sincronizar limpieza de conductores FICHO:", error);
+    });
+  }
+  const selectedDate = normalizeDateToISO(filterDate2?.value || "");
+  const typedDatalistId = "driversDatalistProgramacion2";
+  let typedDatalist = document.getElementById(typedDatalistId);
+  if (!typedDatalist) {
+    typedDatalist = document.createElement("datalist");
+    typedDatalist.id = typedDatalistId;
+    document.body.appendChild(typedDatalist);
+  }
+  let filtered = rowsTarget.slice();
+  if (currentBase) {
+    const baseCanonical = getBaseCanonical(currentBase);
+    filtered = filtered.filter(r => getRowCanonicalBase(r, baseKey) === baseCanonical);
+  }
+  if (currentBase && !selectedDate) {
+    gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
+      Paso 1: selecciona una fecha para continuar con la asignacion.
+    </td></tr>`;
+    renderDrivers();
+    return;
+  }
+  if (selectedDate && fechaKey) {
+    filtered = filtered.filter(r => normalizeDateToISO(r[fechaKey]) === selectedDate);
+  }
+  if (!filtered.length) {
+    gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
+      No hay filas en DB nueva con los filtros actuales.
+    </td></tr>`;
+    renderDrivers();
+    return;
+  }
+
+  const setDatalistOptionsForBase = (baseCanonical) => {
+    const available = getAvailableDriversForBase(baseCanonical);
+    typedDatalist.innerHTML = "";
+    available
+      .slice()
+      .sort((a, b) => String(a).localeCompare(String(b), "es"))
+      .forEach((name) => {
+        const op = document.createElement("option");
+        op.value = name;
+        typedDatalist.appendChild(op);
+      });
+  };
+
+  filtered.forEach(r => {
+    const tr = document.createElement("tr");
+    const isFichoRow = isFichoRowByContent(r);
+    if (isFichoRow) tr.classList.add("ficho-sandiego");
+    headers.forEach(k => {
+      const td = document.createElement("td");
+      let v = r[k];
+      if (norm(k) === "FECHA") v = excelDateToReadable(v);
+      if (isTimeColumnKey(k)) v = excelTimeToHHMM(v);
+      const isConductorCell = (resolvedConductor1Key && k === resolvedConductor1Key) || (resolvedConductor2Key && k === resolvedConductor2Key);
+      if (isConductorCell) {
+        if (isFichoRow) {
+          r[k] = UNASSIGNED_LABEL;
+          setConductorNote(r, k, "");
+          td.classList.add("slot-note-ok");
+          td.innerHTML = `
+            <span class="muted">FICHO sin conductor</span>
+            <span class="estado-tag tag-pendiente">Bloqueado</span>
+          `;
+          tr.appendChild(td);
+          return;
+        }
+        td.classList.add("drop");
+        const assigned = extractConductorName(v || "");
+        const noteText = getConductorNote(r, k);
+        const rowLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
+        const rowBaseCanonical = getRowCanonicalBase(r, baseKey) || getBaseCanonical(currentBase);
+        const rowBaseLabel = formatBaseLabel(rowBaseCanonical || currentBase || "");
+        if (assigned) {
+          td.classList.add("filled");
+          td.innerHTML = `
+            <div>${v || ""}</div>
+            <span class="base-badge">${rowBaseLabel}</span>
+          `;
+        } else {
+          td.innerHTML = `
+            <span class="muted">${UNASSIGNED_LABEL}</span>
+            <span class="slot-hint">Copia una nota o asigna conductor</span>
+            ${noteText ? `<div class="cell-note">${noteText}</div>` : ""}
+            <button class="btn-note" type="button">${noteText ? "Editar nota" : "Agregar nota"}</button>
+          `;
+        }
+
+        const editorWrap = document.createElement("div");
+        editorWrap.style.marginTop = "6px";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "driver-typed-input";
+        input.placeholder = "Escribe o pega conductor...";
+        input.autocomplete = "off";
+        input.setAttribute("list", typedDatalistId);
+        input.style.width = "100%";
+        input.style.fontSize = "12px";
+        input.style.padding = "4px 6px";
+        input.style.border = "1px solid #cbd5e1";
+        input.style.borderRadius = "6px";
+        input.value = assigned || "";
+        editorWrap.appendChild(input);
+        td.appendChild(editorWrap);
+
+        let commitInProgress = false;
+        const commitTypedDriver = async () => {
+          if (commitInProgress) return;
+          commitInProgress = true;
+          try {
+            const typed = String(input.value || "").trim();
+            const previousName = extractConductorName(r[k] || "");
+            if (!typed) {
+              if (!previousName) return;
+              r[k] = UNASSIGNED_LABEL;
+              renderTable2();
+              renderDrivers();
+              await syncProgramacionRowsToTargetSupabase(`Remocion guardada en DB nueva (${k}).`);
+              return;
+            }
+
+            const baseCanonical = getBaseCanonical(rowBaseCanonical || currentBase);
+            const pool = driversByBase[baseCanonical] || driversByBase[formatBaseLabel(baseCanonical)] || [];
+            const matched = pool.find(name => norm(name) === norm(typed));
+            if (!matched) {
+              showToast(`"${typed}" no existe en ${formatBaseLabel(baseCanonical || currentBase || "")}.`, "warn");
+              input.focus();
+              input.select();
+              return;
+            }
+
+            rebuildAssigned();
+            const used = assignedByBase[baseCanonical] || assignedByBase[formatBaseLabel(baseCanonical)] || new Set();
+            if (used.has(norm(matched)) && norm(previousName) !== norm(matched)) {
+              showToast(`${matched} ya esta asignado en ${formatBaseLabel(baseCanonical)} para esta fecha.`, "warn");
+              input.value = previousName || "";
+              input.focus();
+              input.select();
+              return;
+            }
+
+            if (norm(previousName) === norm(matched)) return;
+            r[k] = matched;
+            setConductorNote(r, k, "");
+            renderTable2();
+            renderDrivers();
+            await syncProgramacionRowsToTargetSupabase(`Asignacion guardada en DB nueva (${k}).`);
+          } finally {
+            commitInProgress = false;
+          }
+        };
+
+        input.addEventListener("focus", () => {
+          setDatalistOptionsForBase(getBaseCanonical(rowBaseCanonical || currentBase));
+          input.select();
+        });
+        input.addEventListener("keydown", async (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            await commitTypedDriver();
+          }
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            input.value = extractConductorName(r[k] || "");
+            input.blur();
+          }
+        });
+        input.addEventListener("change", async () => {
+          await commitTypedDriver();
+        });
+        input.addEventListener("blur", async () => {
+          await commitTypedDriver();
+        });
+
+        if (!assigned) {
+          const noteBtn = td.querySelector(".btn-note");
+          if (noteBtn) {
+            noteBtn.addEventListener("click", async (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const result = await openConductorNoteModal({
+                note: getConductorNote(r, k),
+                label: `${rowLabel} - ${k}`
+              });
+              if (!result || result.action === "cancel") return;
+              if (result.action === "clear") setConductorNote(r, k, "");
+              else if (result.action === "save") setConductorNote(r, k, result.text);
+              renderTable2();
+              renderDrivers();
+              await syncProgramacionRowsToTargetSupabase("Nota de casilla guardada en DB nueva.");
+            });
+          }
+        }
+
+        td.ondragover = ev => {
+          ev.preventDefault();
+          autoScrollDuringDrag(ev.clientY);
+          td.classList.add("highlight");
+        };
+        td.ondragleave = () => td.classList.remove("highlight");
+        td.ondrop = async ev => {
+          ev.preventDefault();
+          td.classList.remove("highlight");
+          try {
+            const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
+            if (data.tipo !== "conductor") return;
+            r[k] = data.nombre;
+            setConductorNote(r, k, "");
+            renderTable2();
+            renderDrivers();
+            await syncProgramacionRowsToTargetSupabase(`Asignacion guardada en DB nueva (${k}).`);
+          } catch (e) {
+            console.error("No se pudo asignar conductor en tabla 2:", e);
+            showToast("No se pudo asignar conductor en Turnos del dia 2.", "err");
+          }
+        };
+        td.ondblclick = async () => {
+          const existingName = extractConductorName(r[k] || "");
+          if (!existingName) return;
+          const ok = confirm(`Quitar a ${existingName} de ${k} en DB nueva?`);
+          if (!ok) return;
+          r[k] = UNASSIGNED_LABEL;
+          renderTable2();
+          renderDrivers();
+          await syncProgramacionRowsToTargetSupabase(`Remocion guardada en DB nueva (${k}).`);
+        };
+      } else if (vehiculoKey && k === vehiculoKey) {
+        const vehLabel = v || "";
+        const rowLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
+        if (vehiculoSwapEnabled) td.classList.add("veh-drop");
+        td.innerHTML = `<div>${vehLabel}</div>`;
+        td.title = vehiculoSwapEnabled
+          ? "Arrastra este vehiculo sobre otro para intercambiar posicion"
+          : "Vehiculo";
+        td.draggable = !!r[k] && vehiculoSwapEnabled;
+
+        if (!vehiculoSwapEnabled) {
+          tr.appendChild(td);
+          return;
+        }
+
+        td.ondragstart = ev => {
+          const sourceValue = r[k];
+          if (!sourceValue) {
+            ev.preventDefault();
+            return;
+          }
+          td.classList.add("highlight");
+          ev.dataTransfer.setData("text/plain", JSON.stringify({
+            tipo: "vehiculo_posicion",
+            sourceRowUiId: ensureRowUiId(r),
+            sourceRowKey: buildProgramacionRowKey(r),
+            sourceVehiculoKey: k,
+            sourceVehiculo: String(sourceValue),
+            sourceLabel: rowLabel
+          }));
+          ev.dataTransfer.effectAllowed = "move";
+        };
+        td.ondragend = () => td.classList.remove("highlight");
+        td.ondragover = ev => {
+          ev.preventDefault();
+          autoScrollDuringDrag(ev.clientY);
+          td.classList.add("highlight");
+        };
+        td.ondragleave = () => td.classList.remove("highlight");
+        td.ondrop = async ev => {
+          ev.preventDefault();
+          td.classList.remove("highlight");
+          try {
+            const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
+            if (data.tipo !== "vehiculo_posicion") return;
+
+            const sourceRow = rowsTarget.find(row => ensureRowUiId(row) === data.sourceRowUiId)
+              || rowsTarget.find(row => buildProgramacionRowKey(row) === data.sourceRowKey);
+            if (!sourceRow) {
+              showToast("No se encontro la fila origen para intercambio.", "warn");
+              return;
+            }
+            if (sourceRow === r) return;
+
+            const sourceVehiculoKey = data.sourceVehiculoKey || vehiculoKey;
+            const sourceValue = sourceRow[sourceVehiculoKey];
+            const targetValue = r[k];
+            const sourceLabel = data.sourceLabel || getSwapRowLabel(sourceRow, { numeroKey, puestoKey, iniciaKey });
+            const targetLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
+            const ok = await confirmVehicleSwapModal({
+              sourceLabel,
+              targetLabel,
+              sourceVeh: sourceValue || "-",
+              targetVeh: targetValue || "-"
+            });
+            if (!ok) return;
+
+            sourceRow[sourceVehiculoKey] = targetValue;
+            r[k] = sourceValue;
+            // Regla operativa: el carro se lleva sus conductores al cambiar de posicion.
+            const conductorSync = syncConductoresAfterVehicleSwap(sourceRow, r, resolvedConductor1Key, resolvedConductor2Key);
+            const sourceIsFicho = isFichoRowByContent(sourceRow);
+            const targetIsFicho = isFichoRowByContent(r);
+            const fichoUpdated = (sourceIsFicho || targetIsFicho)
+              ? 0
+              : syncFichoVehicleLinksAfterSwapInDataset(rowsTarget, {
+                  sourceVeh: sourceValue,
+                  targetVeh: targetValue,
+                  selectedDate,
+                  currentBase,
+                  baseKey,
+                  fechaKey,
+                  conductorKey1: resolvedConductor1Key,
+                  conductorKey2: resolvedConductor2Key,
+                  excludedRows: [sourceRow, r]
+                });
+            const deduped = dedupeProgramacionRows(rowsTarget);
+            if (deduped.removed > 0) rowsTarget = deduped.rows;
+
+            renderTable2();
+            renderDrivers();
+            const conductorMsg = conductorSync.blockedByFicho
+              ? " | FICHO sin conductor"
+              : (conductorSync.swapped ? " | Conductores movidos con el carro" : "");
+            showToast(`Cambio confirmado: ${sourceValue || "-"} <-> ${targetValue || "-"}${conductorMsg}${fichoUpdated ? ` | FICHO actualizados: ${fichoUpdated}` : ""}`, "ok");
+            await syncProgramacionRowsToTargetSupabase("Cambio de posicion de vehiculos guardado en DB nueva.");
+          } catch (e) {
+            console.error("Error intercambio vehiculos en DB nueva", e);
+            showToast("No se pudo intercambiar la posicion de vehiculos en DB nueva.", "err");
+          }
+        };
+      } else {
+        td.textContent = v || "";
+      }
+      tr.appendChild(td);
+    });
+    gridBody2.appendChild(tr);
+  });
+  rebuildAssigned();
+  renderDrivers();
+}
+
+function getBaseKeyFromRows(inputRows){
+  if (!Array.isArray(inputRows) || inputRows.length === 0) return null;
+  const headerSet = new Set();
+  inputRows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
+  const keys = Array.from(headerSet);
+  return keys.find(k => BASE_COLUMN_ALIASES.includes(norm(k))) || null;
+}
+
+function setMigrationOutput(linesInput){
+  if (!migrationOutput) return;
+  const list = Array.isArray(linesInput) ? linesInput : [String(linesInput || "")];
+  migrationOutput.textContent = list.join("\n");
+}
+
+function renderMigrationDbInfo(){
+  if (!migrationDbInfo) return;
+  if (USE_ONLY_NEW_DB) {
+    migrationDbInfo.textContent = `Base vieja desactivada | Proyecto activo: ${PROGRAMACIONES_TARGET_REF}`;
+    return;
+  }
+  migrationDbInfo.textContent = `Origen viejo: ${PROGRAMACIONES_SOURCE_REF} | Destino nuevo: ${PROGRAMACIONES_TARGET_REF}`;
+}
+
+async function fetchProgramacionRowsFromClient(client, programacionId){
+  if (!programacionId) return { ok: true, rows: [] };
+  const pageSize = 1000;
+  const allRows = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await client
+      .from("programacion_filas")
+      .select("row_data")
+      .eq("programacion_id", programacionId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) {
+      if (isProgramacionFilasUnavailable(error)) {
+        return { ok: false, unavailable: true, rows: [] };
+      }
+      throw error;
+    }
+    const chunk = Array.isArray(data) ? data : [];
+    allRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return {
+    ok: true,
+    rows: allRows.map(r => r?.row_data).filter(r => r && typeof r === "object")
+  };
+}
+
+async function syncProgramacionRowsTableWithClient(client, programacionId, rowsInput, updatedByOverride = null){
+  if (!programacionId) return { ok: false, skipped: true };
+  const payload = buildProgramacionFilaPayload(rowsInput, programacionId).map(item => ({
+    ...item,
+    updated_by: updatedByOverride || item.updated_by || null
+  }));
+  const pageSize = 1000;
+  const existingRows = [];
+  let offset = 0;
+  while (true) {
+    const existingResult = await client
+      .from("programacion_filas")
+      .select("row_key")
+      .eq("programacion_id", programacionId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (existingResult.error) {
+      if (isProgramacionFilasUnavailable(existingResult.error)) {
+        return { ok: false, unavailable: true };
+      }
+      throw existingResult.error;
+    }
+    const chunk = Array.isArray(existingResult.data) ? existingResult.data : [];
+    existingRows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  const existingKeys = new Set(existingRows.map(r => String(r.row_key || "")).filter(Boolean));
+  const nextKeys = new Set(payload.map(r => String(r.row_key || "")).filter(Boolean));
+  const toDelete = Array.from(existingKeys).filter(k => !nextKeys.has(k));
+
+  for (const keyChunk of chunkArray(toDelete, 300)) {
+    const delResult = await client
+      .from("programacion_filas")
+      .delete()
+      .eq("programacion_id", programacionId)
+      .in("row_key", keyChunk);
+    if (delResult.error) throw delResult.error;
+  }
+
+  for (const upsertChunk of chunkArray(payload, 300)) {
+    if (upsertChunk.length === 0) continue;
+    const upsertResult = await client
+      .from("programacion_filas")
+      .upsert(upsertChunk, { onConflict: "programacion_id,row_key" });
+    if (upsertResult.error) {
+      if (isProgramacionFilasUnavailable(upsertResult.error)) {
+        return { ok: false, unavailable: true };
+      }
+      throw upsertResult.error;
+    }
+  }
+
+  return { ok: true, count: payload.length };
+}
+
+async function ensureTargetMigrationSession(options = {}){
+  const forceReauth = !!options?.forceReauth;
+  const sessionResult = await programacionesTargetClient.auth.getSession();
+  const existingUser = sessionResult?.data?.session?.user || null;
+  const sameEmail = norm(existingUser?.email || "") === norm(currentUserEmail || "");
+
+  if (!forceReauth && existingUser?.id && sameEmail) {
+    return { userId: existingUser.id, email: existingUser.email || "" };
+  }
+
+  if (existingUser?.id && (forceReauth || !sameEmail)) {
+    try {
+      await programacionesTargetClient.auth.signOut();
+    } catch (signOutError) {
+      console.warn("No se pudo cerrar sesion previa del proyecto nuevo:", signOutError);
+    }
+  }
+
+  const email = String(currentUserEmail || "").trim();
+  if (!email) {
+    throw new Error("No hay correo autenticado en la sesion principal para iniciar sesion en el destino.");
+  }
+
+  const pwd = prompt(`Ingresa la contrasena de ${email} para autenticar el proyecto nuevo (${PROGRAMACIONES_TARGET_REF}):`, "");
+  if (pwd === null) {
+    throw new Error("Migracion cancelada: no se ingreso contrasena para el proyecto nuevo.");
+  }
+  const password = String(pwd || "").trim();
+  if (!password) {
+    throw new Error("Migracion cancelada: contrasena vacia.");
+  }
+
+  const signInResult = await programacionesTargetClient.auth.signInWithPassword({ email, password });
+  if (signInResult.error) {
+    throw new Error(`No se pudo iniciar sesion en destino (${PROGRAMACIONES_TARGET_REF}): ${signInResult.error.message || "sin detalle"}`);
+  }
+  const user = signInResult?.data?.user || signInResult?.data?.session?.user || null;
+  if (!user?.id) {
+    throw new Error("Sesion iniciada en destino, pero no se obtuvo user id.");
+  }
+  return { userId: user.id, email: user.email || email };
+}
+
+async function getLatestProgramacionSummaryFromClient(client){
+  const { data, error } = await client
+    .from("programaciones")
+    .select("id, file_name, uploaded_by, created_at")
+    .order("id", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const latest = data[0];
+  let filasCount = 0;
+  if (latest?.id) {
+    const countResult = await client
+      .from("programacion_filas")
+      .select("id", { count: "exact", head: true })
+      .eq("programacion_id", latest.id);
+    if (countResult.error) throw countResult.error;
+    filasCount = Number(countResult.count || 0);
+  }
+  return {
+    id: latest.id,
+    file_name: latest.file_name || "programacion_online",
+    created_at: latest.created_at || "",
+    uploaded_by: latest.uploaded_by || "",
+    rows_data_count: null,
+    filas_count: filasCount
+  };
+}
+
+async function renderMigrationStatus(){
+  if (!migrationOutput) return;
+  renderMigrationDbInfo();
+  if (USE_ONLY_NEW_DB) {
+    setMigrationOutput(`Modo actual: solo DB nueva (${PROGRAMACIONES_TARGET_REF}).\nMigracion vieja->nueva desactivada.`);
+    return;
+  }
+  setMigrationOutput("Consultando estado de origen y destino...");
+  try {
+    const [source, target] = await Promise.all([
+      getLatestProgramacionSummaryFromClient(supabaseClient),
+      getLatestProgramacionSummaryFromClient(programacionesTargetClient)
+    ]);
+    const lines = [];
+    lines.push(`Origen viejo (${PROGRAMACIONES_SOURCE_REF})`);
+    if (!source) lines.push("- Sin programaciones.");
+    else {
+      lines.push(`- ID: ${source.id}`);
+      lines.push(`- Archivo: ${source.file_name}`);
+      lines.push(`- Filas rows_data: ${source.rows_data_count ?? "n/a (optimizado)"}`);
+      lines.push(`- Filas programacion_filas: ${source.filas_count}`);
+      lines.push(`- Creado: ${source.created_at || "sin dato"}`);
+    }
+    lines.push("");
+    lines.push(`Destino nuevo (${PROGRAMACIONES_TARGET_REF})`);
+    if (!target) lines.push("- Sin programaciones.");
+    else {
+      lines.push(`- ID: ${target.id}`);
+      lines.push(`- Archivo: ${target.file_name}`);
+      lines.push(`- Filas rows_data: ${target.rows_data_count ?? "n/a (optimizado)"}`);
+      lines.push(`- Filas programacion_filas: ${target.filas_count}`);
+      lines.push(`- Creado: ${target.created_at || "sin dato"}`);
+    }
+    setMigrationOutput(lines);
+  } catch (e) {
+    setMigrationOutput(`Error consultando estado de migracion:\n${e?.message || String(e)}`);
+  }
+}
+
+async function fetchSourceProgramacionRecord(recordId){
+  if (recordId) {
+    const parsedId = Number(recordId);
+    if (!Number.isFinite(parsedId)) {
+      throw new Error("ID de programacion invalido para migracion.");
+    }
+    const one = await supabaseClient
+      .from("programaciones")
+      .select("id, file_name, rows_data, uploaded_by, created_at")
+      .eq("id", parsedId)
+      .limit(1)
+      .maybeSingle();
+    if (one.error) throw one.error;
+    return one.data || null;
+  }
+  const latest = await supabaseClient
+    .from("programaciones")
+    .select("id, file_name, rows_data, uploaded_by, created_at")
+    .order("id", { ascending: false })
+    .limit(1);
+  if (latest.error) throw latest.error;
+  return Array.isArray(latest.data) && latest.data.length > 0 ? latest.data[0] : null;
+}
+
+async function migrateProgramacionToNewProject(recordId = null){
+  if (USE_ONLY_NEW_DB) {
+    setMigrationOutput(`Migracion desactivada: el sistema ya trabaja solo con DB nueva (${PROGRAMACIONES_TARGET_REF}).`);
+    return;
+  }
+  if (!isSuperAdmin()) {
+    showToast("Solo el super administrador puede migrar programaciones.", "warn");
+    return;
+  }
+  if (!currentUserId) {
+    showToast("Inicia sesion antes de migrar.", "warn");
+    return;
+  }
+  renderMigrationDbInfo();
+  setMigrationOutput("Preparando migracion manual...");
+
+  try {
+    const targetAuth = await ensureTargetMigrationSession();
+    const sourceRecord = await fetchSourceProgramacionRecord(recordId);
+    if (!sourceRecord?.id) {
+      setMigrationOutput("No se encontro la programacion origen para migrar.");
+      return;
+    }
+
+    let sourceRows = [];
+    const sourceRowsResult = await fetchProgramacionRowsFromClient(supabaseClient, sourceRecord.id);
+    if (sourceRowsResult?.ok && Array.isArray(sourceRowsResult.rows) && sourceRowsResult.rows.length > 0) {
+      sourceRows = sourceRowsResult.rows;
+    } else {
+      sourceRows = Array.isArray(sourceRecord.rows_data) ? sourceRecord.rows_data : [];
+    }
+    const prepared = normalizeProgramacionRows(sourceRows);
+    const deduped = dedupeProgramacionRows(prepared.normalized);
+    const rowsToMigrate = deduped.rows;
+
+    const targetFileName = `${sourceRecord.file_name || "programacion_online"} [migrada_${PROGRAMACIONES_SOURCE_REF}_id_${sourceRecord.id}]`;
+    const insertResult = await programacionesTargetClient
+      .from("programaciones")
+      .insert({
+        uploaded_by: targetAuth.userId,
+        file_name: targetFileName,
+        file_path: null,
+        rows_data: STORE_ROWS_DATA_INLINE ? rowsToMigrate : []
+      })
+      .select("id, created_at")
+      .single();
+    if (insertResult.error) throw insertResult.error;
+    const targetProgramacionId = insertResult.data?.id || null;
+    if (!targetProgramacionId) {
+      throw new Error("No se pudo obtener el ID de programacion destino.");
+    }
+
+    const syncRowsResult = await syncProgramacionRowsTableWithClient(
+      programacionesTargetClient,
+      targetProgramacionId,
+      rowsToMigrate,
+      targetAuth.userId
+    );
+    if (!syncRowsResult?.ok) {
+      if (syncRowsResult?.unavailable) {
+        throw new Error("La tabla programacion_filas no esta disponible en el destino.");
+      }
+      throw new Error("No se pudieron sincronizar las filas en el destino.");
+    }
+
+    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, targetProgramacionId);
+    if (!verifyRowsResult?.ok) {
+      throw new Error("No se pudo verificar la lectura de programacion_filas en el destino.");
+    }
+    const expectedScoped = getRowsScopedForCurrentUser(rowsToMigrate);
+    const actualScoped = getRowsScopedForCurrentUser(verifyRowsResult.rows || []);
+    const verified = rowsSignature(expectedScoped) === rowsSignature(actualScoped);
+    if (!verified) {
+      throw new Error(`Migracion incompleta: diferencia detectada (${actualScoped.length}/${expectedScoped.length} filas).`);
+    }
+
+    const lines = [];
+    lines.push("Migracion completada.");
+    lines.push(`Origen viejo: ${PROGRAMACIONES_SOURCE_REF} | ID ${sourceRecord.id}`);
+    lines.push(`Destino nuevo: ${PROGRAMACIONES_TARGET_REF} | ID ${targetProgramacionId}`);
+    lines.push(`Usuario destino autenticado: ${targetAuth.email || targetAuth.userId}`);
+    lines.push(`Archivo origen: ${sourceRecord.file_name || "programacion_online"}`);
+    lines.push(`Filas migradas (dedupe): ${rowsToMigrate.length}`);
+    lines.push(`Vehiculos sin base mapeada: ${prepared.unmappedVehicles}`);
+    lines.push(`Duplicados removidos: ${deduped.removed}`);
+    lines.push("Verificacion: OK en programacion_filas (destino).");
+    setMigrationOutput(lines);
+    showToast(`Migracion completada al proyecto nuevo (${PROGRAMACIONES_TARGET_REF}).`, "ok");
+    await renderMigrationStatus();
+  } catch (e) {
+    const message = e?.message || String(e);
+    setMigrationOutput(`Error en migracion manual:\n${message}`);
+    showToast("Fallo la migracion manual. Revisa el detalle en Diagnostico.", "err");
+  }
+}
+
+async function handleMigrateLatestProgramacionClick(){
+  await migrateProgramacionToNewProject(null);
+}
+
+async function handleMigrateSelectedProgramacionClick(){
+  const selectedId = String(document.getElementById("historyProgramacion")?.value || "").trim();
+  if (!selectedId) {
+    showToast("Selecciona una programacion en el historial para migrarla.", "warn");
+    return;
+  }
+  await migrateProgramacionToNewProject(selectedId);
 }
 
 function escapeHtml(value){
@@ -2649,10 +3943,10 @@ function renderLlegadasSanDiego(){
   const rows = rowsSource;
   lastSanDiegoRenderedRows = rows.slice();
   if (llegadasSanDiegoCount) llegadasSanDiegoCount.textContent = String(rows.length);
-  if (llegadasSanDiegoTitle) llegadasSanDiegoTitle.textContent = "Ultimas Llegadas Almacentro (101)";
+  if (llegadasSanDiegoTitle) llegadasSanDiegoTitle.textContent = "Ultimas Llegadas San Diego (101)";
   if (rows.length === 0) {
     if (llegadasSanDiegoTabs) llegadasSanDiegoTabs.innerHTML = "";
-    llegadasSanDiegoBody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin llegadas de Almacentro.</td></tr>`;
+    llegadasSanDiegoBody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin llegadas de San Diego.</td></tr>`;
     return;
   }
 
@@ -3098,7 +4392,7 @@ const VEHICLE_TO_BASE_MAP = {
   "744":"BASE 3","745":"BASE 3","746":"BASE 4","747":"BASE 5","748":"BASE 2",
   "749":"BASE 2","750":"BASE 3","751":"BASE 3","752":"BASE 3","753":"BASE 3",
   "754":"BASE 3","755":"BASE 3","756":"BASE 8","757":"BASE 5","758":"BASE 3",
-  "759":"BASE 3","15":"BASE 5","17":"BASE 3","59":"BASE 5","64":"BASE 5",
+"759":"BASE 3","15":"BASE 5","17":"BASE 3","59":"BASE 5","64":"BASE 5",
   "89":"BASE 5","100":"BASE 5","157":"BASE 5","163":"BASE 5","211":"BASE 5",
   "232":"BASE 5","507":"BASE 3","510":"BASE 3"
 };
@@ -3344,6 +4638,32 @@ function getSelectedOperativeDateISO(){
   return normalizeDateToISO(document.getElementById("filterDate")?.value || "");
 }
 
+function getActiveProgramacionMode(){
+  const tabId = getActiveTabId();
+  if (tabId === "programacion2" || tabId === "novedades2") return "target";
+  return "source";
+}
+
+function getActiveRowsForDrivers(){
+  return getActiveProgramacionMode() === "target" ? rowsTarget : rows;
+}
+
+function getActiveSelectedDateISO(){
+  if (getActiveProgramacionMode() === "target") {
+    return normalizeDateToISO(filterDate2?.value || "");
+  }
+  return getSelectedOperativeDateISO();
+}
+
+function resolveDriverNameForCurrentBase(rawName){
+  const base = getBaseCanonical(currentBase);
+  const typed = String(rawName || "").trim();
+  if (!base || !typed) return "";
+  const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
+  const found = pool.find(n => norm(n) === norm(typed));
+  return found || typed;
+}
+
 function isFichoRowByContent(rowObj){
   const row = rowObj || {};
   const keys = Object.keys(row);
@@ -3355,10 +4675,11 @@ function isFichoRowByContent(rowObj){
   return rowContext.includes("FICHO");
 }
 
-function getDateAssignmentStatsForBase(dateIso, baseValue = currentBase){
-  const fechaKey = getFechaKey();
-  const baseKey = getBaseKey();
-  const { key1, key2 } = getConductorKeysFromRows();
+function getDateAssignmentStatsForBase(dateIso, baseValue = currentBase, sourceRows = rows){
+  const rowsList = Array.isArray(sourceRows) ? sourceRows : [];
+  const fechaKey = sourceRows === rows ? getFechaKey() : getFechaKeyFromArray(rowsList);
+  const baseKey = sourceRows === rows ? getBaseKey() : getBaseKeyFromRows(rowsList);
+  const { key1, key2 } = sourceRows === rows ? getConductorKeysFromRows() : getConductorKeysFromArray(rowsList);
   const canonicalBase = getBaseCanonical(baseValue);
   let requiredSlots = 0;
   let filledSlots = 0;
@@ -3367,10 +4688,10 @@ function getDateAssignmentStatsForBase(dateIso, baseValue = currentBase){
     return { requiredSlots, filledSlots, pendingSlots: 0 };
   }
 
-  rows.forEach(r => {
+  rowsList.forEach(r => {
     const rowBase = getRowCanonicalBase(r, baseKey);
     if (canonicalBase && rowBase !== canonicalBase) return;
-    const rowDate = normalizeDateToISO(r[fechaKey]);
+    const rowDate = getRowDateISO(r, fechaKey);
     if (rowDate !== dateIso) return;
     if (isFichoRowByContent(r)) return;
 
@@ -3388,23 +4709,24 @@ function getDateAssignmentStatsForBase(dateIso, baseValue = currentBase){
   };
 }
 
-function getRemainingDriversCountForDate(dateIso, baseValue = currentBase){
+function getRemainingDriversCountForDate(dateIso, baseValue = currentBase, sourceRows = rows){
+  const rowsList = Array.isArray(sourceRows) ? sourceRows : [];
   const canonicalBase = getBaseCanonical(baseValue);
   if (!canonicalBase) return 0;
 
   const pool = driversByBase[canonicalBase] || driversByBase[formatBaseLabel(canonicalBase)] || [];
   if (!pool.length) return 0;
 
-  const fechaKey = getFechaKey();
-  const baseKey = getBaseKey();
-  const { key1, key2 } = getConductorKeysFromRows();
+  const fechaKey = sourceRows === rows ? getFechaKey() : getFechaKeyFromArray(rowsList);
+  const baseKey = sourceRows === rows ? getBaseKey() : getBaseKeyFromRows(rowsList);
+  const { key1, key2 } = sourceRows === rows ? getConductorKeysFromRows() : getConductorKeysFromArray(rowsList);
   const assigned = new Set();
 
   if (fechaKey && (key1 || key2)) {
-    rows.forEach(r => {
+    rowsList.forEach(r => {
       const rowBase = getRowCanonicalBase(r, baseKey);
       if (canonicalBase && rowBase !== canonicalBase) return;
-      const rowDate = normalizeDateToISO(r[fechaKey]);
+      const rowDate = getRowDateISO(r, fechaKey);
       if (rowDate !== dateIso) return;
       if (isFichoRowByContent(r)) return;
       const n1 = extractConductorName(key1 ? r[key1] : "");
@@ -3423,9 +4745,9 @@ function getRemainingDriversCountForDate(dateIso, baseValue = currentBase){
   return pool.filter(d => !assigned.has(norm(d)) && !inNovedades.has(norm(d))).length;
 }
 
-function getDateStatusForBase(dateIso, baseValue = currentBase){
-  const stats = getDateAssignmentStatsForBase(dateIso, baseValue);
-  const remaining = getRemainingDriversCountForDate(dateIso, baseValue);
+function getDateStatusForBase(dateIso, baseValue = currentBase, sourceRows = rows){
+  const stats = getDateAssignmentStatsForBase(dateIso, baseValue, sourceRows);
+  const remaining = getRemainingDriversCountForDate(dateIso, baseValue, sourceRows);
 
   if (stats.requiredSlots === 0) {
     return {
@@ -3507,10 +4829,11 @@ function getAllAvailableDatesFromRows(){
   return Array.from(dates).sort((a, b) => b.localeCompare(a)); // reciente primero
 }
 
-function getAllBasesInProgramacion(){
-  const baseKey = getBaseKey();
+function getAllBasesInProgramacion(sourceRows = rows){
+  const rowsList = Array.isArray(sourceRows) ? sourceRows : [];
+  const baseKey = sourceRows === rows ? getBaseKey() : getBaseKeyFromRows(rowsList);
   const bases = new Set();
-  rows.forEach(r => {
+  rowsList.forEach(r => {
     const b = getRowCanonicalBase(r, baseKey);
     if (b) bases.add(b);
   });
@@ -3739,12 +5062,25 @@ function renderConsultaBaseView(){
   });
 }
 
-function renderAdminComplianceDashboard(){
+async function renderAdminComplianceDashboard(){
   if (!adminComplianceCard || !adminComplianceBody || !adminComplianceDate || !adminComplianceSummary) return;
   adminComplianceCard.classList.toggle("hidden", !isSuperAdmin());
   if (!isSuperAdmin()) return;
 
-  const availableDates = getAllAvailableDatesFromRows();
+  try {
+    await loadTargetDateCatalogFromSupabase(true);
+  } catch (error) {
+    console.error("No se pudo cargar catalogo de fechas desde programacion_filas:", error);
+    adminComplianceBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">No se pudieron cargar fechas desde programacion_filas.</td></tr>`;
+    adminComplianceSummary.textContent = "Error fechas";
+    return;
+  }
+
+  const availableDates = (Array.isArray(targetDbDateCatalog) ? targetDbDateCatalog : [])
+    .map(d => normalizeDateToISO(d))
+    .filter(iso => /^\d{4}-\d{2}-\d{2}$/.test(String(iso || "")))
+    .filter((iso, idx, list) => list.indexOf(iso) === idx)
+    .sort((a, b) => b.localeCompare(a));
   const prev = adminComplianceDate.value || "";
   adminComplianceDate.innerHTML = `<option value="">Selecciona fecha...</option>`;
   availableDates.forEach(iso => {
@@ -3764,7 +5100,25 @@ function renderAdminComplianceDashboard(){
     return;
   }
 
-  const bases = getAllBasesInProgramacion();
+  const targetFechaKey = getFechaKeyFromArray(rowsTarget);
+  const targetHasSelectedDate = Array.isArray(rowsTarget)
+    && rowsTarget.some(r => getRowDateISO(r, targetFechaKey) === dateIso);
+  if (!targetHasSelectedDate) {
+    adminComplianceSummary.textContent = `Cargando ${excelDateToReadable(dateIso)}...`;
+    adminComplianceBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Cargando filas de programacion...</td></tr>`;
+    try {
+      await loadTargetProgramacionByDate(dateIso);
+      if (getActiveTabId() === "programacion2") renderTable2();
+    } catch (error) {
+      console.error("No se pudo cargar programacion_filas para cumplimiento:", error);
+      adminComplianceBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">No se pudieron cargar las filas de la fecha seleccionada.</td></tr>`;
+      adminComplianceSummary.textContent = "Error filas";
+      return;
+    }
+  }
+
+  const complianceRows = Array.isArray(rowsTarget) ? rowsTarget : [];
+  const bases = getAllBasesInProgramacion(complianceRows);
   if (bases.length === 0) {
     adminComplianceBody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">No hay bases en la programacion.</td></tr>`;
     adminComplianceSummary.textContent = `${excelDateToReadable(dateIso)} | 0 bases`;
@@ -3774,9 +5128,9 @@ function renderAdminComplianceDashboard(){
   let completeCount = 0;
   adminComplianceBody.innerHTML = "";
   bases.forEach(base => {
-    const status = getDateStatusForBase(dateIso, base);
+    const status = getDateStatusForBase(dateIso, base, complianceRows);
     if (status.state === "complete") completeCount++;
-    const stats = getDateAssignmentStatsForBase(dateIso, base);
+    const stats = getDateAssignmentStatsForBase(dateIso, base, complianceRows);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><strong>${formatBaseLabel(base)}</strong></td>
@@ -4327,28 +5681,82 @@ function dedupeProgramacionRows(inputRows){
 async function loadDriversFromCSV() {
   if (isLoadingDrivers) return;
   isLoadingDrivers = true;
-  
-  const csvUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vThNrFZLbNklMFtPeg0wF4TA1vZHnZ4YNMmGcnHfty_RoNuAQw__iV2GMXqTsv36MPiks1ARpYui1JK/pub?gid=0&single=true&output=csv';
+
+  const baseSheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vThNrFZLbNklMFtPeg0wF4TA1vZHnZ4YNMmGcnHfty_RoNuAQw__iV2GMXqTsv36MPiks1ARpYui1JK";
+  const csvUrls = [
+    `${baseSheetUrl}/pub?gid=0&single=true&output=csv`,
+    `${baseSheetUrl}/pub?output=csv&gid=0`,
+    `${baseSheetUrl}/gviz/tq?tqx=out:csv&gid=0`
+  ];
+
+  const parseCsvRow = (line) => {
+    const out = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        const next = line[i + 1];
+        if (inQuotes && next === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === "," && !inQuotes) {
+        out.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out.map(v => String(v || "").replace(/^"(.*)"$/, "$1").trim());
+  };
   
   csvStatus.innerHTML = 'Cargando conductores...';
   
   try {
-    const response = await fetch(csvUrl, { cache: "no-cache" });
-    const csvText = await response.text();
-    const lines = csvText.split('\n').filter(line => line.trim() !== '');
-    
-    const delimiter = lines[0].includes('\t') ? '\t' : ',';
-    const headers = lines[0].split(delimiter).map(h => h.trim());
+    let csvText = "";
+    let lastError = null;
+    for (const csvUrl of csvUrls) {
+      try {
+        const response = await fetch(csvUrl, { cache: "no-cache" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const txt = await response.text();
+        const normalized = String(txt || "").replace(/^\uFEFF/, "").trim();
+        if (!normalized || normalized.startsWith("<!DOCTYPE html") || normalized.startsWith("<html")) {
+          throw new Error("Respuesta no CSV");
+        }
+        csvText = normalized;
+        break;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (!csvText) {
+      throw (lastError || new Error("No se pudo leer CSV de Google Sheets"));
+    }
+
+    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
+    if (lines.length === 0) throw new Error("CSV vacio");
+
+    const headers = parseCsvRow(lines[0]);
     
     const nombreIdx = headers.findIndex(h => norm(h) === 'NOMBRE');
     const emailIdx = headers.findIndex(h => norm(h) === 'EMAIL');
     const statusIdx = headers.findIndex(h => norm(h) === 'STATUS');
+    if (nombreIdx < 0 || emailIdx < 0) {
+      throw new Error("Columnas NOMBRE/EMAIL no encontradas en CSV");
+    }
     
     const newDriversByBase = {};
     let totalEnabled = 0;
     
     for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(delimiter);
+      const values = parseCsvRow(lines[i]);
       const nombre = values[nombreIdx]?.trim() || '';
       const email = values[emailIdx]?.trim() || '';
       const status = statusIdx !== -1 ? values[statusIdx]?.trim().toUpperCase() : 'ENABLED';
@@ -4368,6 +5776,7 @@ async function loadDriversFromCSV() {
     });
     
     driversByBase = newDriversByBase;
+    saveDriversCache();
     
     const totalBases = Object.keys(driversByBase).length;
     lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases`;
@@ -4377,13 +5786,31 @@ async function loadDriversFromCSV() {
     if (currentBase) {
       rebuildAssigned();
       renderDrivers();
-      renderTable();
-      renderNovedades();
+      if (getActiveTabId() === "programacion2" || getActiveTabId() === "novedades2") {
+        renderTable2();
+        renderNovedades2();
+      } else {
+        renderTable();
+        renderNovedades();
+      }
     }
     
   } catch (error) {
     console.error('Error:', error);
-    csvStatus.innerHTML = 'Error al cargar conductores';
+    const loadedFromCache = loadDriversCache();
+    if (loadedFromCache) {
+      const totalBases = Object.keys(driversByBase || {}).length;
+      const totalEnabled = Object.values(driversByBase || {}).reduce((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0);
+      lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases (cache)`;
+      csvStatus.innerHTML = 'Sin internet para Google Sheet; usando cache local de conductores';
+      fillStartBases();
+      rebuildAssigned();
+      renderDrivers();
+    } else {
+      lblDriversCount.textContent = "Conductores: 0 en 0 bases";
+      csvStatus.innerHTML = 'Error al cargar conductores';
+      showToast(`No se pudo leer conductores desde Google Sheets (${String(error?.message || "sin detalle")}).`, "err");
+    }
   } finally {
     isLoadingDrivers = false;
   }
@@ -4442,12 +5869,13 @@ function fillStartBases(){
 /* ===================== CONDUCTORES ===================== */
 function rebuildAssigned(){
   assignedByBase = {};
-  const baseKey = getBaseKey();
-  const fechaKey = getFechaKey();
-  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromRows();
-  const selectedDate = document.getElementById("filterDate").value;
+  const activeRows = getActiveRowsForDrivers();
+  const baseKey = getBaseKeyFromRows(activeRows);
+  const fechaKey = getFechaKeyFromArray(activeRows);
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(activeRows);
+  const selectedDate = getActiveSelectedDateISO();
 
-  rows.forEach(r => {
+  activeRows.forEach(r => {
     const b = getRowCanonicalBase(r, baseKey);
     if(!b) return;
     if(currentBase && !sameBase(b, currentBase)) return;
@@ -4468,7 +5896,7 @@ function getAvailableDriversForBase(base){
   if(!base) return [];
   const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
   const used = assignedByBase[base] || assignedByBase[formatBaseLabel(base)] || new Set();
-  const selectedDate = getSelectedOperativeDateISO();
+  const selectedDate = getActiveSelectedDateISO();
   
   // Excluir conductores en novedades de la misma base y misma fecha operativa.
   const enNovedades = new Set(
@@ -4480,12 +5908,78 @@ function getAvailableDriversForBase(base){
   return pool.filter(d => !used.has(norm(d)) && !enNovedades.has(norm(d)));
 }
 
-function renderDrivers(){
+function refreshNovedadesManualAutocomplete2(){
+  if (!novedadManualList2) return;
   const base = getBaseCanonical(currentBase);
-  const selectedDate = document.getElementById("filterDate")?.value || "";
-  const filterText = document.getElementById('filterDrivers').value.toLowerCase();
+  const selectedDate = getActiveSelectedDateISO();
+  novedadManualList2.innerHTML = "";
+  if (!base || !selectedDate) return;
+  const available = getAvailableDriversForBase(base).slice().sort((a, b) => String(a).localeCompare(String(b), "es"));
+  available.forEach(name => {
+    const op = document.createElement("option");
+    op.value = name;
+    novedadManualList2.appendChild(op);
+  });
+}
+
+async function addNovedadByName(rawName){
+  const selectedDate = getActiveSelectedDateISO();
+  if (!selectedDate) {
+    showToast("Selecciona una fecha antes de registrar novedades.", "warn");
+    return false;
+  }
+  const base = getBaseCanonical(currentBase);
+  if (!base) {
+    showToast("Selecciona una base operativa antes de registrar novedades.", "warn");
+    return false;
+  }
+  const typed = String(rawName || "").trim();
+  if (!typed) {
+    showToast("Escribe un nombre de conductor para asignar.", "warn");
+    return false;
+  }
+
+  const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
+  const matched = pool.find(name => norm(name) === norm(typed));
+  if (!matched) {
+    showToast(`El conductor "${typed}" no existe en ${formatBaseLabel(base)}.`, "warn");
+    return false;
+  }
+
+  const exists = novedades.some(n =>
+    norm(n.nombre) === norm(matched) &&
+    sameBase(n.base, base) &&
+    normalizeDateToISO(n.fecha) === selectedDate
+  );
+  if (exists) {
+    showToast("Ese conductor ya tiene novedad en esta base y fecha.", "warn");
+    return false;
+  }
+
+  const nueva = await createNovedadInSupabase({
+    nombre: matched,
+    base: formatBaseLabel(base),
+    estado: "PENDIENTE",
+    fecha: selectedDate
+  });
+  novedades.unshift(nueva);
+  renderNovedades();
+  renderNovedades2();
+  renderDrivers();
+  if (novedadManualInput2) novedadManualInput2.value = "";
+  return true;
+}
+
+function renderDrivers(){
+  rebuildAssigned();
+  const base = getBaseCanonical(currentBase);
+  const selectedDate = getActiveSelectedDateISO();
+  const filterInput = document.getElementById('filterDrivers');
+  const filterText = String(filterInput?.value || "").toLowerCase();
   const list = document.getElementById('driversList');
+  if (!list || !currentBaseDisplay) return;
   list.innerHTML = '';
+  refreshNovedadesManualAutocomplete2();
 
   if(!base){
     currentBaseDisplay.textContent = 'Base -';
@@ -4505,8 +5999,13 @@ function renderDrivers(){
   const available = getAvailableDriversForBase(base);
   const dateStatus = getDateStatusForBase(selectedDate);
 
-  if (available.length === 0) {
-    list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">Todos los conductores asignados</div>`;
+  const visible = available.filter(d => d.toLowerCase().includes(filterText));
+  if (visible.length === 0) {
+    list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">${
+      available.length === 0
+        ? "Todos los conductores asignados"
+        : "No hay coincidencias con ese filtro"
+    }</div>`;
     return;
   }
 
@@ -4522,9 +6021,7 @@ function renderDrivers(){
     list.appendChild(info);
   }
 
-  available
-    .filter(d => d.toLowerCase().includes(filterText))
-    .forEach(name => {
+  visible.forEach(name => {
       const div = document.createElement('div');
       div.className = 'driver-item';
       div.draggable = true;
@@ -4549,42 +6046,54 @@ function renderDrivers(){
       list.appendChild(div);
     });
   updateWorkflowGuide();
+  refreshNovedadesManualAutocomplete2();
 }
 
 /* ===================== NOVEDADES ===================== */
 function renderNovedades(){
-  if (!novedadesBody) return;
+  renderNovedadesInto({
+    bodyEl: novedadesBody,
+    countEl: novedadesCount,
+    baseEl: novedadesBaseDisplay
+  });
+  renderNovedades2();
+  renderLiveExcelPreview();
+}
+
+function renderNovedadesInto(opts = {}){
+  const bodyEl = opts.bodyEl;
+  const countEl = opts.countEl;
+  const baseEl = opts.baseEl;
+  const mode = String(opts.mode || "source");
+  if (!bodyEl) return;
   adjustDynamicTableViewport();
-  const selectedDate = getSelectedOperativeDateISO();
-  
-  // Filtrar novedades por base actual y fecha seleccionada.
+  const selectedDate = mode === "target"
+    ? normalizeDateToISO(filterDate2?.value || "")
+    : getSelectedOperativeDateISO();
   const novedadesBase = novedades.filter(n =>
     sameBase(n.base, currentBase) &&
     (!!selectedDate && normalizeDateToISO(n.fecha) === selectedDate)
   );
-  novedadesCount.textContent = novedadesBase.length;
-  novedadesBaseDisplay.textContent = currentBase ? formatBaseLabel(currentBase) : '-';
-  
-  novedadesBody.innerHTML = '';
+  if (countEl) countEl.textContent = novedadesBase.length;
+  if (baseEl) baseEl.textContent = currentBase ? formatBaseLabel(currentBase) : '-';
+  bodyEl.innerHTML = '';
 
   if (!selectedDate) {
-    novedadesBody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px" class="muted">
+    bodyEl.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px" class="muted">
       Selecciona una fecha para ver y registrar novedades
     </td></tr>`;
     return;
   }
-  
   if (novedadesBase.length === 0) {
-    novedadesBody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px" class="muted">
+    bodyEl.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:20px" class="muted">
       No hay conductores con novedades en esta base para ${excelDateToReadable(selectedDate)}
     </td></tr>`;
     return;
   }
-  
+
   novedadesBase.forEach((n) => {
     const tr = document.createElement('tr');
     const novedad = NOVEDADES[n.estado] || NOVEDADES.PENDIENTE;
-    
     tr.innerHTML = `
       <td>
         <div class="conductor-info">
@@ -4609,56 +6118,72 @@ function renderNovedades(){
         <button class="btn-small" data-id="${n.id}">Quitar</button>
       </td>
     `;
-    
-    novedadesBody.appendChild(tr);
+    bodyEl.appendChild(tr);
   });
-  
-  // Eventos para los selects
-  document.querySelectorAll('.estado-select').forEach(select => {
+
+  bodyEl.querySelectorAll('.estado-select').forEach(select => {
     select.addEventListener('change', async (e) => {
       const id = e.target.getAttribute('data-id');
       const nuevoEstado = e.target.value;
       const globalIndex = novedades.findIndex(n => String(n.id) === String(id));
-      if (globalIndex !== -1) {
-        try {
-          await updateNovedadEstadoInSupabase(id, nuevoEstado);
-          novedades[globalIndex].estado = nuevoEstado;
-          renderNovedades();
-          renderDrivers(); // Actualizar disponibles
-        } catch (error) {
-          console.error("Error actualizando novedad:", error);
-          alert(`No se pudo actualizar la novedad en Supabase.\n${error?.message || ""}`);
-          renderNovedades();
-        }
+      if (globalIndex === -1) return;
+      try {
+        await updateNovedadEstadoInSupabase(id, nuevoEstado);
+        novedades[globalIndex].estado = nuevoEstado;
+        renderNovedades();
+        renderDrivers();
+      } catch (error) {
+        console.error("Error actualizando novedad:", error);
+        alert(`No se pudo actualizar la novedad en Supabase.\n${error?.message || ""}`);
+        renderNovedades();
       }
     });
   });
-  
-  // Eventos para botones de quitar
-  document.querySelectorAll('.btn-small').forEach(btn => {
+
+  bodyEl.querySelectorAll('.btn-small').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const id = e.target.getAttribute('data-id');
       const globalIndex = novedades.findIndex(n => String(n.id) === String(id));
-      if (globalIndex !== -1) {
-        try {
-          await deleteNovedadInSupabase(id);
-          novedades.splice(globalIndex, 1);
-          renderNovedades();
-          renderDrivers(); // Actualizar disponibles
-        } catch (error) {
-          console.error("Error eliminando novedad:", error);
-          alert("No se pudo eliminar la novedad en Supabase.");
-        }
+      if (globalIndex === -1) return;
+      try {
+        await deleteNovedadInSupabase(id);
+        novedades.splice(globalIndex, 1);
+        renderNovedades();
+        renderDrivers();
+      } catch (error) {
+        console.error("Error eliminando novedad:", error);
+        alert("No se pudo eliminar la novedad en Supabase.");
       }
     });
   });
-  renderLiveExcelPreview();
 }
 
-function refreshVisorDateOptions(){
+function renderNovedades2(){
+  renderNovedadesInto({
+    bodyEl: novedadesBody2,
+    countEl: novedadesCount2,
+    baseEl: novedadesBaseDisplay2,
+    mode: "target"
+  });
+  refreshNovedadesManualAutocomplete2();
+}
+
+async function refreshVisorDateOptions(){
   if (!visorDateSelect) return;
+  try {
+    await loadTargetDateCatalogFromSupabase(true);
+  } catch (error) {
+    console.error("No se pudo cargar catalogo de fechas para el visor:", error);
+  }
   const prev = visorDateSelect.value || "";
-  const dates = getAllAvailableDatesFromRows();
+  const dateSource = (Array.isArray(targetDbDateCatalog) && targetDbDateCatalog.length)
+    ? targetDbDateCatalog
+    : getAllAvailableDatesFromRows();
+  const dates = Array.from(new Set(
+    dateSource
+      .map(d => normalizeDateToISO(d))
+      .filter(iso => /^\d{4}-\d{2}-\d{2}$/.test(String(iso || "")))
+  )).sort((a, b) => b.localeCompare(a));
   visorDateSelect.innerHTML = `<option value="">Selecciona fecha...</option>`;
   dates.forEach(iso => {
     const op = document.createElement("option");
@@ -4669,37 +6194,54 @@ function refreshVisorDateOptions(){
   if (prev && dates.includes(prev)) {
     visorDateSelect.value = prev;
   } else if (dates.length > 0) {
-    visorDateSelect.value = dates[dates.length - 1];
+    visorDateSelect.value = dates[0];
   } else {
     visorDateSelect.value = "";
   }
 }
 
-function renderLiveExcelPreview(){
+async function renderLiveExcelPreview(){
   if (!liveExcelPreview) return;
-  if (!rows.length) {
-    liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">No hay datos para visualizar.</div>`;
-    return;
-  }
-
-  const fechaKey = getFechaKey();
-  const puestoKey = getHeaderKeyByNorm(["PUESTO"]);
-  const numeroKey = getHeaderKeyByNorm(["#"]);
-  const vehiculoKey = getHeaderKeyByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
-  const horaFinKey = getHeaderKeyByNorm(["HORA FIN", "HORA FINAL"]);
-  const headerSet = new Set();
-  rows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
-  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(Array.from(headerSet));
-  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromRows();
-
   const visorDate = normalizeDateToISO(visorDateSelect?.value || "");
   if (!visorDate) {
     liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">Selecciona una fecha en el visor para ver toda la programacion de todas las bases.</div>`;
     return;
   }
 
-  let ordered = rows.slice();
-  if (fechaKey) ordered = ordered.filter(r => normalizeDateToISO(r[fechaKey]) === visorDate);
+  const targetFechaKey = getFechaKeyFromArray(rowsTarget);
+  const targetHasSelectedDate = Array.isArray(rowsTarget)
+    && rowsTarget.some(r => getRowDateISO(r, targetFechaKey) === visorDate);
+  if (!targetHasSelectedDate) {
+    liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">Cargando programacion de ${excelDateToReadable(visorDate)}...</div>`;
+    try {
+      await loadTargetProgramacionByDate(visorDate);
+    } catch (error) {
+      console.error("No se pudo cargar programacion_filas para el visor:", error);
+      liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">No se pudieron cargar las filas de ${excelDateToReadable(visorDate)} desde programacion_filas.</div>`;
+      return;
+    }
+  }
+
+  const sourceRows = Array.isArray(rowsTarget) && rowsTarget.length ? rowsTarget : rows;
+  if (!sourceRows.length) {
+    liveExcelPreview.innerHTML = `<div class="muted" style="padding:12px;text-align:center">No hay datos para visualizar.</div>`;
+    return;
+  }
+
+  const headerSet = new Set();
+  sourceRows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
+  const headerKeys = Array.from(headerSet);
+  const getHeaderKeyByNormFromSource = (aliases) => headerKeys.find(k => aliases.includes(norm(k))) || null;
+  const fechaKey = getFechaKeyFromArray(sourceRows);
+  const puestoKey = getHeaderKeyByNormFromSource(["PUESTO"]);
+  const numeroKey = getHeaderKeyByNormFromSource(["#"]);
+  const vehiculoKey = getHeaderKeyByNormFromSource(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
+  const horaFinKey = getHeaderKeyByNormFromSource(["HORA FIN", "HORA FINAL"]);
+  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(headerKeys);
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(sourceRows);
+
+  let ordered = sourceRows.slice();
+  if (fechaKey) ordered = ordered.filter(r => getRowDateISO(r, fechaKey) === visorDate);
   const scopeMode = String(visorScopeSelect?.value || "all");
   if (scopeMode === "base") {
     const baseScope = getBaseCanonical(currentUserBase);
@@ -4721,7 +6263,7 @@ function renderLiveExcelPreview(){
 
   const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
   const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
-  const baseKey = getBaseKey();
+  const baseKey = getBaseKeyFromRows(ordered);
   const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, { baseKey, fechaKey });
 
   const formatConductorForPreview = (rowObj, conductorKey) => {
@@ -5341,6 +6883,7 @@ function renderTable(){
   renderAdminComplianceDashboard();
   renderConsultaBaseView();
   renderLiveExcelPreview();
+  renderTable2();
 }
 
 /* ===================== PESTANAS ===================== */
@@ -5358,6 +6901,26 @@ document.querySelectorAll('.tab').forEach(tab => {
     // Si es la pestana de novedades, renderizar
     if (tabId === 'novedades') {
       renderNovedades();
+    }
+    if (tabId === 'programacion2') {
+      loadLatestProgramacionFromTargetSupabase()
+        .then(async () => {
+          const selected = normalizeDateToISO(filterDate2?.value || "");
+          if (selected) {
+            await loadTargetProgramacionByDate(selected);
+          }
+          renderTable2();
+          renderDrivers();
+        })
+        .catch((e) => {
+          console.error("Error cargando programacion 2:", e);
+          showToast("No se pudo cargar la programacion de DB nueva.", "err");
+          renderTable2();
+          renderDrivers();
+        });
+    }
+    if (tabId === 'novedades2') {
+      renderNovedades2();
     }
     if (tabId === 'planilla-afiliados') {
       ensureFreshPlanillaData({ force: false });
@@ -5378,8 +6941,12 @@ document.querySelectorAll('.tab').forEach(tab => {
       renderConsultaBaseView();
     }
     if (tabId === 'visor') {
-      refreshVisorDateOptions();
-      renderLiveExcelPreview();
+      refreshVisorDateOptions()
+        .then(() => renderLiveExcelPreview())
+        .catch((error) => {
+          console.error("No se pudo actualizar el visor:", error);
+          renderLiveExcelPreview();
+        });
     }
     if (tabId === 'debugsupabase') {
       renderSupabaseDebug();
@@ -5391,49 +6958,22 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// Hacer que la tabla de novedades acepte drops
-const novedadesGrid = document.getElementById('novedadesGrid');
-if (novedadesGrid) {
-  novedadesGrid.ondragover = ev => {
+async function handleNovedadesDropData(data){
+  if (!data || data.tipo !== "conductor") return;
+  await addNovedadByName(data.nombre);
+}
+
+function attachNovedadesDropHandlers(gridEl){
+  if (!gridEl) return;
+  gridEl.ondragover = ev => {
     ev.preventDefault();
     autoScrollDuringDrag(ev.clientY);
   };
-  novedadesGrid.ondrop = async ev => {
+  gridEl.ondrop = async ev => {
     ev.preventDefault();
-    
     try {
       const data = JSON.parse(ev.dataTransfer.getData('text/plain'));
-      
-      if (data.tipo === 'conductor') {
-        const selectedDate = getSelectedOperativeDateISO();
-        if (!selectedDate) {
-          showToast("Selecciona una fecha antes de registrar novedades.", "warn");
-          return;
-        }
-        // Verificar que el conductor no este ya en novedades
-        const existe = novedades.some(n => 
-          norm(n.nombre) === norm(data.nombre) &&
-          sameBase(n.base, data.base) &&
-          normalizeDateToISO(n.fecha) === selectedDate
-        );
-        
-        if (existe) {
-          alert('Este conductor ya esta en la tabla de novedades para la fecha seleccionada');
-          showToast("Ese conductor ya tiene novedad en esta base y fecha.", "warn");
-          return;
-        }
-        
-        const nueva = await createNovedadInSupabase({
-          nombre: data.nombre,
-          base: formatBaseLabel(data.base),
-          estado: 'PENDIENTE',
-          fecha: selectedDate
-        });
-        novedades.unshift(nueva);
-        
-        renderNovedades();
-        renderDrivers(); // Actualizar lista de disponibles
-      }
+      await handleNovedadesDropData(data);
     } catch (e) {
       console.error('Error creando novedad', e);
       const detail = String(e?.message || "");
@@ -5446,24 +6986,34 @@ if (novedadesGrid) {
   };
 }
 
+attachNovedadesDropHandlers(document.getElementById("novedadesGrid"));
+attachNovedadesDropHandlers(document.getElementById("novedadesGrid2"));
+
 /* ===================== ARCHIVO ===================== */
-async function readFile(file){
+async function readFile(file, options = {}){
+  const mode = String(options?.mode || "source");
+  const baseRowsForMode = mode === "target"
+    ? (Array.isArray(rowsTarget) ? rowsTarget.slice() : [])
+    : (Array.isArray(rows) ? rows.slice() : []);
   setSyncStatus("warn", "Validando archivo...");
-  const parsedRows = await new Promise((resolve, reject) => {
+  const parsed = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
       try {
         const data = new Uint8Array(e.target.result);
         const wb = XLSX.read(data, {type:'array'});
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
-        const prepared = normalizeProgramacionRows(json);
+        const jsonRaw = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+        const prepared = normalizeProgramacionRows(jsonRaw);
         validateProgramacionRows(prepared.normalized);
         if (prepared.unmappedVehicles > 0) {
           showToast(`Atencion: ${prepared.unmappedVehicles} vehiculos sin base mapeada.`, "warn");
           setSyncStatus("warn", "Mapeo parcial");
         }
-        resolve(prepared.normalized);
+        resolve({
+          normalized: prepared.normalized,
+          raw: Array.isArray(jsonRaw) ? jsonRaw : []
+        });
       } catch (error) {
         reject(error);
       }
@@ -5471,14 +7021,18 @@ async function readFile(file){
     reader.onerror = () => reject(reader.error);
     reader.readAsArrayBuffer(file);
   });
+  const parsedRows = Array.isArray(parsed?.normalized) ? parsed.normalized : [];
+  const parsedRowsOriginal = Array.isArray(parsed?.raw) ? parsed.raw : [];
 
   const adminDayDate = normalizeDateToISO(document.getElementById("adminDayDate")?.value || "");
   const scopedDayImport = isSuperAdmin() && /^\d{4}-\d{2}-\d{2}$/.test(adminDayDate);
   let nextRows = parsedRows;
-
-  if (scopedDayImport) {
+  if (mode === "target") {
+    nextRows = parsedRowsOriginal.slice();
+    showToast(`Importacion DB nueva: ${nextRows.length} filas guardadas tal cual Excel.`, "ok");
+  } else if (scopedDayImport) {
     const incomingFechaKey = getFechaKeyFromArray(parsedRows);
-    const existingFechaKey = getFechaKeyFromArray(rows);
+    const existingFechaKey = getFechaKeyFromArray(baseRowsForMode);
     const incomingParts = partitionRowsByDate(parsedRows, adminDayDate, incomingFechaKey);
     if (incomingParts.selected.length === 0) {
       const detectedDates = Array.from(new Set(
@@ -5494,7 +7048,7 @@ async function readFile(file){
       );
     }
 
-    const existingParts = partitionRowsByDate(rows, adminDayDate, existingFechaKey);
+    const existingParts = partitionRowsByDate(baseRowsForMode, adminDayDate, existingFechaKey);
     const mergeResult = mergeImportedRowsPreservingAssignments(incomingParts.selected, existingParts.selected);
     nextRows = existingParts.rest.concat(mergeResult.mergedRows);
     showToast(
@@ -5502,38 +7056,57 @@ async function readFile(file){
       "ok"
     );
   } else {
-    const mergeResult = mergeImportedRowsPreservingAssignments(parsedRows, rows);
+    const mergeResult = mergeImportedRowsPreservingAssignments(parsedRows, baseRowsForMode);
     // Mantener el historial de dias: combina lo importado con lo existente
     // en lugar de reemplazar por completo cuando no se usa "Dia a editar".
-    nextRows = mergeLatestRowsIntoConsolidatedRows(rows, mergeResult.mergedRows);
+    nextRows = mergeLatestRowsIntoConsolidatedRows(baseRowsForMode, mergeResult.mergedRows);
     if (mergeResult.matchedRows > 0) {
       showToast(
         `Importacion combinada: ${mergeResult.preservedAssignments} asignaciones conservadas (${mergeResult.matchedRows} filas coinciden).`,
         "ok"
       );
-    } else if (rows.length > 0) {
-      const addedRows = Math.max(0, nextRows.length - rows.length);
+    } else if (baseRowsForMode.length > 0) {
+      const addedRows = Math.max(0, nextRows.length - baseRowsForMode.length);
       showToast(`Importacion anexada: ${addedRows} filas nuevas agregadas.`, "ok");
     }
   }
 
-  rows = nextRows;
-  updateExportAccess();
-  fillStartBases();
-  if (currentBase) refreshFilterDateOptions();
+  if (mode === "target") {
+    rowsTarget = normalizeProgramacionRows(nextRows).normalized;
+  } else {
+    rows = nextRows.slice();
+    updateExportAccess();
+    fillStartBases();
+    if (currentBase) refreshFilterDateOptions();
+  }
   try {
-    await saveProgramacionToSupabase(file, nextRows);
+    if (mode === "target") {
+      await saveProgramacionToTargetSupabase(file, nextRows);
+    } else {
+      await saveProgramacionToSupabase(file, nextRows);
+    }
   } catch (error) {
     console.error("No se pudo persistir en Supabase:", error);
-    lblGlobal.textContent = `Archivo cargado localmente: ${file.name} | Filas: ${rows.length}`;
+    const detail = String(error?.message || "").trim();
+    if (mode === "target") {
+      showToast(`Archivo cargado localmente para DB nueva: ${file.name} | Filas: ${rowsTarget.length}`, "warn");
+    } else {
+      lblGlobal.textContent = `Archivo cargado localmente: ${file.name} | Filas: ${rows.length}`;
+    }
     setSyncStatus("warn", "Solo local");
-    alert("El archivo se cargo, pero no se pudo guardar en Supabase. Revisa tablas/politicas.");
+    alert(mode === "target"
+      ? `El archivo se cargo, pero no se pudo guardar en la base nueva de Supabase.\n\nDetalle: ${detail || "sin detalle"}`
+      : "El archivo se cargo, pero no se pudo guardar en Supabase. Revisa tablas/politicas.");
   }
 
   if(currentBase){
     operativoInner.classList.remove("hidden");
-    renderTable();
-    renderDrivers();
+    if (mode === "target") {
+      renderTable2();
+    } else {
+      renderTable();
+      renderDrivers();
+    }
   }
 }
 
@@ -5550,16 +7123,38 @@ function enterBase(base){
 
   lblCurrentBase.textContent = `Base: ${formatBaseLabel(currentBase)}`;
   operativoInner.classList.remove("hidden");
-  
+
+  const activeTab = getActiveTabId();
+  const usingTargetView = activeTab === "programacion2" || activeTab === "novedades2";
   refreshFilterDateOptions();
-  autoSelectDateForBaseOperator();
+  refreshFilterDateOptions2();
+  if (!usingTargetView) {
+    autoSelectDateForBaseOperator();
+  }
   document.getElementById("filterDrivers").value = "";
-  
+
   rebuildAssigned();
   updateWorkflowGuide();
-  renderTable();
-  renderDrivers();
-  renderNovedades();
+  if (usingTargetView) {
+    const selectedDate2 = normalizeDateToISO(filterDate2?.value || "");
+    if (selectedDate2) {
+      loadTargetProgramacionByDate(selectedDate2)
+        .catch((e) => console.error("No se pudo cargar Programacion 2 por fecha al cambiar base:", e))
+        .finally(() => {
+          renderTable2();
+          renderDrivers();
+          renderNovedades2();
+        });
+      return;
+    }
+    renderTable2();
+    renderDrivers();
+    renderNovedades2();
+  } else {
+    renderTable();
+    renderDrivers();
+    renderNovedades();
+  }
   if (isSuperAdmin()) {
     showToast("Admin: puedes intercambiar posiciones de vehiculos por arrastre en cualquier base.", "ok");
   } else if (currentBase === "3") {
@@ -5577,6 +7172,7 @@ function exitBase(){
   lblCurrentBase.textContent = "Base: -";
   operativoInner.classList.add("hidden");
   refreshFilterDateOptions();
+  refreshFilterDateOptions2();
   updateWorkflowGuide();
 }
 
@@ -5681,6 +7277,23 @@ async function handleProgramacionFileChange(e){
     console.error("Error procesando archivo:", error);
     setSyncStatus("err", "Archivo invalido");
     alert(error?.message || "No se pudo cargar el archivo en Supabase.");
+  } finally {
+    if (e?.target) e.target.value = "";
+  }
+}
+
+async function handleProgramacionFileChangeNewDb(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  try {
+    setSyncStatus("warn", "Subiendo archivo a DB nueva...");
+    await readFile(f, { mode: "target" });
+  } catch (error) {
+    console.error("Error procesando archivo para DB nueva:", error);
+    setSyncStatus("err", "Archivo invalido (DB nueva)");
+    alert(error?.message || "No se pudo cargar el archivo en la base nueva de Supabase.");
+  } finally {
+    if (e?.target) e.target.value = "";
   }
 }
 
@@ -5842,6 +7455,10 @@ function bindUIEvents(){
   const fileProg = document.getElementById("fileProg");
   if (fileProg) {
     fileProg.addEventListener("change", handleProgramacionFileChange);
+  }
+  const fileProgNewDb = document.getElementById("fileProgNewDb");
+  if (fileProgNewDb) {
+    fileProgNewDb.addEventListener("change", handleProgramacionFileChangeNewDb);
   }
 
   const btnExport = document.getElementById("btnExport");
@@ -6150,19 +7767,49 @@ function bindUIEvents(){
   if (btnExitBase) btnExitBase.addEventListener("click", exitBase);
 
   if (btnRefreshDebug) btnRefreshDebug.addEventListener("click", renderSupabaseDebug);
+  if (btnMigrationStatus) btnMigrationStatus.addEventListener("click", renderMigrationStatus);
+  if (btnMigrateLatestProgramacion) btnMigrateLatestProgramacion.addEventListener("click", handleMigrateLatestProgramacionClick);
+  if (btnMigrateSelectedProgramacion) btnMigrateSelectedProgramacion.addEventListener("click", handleMigrateSelectedProgramacionClick);
   if (!AUDIT_DISABLED && btnRefreshAudit) btnRefreshAudit.addEventListener("click", () => loadAuditLogFromSupabase());
   if (!AUDIT_DISABLED && auditFrom) auditFrom.addEventListener("change", renderAuditLog);
   if (!AUDIT_DISABLED && auditTo) auditTo.addEventListener("change", renderAuditLog);
   if (!AUDIT_DISABLED && auditTableFilter) auditTableFilter.addEventListener("change", renderAuditLog);
   if (!AUDIT_DISABLED && auditOpFilter) auditOpFilter.addEventListener("change", renderAuditLog);
   if (!AUDIT_DISABLED && auditUserFilter) auditUserFilter.addEventListener("input", renderAuditLog);
-  if (btnRefreshVisor) btnRefreshVisor.addEventListener("click", renderLiveExcelPreview);
+  if (btnRefreshVisor) {
+    btnRefreshVisor.addEventListener("click", async () => {
+      await refreshVisorDateOptions();
+      await renderLiveExcelPreview();
+    });
+  }
   if (btnExportVisor) btnExportVisor.addEventListener("click", exportLiveExcelPreviewTable);
   if (visorDateSelect) visorDateSelect.addEventListener("change", renderLiveExcelPreview);
   if (visorScopeSelect) visorScopeSelect.addEventListener("change", renderLiveExcelPreview);
 
   const filterDrivers = document.getElementById("filterDrivers");
   if (filterDrivers) filterDrivers.addEventListener("input", renderDrivers);
+  if (btnAddNovedadManual2) {
+    btnAddNovedadManual2.addEventListener("click", async () => {
+      try {
+        await addNovedadByName(novedadManualInput2?.value || "");
+      } catch (error) {
+        console.error("Error asignando novedad manual:", error);
+        showToast("No se pudo asignar el conductor por nombre.", "err");
+      }
+    });
+  }
+  if (novedadManualInput2) {
+    novedadManualInput2.addEventListener("keydown", async (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      try {
+        await addNovedadByName(novedadManualInput2.value || "");
+      } catch (error) {
+        console.error("Error asignando novedad manual:", error);
+        showToast("No se pudo asignar el conductor por nombre.", "err");
+      }
+    });
+  }
 
   const filterDate = document.getElementById("filterDate");
   if (filterDate) {
@@ -6172,6 +7819,51 @@ function bindUIEvents(){
   const clearFilter = document.getElementById("clearFilter");
   if (clearFilter) {
     clearFilter.addEventListener("click", handleClearFilterClick);
+  }
+  if (filterDate2) {
+    filterDate2.addEventListener("change", async () => {
+      try {
+        const selected = normalizeDateToISO(filterDate2.value || "");
+        if (selected) {
+          await loadTargetProgramacionByDate(selected);
+        } else {
+          await loadLatestProgramacionFromTargetSupabase();
+        }
+      } catch (e) {
+        console.error("No se pudo cargar fecha seleccionada desde DB nueva:", e);
+      }
+      renderTable2();
+      renderDrivers();
+    });
+  }
+  if (clearFilter2) {
+    clearFilter2.addEventListener("click", async () => {
+      if (filterDate2) filterDate2.value = "";
+      try {
+        await loadLatestProgramacionFromTargetSupabase();
+      } catch (e) {
+        console.error("No se pudo recargar Programacion 2 al limpiar filtro:", e);
+      }
+      renderTable2();
+      renderDrivers();
+    });
+  }
+  if (btnRefreshProgramacion2) {
+    btnRefreshProgramacion2.addEventListener("click", async () => {
+      try {
+        await loadLatestProgramacionFromTargetSupabase();
+        const selected = normalizeDateToISO(filterDate2?.value || "");
+        if (selected) {
+          await loadTargetProgramacionByDate(selected);
+        }
+        renderTable2();
+        renderDrivers();
+        showToast("Programacion 2 actualizada desde DB nueva.", "ok");
+      } catch (e) {
+        console.error("No se pudo actualizar programacion 2:", e);
+        showToast("No se pudo actualizar Programacion 2.", "err");
+      }
+    });
   }
 
   if (btnRefreshPlanilla) {
@@ -6224,7 +7916,11 @@ function bindUIEvents(){
 
 // ==================== INIT ====================
 async function initializeApp(){
+  renderMigrationDbInfo();
   loadBasesFromStorage();
+  if (loadDriversCache()) {
+    fillStartBases();
+  }
   await loadDriversFromCSV();
   await loadLatestProgramacionFromSupabase();
   await loadNovedadesFromSupabase();
@@ -6253,7 +7949,39 @@ async function initializeApp(){
   renderTable();
   renderDrivers();
   renderNovedades();
+  try {
+    await loadLatestProgramacionFromTargetSupabase();
+  } catch (targetLoadError) {
+    console.warn("No se pudo cargar programacion inicial de DB nueva:", targetLoadError);
+  }
+  const pendingTarget = readPendingTargetRowsLocal();
+  if (pendingTarget && Array.isArray(pendingTarget.rows_data) && pendingTarget.rows_data.length > 0) {
+    const sameTargetProgramacion = !pendingTarget.programacion_id
+      || !currentProgramacionIdTarget
+      || String(pendingTarget.programacion_id) === String(currentProgramacionIdTarget);
+    if (sameTargetProgramacion) {
+      rowsTarget = dedupeProgramacionRows(pendingTarget.rows_data).rows;
+      if (pendingTarget.programacion_id) currentProgramacionIdTarget = pendingTarget.programacion_id;
+      if (pendingTarget.file_name) currentProgramacionFileNameTarget = pendingTarget.file_name;
+      setSyncStatus("warn", "Pendiente DB nueva");
+      if (navigator.onLine) {
+        try {
+          await syncProgramacionRowsToTargetSupabase("Pendientes DB nueva sincronizados.", { skipQueueSave: true });
+        } catch (syncTargetError) {
+          console.warn("Pendientes DB nueva siguen en cola:", syncTargetError);
+        }
+      }
+    }
+  }
+  renderTable2();
   renderConsultaBaseView();
+  if (isSuperAdmin()) {
+    try {
+      await renderMigrationStatus();
+    } catch (migrationError) {
+      console.warn("No se pudo renderizar estado de migracion:", migrationError);
+    }
+  }
 }
 
 function bindWindowEvents(){
@@ -6261,6 +7989,13 @@ function bindWindowEvents(){
     showToast("Conexion restablecida. Sincronizando...", "ok");
     setSyncStatus("warn", "Reconectado - sincronizando");
     await syncProgramacionRowsToSupabase("Cambios pendientes sincronizados.");
+    if (hasPendingTargetRowsLocal()) {
+      try {
+        await syncProgramacionRowsToTargetSupabase("Pendientes DB nueva sincronizados.", { skipQueueSave: true });
+      } catch (targetSyncError) {
+        console.warn("No se pudieron sincronizar pendientes DB nueva:", targetSyncError);
+      }
+    }
     await refreshFromSupabaseIfSafe();
   });
 
@@ -6273,7 +8008,11 @@ function bindWindowEvents(){
     if (syncRowsInProgress || syncRowsPending) {
       savePendingRowsLocally("Recarga durante sincronizacion");
     }
+    if (syncRowsInProgressTarget || syncRowsPendingTarget) {
+      savePendingTargetRowsLocally("Recarga durante sincronizacion (DB nueva)");
+    }
     clearSyncRetryTimer();
+    clearTargetSyncRetryTimer();
     if (autoRefreshTimer) {
       clearInterval(autoRefreshTimer);
       autoRefreshTimer = null;
@@ -6288,6 +8027,13 @@ function bindWindowEvents(){
     if (navigator.onLine && hasPendingRowsLocal()) {
       await syncProgramacionRowsToSupabase("Sincronizacion al volver a la ventana.");
     }
+    if (navigator.onLine && hasPendingTargetRowsLocal()) {
+      try {
+        await syncProgramacionRowsToTargetSupabase("Sincronizacion DB nueva al volver a la ventana.", { skipQueueSave: true });
+      } catch (targetSyncError) {
+        console.warn("Pendiente DB nueva al volver a la ventana:", targetSyncError);
+      }
+    }
     await refreshFromSupabaseIfSafe();
   });
 
@@ -6295,6 +8041,13 @@ function bindWindowEvents(){
     if (document.visibilityState !== "visible") return;
     if (navigator.onLine && hasPendingRowsLocal()) {
       await syncProgramacionRowsToSupabase("Sincronizacion al volver a la pestana.");
+    }
+    if (navigator.onLine && hasPendingTargetRowsLocal()) {
+      try {
+        await syncProgramacionRowsToTargetSupabase("Sincronizacion DB nueva al volver a la pestana.", { skipQueueSave: true });
+      } catch (targetSyncError) {
+        console.warn("Pendiente DB nueva al volver a la pestana:", targetSyncError);
+      }
     }
     await refreshFromSupabaseIfSafe();
   });
@@ -6304,6 +8057,14 @@ function bindWindowEvents(){
       if (!navigator.onLine) return;
       if (hasPendingRowsLocal()) {
         await syncProgramacionRowsToSupabase("Reintento automatico de pendientes.");
+        return;
+      }
+      if (hasPendingTargetRowsLocal()) {
+        try {
+          await syncProgramacionRowsToTargetSupabase("Reintento automatico pendientes DB nueva.", { skipQueueSave: true });
+        } catch (targetSyncError) {
+          console.warn("Reintento automatico DB nueva no confirmado:", targetSyncError);
+        }
         return;
       }
       await refreshFromSupabaseIfSafe();
@@ -6321,6 +8082,11 @@ function bindWindowEvents(){
 
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
+
+
 
 
 
