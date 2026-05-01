@@ -44,9 +44,34 @@ if (!window.XLSX) {
 if (!window.supabase || typeof window.supabase.createClient !== "function") {
   throw new Error("No cargo Supabase JS. Verifica conexion a internet o ruta del script.");
 }
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const planillaSupabaseClient = window.supabase.createClient(PLANILLA_SUPABASE_URL, PLANILLA_SUPABASE_ANON_KEY);
-const programacionesTargetClient = window.supabase.createClient(PROGRAMACIONES_TARGET_SUPABASE_URL, PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY);
+
+function sameSupabaseConfig(urlA, keyA, urlB, keyB){
+  return String(urlA || "") === String(urlB || "") && String(keyA || "") === String(keyB || "");
+}
+
+function createSupabaseClient(url, key, storageKey, persistSession = true){
+  return window.supabase.createClient(url, key, {
+    auth: {
+      storageKey,
+      persistSession,
+      autoRefreshToken: persistSession,
+      detectSessionInUrl: persistSession
+    }
+  });
+}
+
+const programacionesTargetClient = createSupabaseClient(
+  PROGRAMACIONES_TARGET_SUPABASE_URL,
+  PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY,
+  "combuses-programaciones-target-auth",
+  true
+);
+const supabaseClient = sameSupabaseConfig(SUPABASE_URL, SUPABASE_ANON_KEY, PROGRAMACIONES_TARGET_SUPABASE_URL, PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY)
+  ? programacionesTargetClient
+  : createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, "combuses-source-data-auth", false);
+const planillaSupabaseClient = sameSupabaseConfig(PLANILLA_SUPABASE_URL, PLANILLA_SUPABASE_ANON_KEY, PROGRAMACIONES_TARGET_SUPABASE_URL, PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY)
+  ? programacionesTargetClient
+  : createSupabaseClient(PLANILLA_SUPABASE_URL, PLANILLA_SUPABASE_ANON_KEY, "combuses-planilla-data-auth", false);
 const authClient = programacionesTargetClient;
 const PROGRAMACIONES_SOURCE_REF = USE_ONLY_NEW_DB ? "(desactivado)" : getProjectRefFromUrl(SUPABASE_URL);
 const PROGRAMACIONES_TARGET_REF = getProjectRefFromUrl(PROGRAMACIONES_TARGET_SUPABASE_URL);
@@ -95,9 +120,13 @@ let syncRetryTimer = null;
 let syncRowsInProgressTarget = false;
 let syncRowsPendingTarget = false;
 let syncRetryTimerTarget = null;
+let table2ReloadingMissingRows = false;
+let targetEditSaveTimer = null;
+let targetEditingUntil = 0;
 let autoRefreshTimer = null;
 const SYNC_RETRY_DELAY_MS = 8000;
 const AUTO_REFRESH_DELAY_MS = 120000;
+const ENABLE_PROGRAMACION_AUTO_REFRESH = false;
 
 function getPendingRowsStorageKey(){
   return `pending_programacion_rows_${currentUserId || "anon"}`;
@@ -207,6 +236,38 @@ function scheduleTargetSyncRetry(reason = "Reintento automatico DB nueva"){
   }, SYNC_RETRY_DELAY_MS);
 }
 
+function scheduleTargetEditSave(reason = "Cambios guardados en DB nueva."){
+  if (!currentUserId || !currentProgramacionIdTarget) return;
+  targetEditingUntil = Date.now() + 3000;
+  savePendingTargetRowsLocally("Pendiente DB nueva", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+  setSyncStatus("warn", "Pendiente DB nueva");
+  if (targetEditSaveTimer) clearTimeout(targetEditSaveTimer);
+  const runDeferredSave = async () => {
+    targetEditSaveTimer = null;
+    if (isTargetTableEditing()) {
+      targetEditSaveTimer = setTimeout(runDeferredSave, 1500);
+      return;
+    }
+    if (!navigator.onLine || !currentUserId || !currentProgramacionIdTarget) {
+      scheduleTargetSyncRetry(reason);
+      return;
+    }
+    try {
+      await syncProgramacionRowsToTargetSupabase(reason, { skipQueueSave: true });
+    } catch (error) {
+      console.warn("No se pudo guardar edicion diferida en DB nueva:", error);
+      scheduleTargetSyncRetry(reason);
+    }
+  };
+  targetEditSaveTimer = setTimeout(runDeferredSave, 1200);
+}
+
+function isTargetTableEditing(){
+  const activeEl = document.activeElement;
+  return Date.now() < targetEditingUntil
+    || !!(activeEl && activeEl.classList?.contains("driver-typed-input"));
+}
+
 function isViewingLatestProgramacion(){
   if (!currentProgramacionId) return true;
   if (!Array.isArray(programacionesHistory) || programacionesHistory.length === 0) return true;
@@ -215,6 +276,7 @@ function isViewingLatestProgramacion(){
 }
 
 async function refreshFromSupabaseIfSafe(){
+  if (!ENABLE_PROGRAMACION_AUTO_REFRESH) return;
   if (!currentUserId) return;
   if (syncRowsInProgress || syncRowsPending) return;
   if (hasPendingRowsLocal()) return;
@@ -744,9 +806,9 @@ function applyAuthState(session){
         ? `Usuario: ${currentUserEmail} (${formatBaseLabel(currentUserBase)})`
         : `Usuario: ${currentUserEmail || "sin correo"}`;
     setAuthStatus("Sesion iniciada.", "ok");
-    setSyncStatus("warn", "Validando datos...");
     updateExportAccess();
-    if(!appInitialized || rows.length === 0){
+    if(!appInitialized){
+      setSyncStatus("warn", "Validando datos...");
       appInitialized = true;
       initializeApp().catch((error) => {
         console.error("Error inicializando app:", error);
@@ -833,7 +895,12 @@ async function initAuth(){
   }else{
     applyAuthState(data.session);
   }
-  authClient.auth.onAuthStateChange((_event, session) => {
+  authClient.auth.onAuthStateChange((event, session) => {
+    const sameActiveUser = appInitialized
+      && session?.user?.id
+      && currentUserId
+      && String(session.user.id) === String(currentUserId);
+    if (sameActiveUser && event !== "SIGNED_OUT") return;
     applyAuthState(session);
   });
 }
@@ -2359,14 +2426,18 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
   syncRowsInProgressTarget = true;
   setSyncStatus("warn", "Guardando DB nueva...");
   const targetAuth = await ensureTargetMigrationSession();
-  const rowsToPersist = dedupeProgramacionRows(rowsTarget).rows;
-  rowsTarget = rowsToPersist;
+  const rowsTargetFechaKey = getFechaKeyFromArray(rowsTarget);
+  const fechaScope = normalizeDateToISO(filterDate2?.value || (rowsTarget[0] ? getRowDateISO(rowsTarget[0], rowsTargetFechaKey) : ""));
+  const rowsToPersist = Array.isArray(rowsTarget)
+    ? (fechaScope ? rowsTarget.filter(r => getRowDateISO(r, rowsTargetFechaKey) === fechaScope) : rowsTarget.slice())
+    : [];
   try {
     const rowsSyncResult = await syncProgramacionRowsTableWithClient(
       programacionesTargetClient,
       currentProgramacionIdTarget,
       rowsToPersist,
-      targetAuth.userId
+      targetAuth.userId,
+      { fecha: fechaScope }
     );
     if (!rowsSyncResult?.ok) {
       throw new Error(rowsSyncResult?.unavailable
@@ -2380,7 +2451,7 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
       .eq("id", currentProgramacionIdTarget);
     if (updateResult.error) throw updateResult.error;
 
-    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget);
+    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget, { fecha: fechaScope });
     if (!verifyRowsResult?.ok) {
       throw new Error("No se pudo verificar programacion_filas en DB nueva.");
     }
@@ -2413,6 +2484,9 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
 
 function renderTable2(){
   if (!gridHead2 || !gridBody2) return;
+  if (isTargetTableEditing() && gridBody2.children.length > 0) {
+    return;
+  }
   gridHead2.innerHTML = "";
   gridBody2.innerHTML = "";
   refreshFilterDateOptions2();
@@ -2515,6 +2589,25 @@ function renderTable2(){
     filtered = filtered.filter(r => normalizeDateToISO(r[fechaKey]) === selectedDate);
   }
   if (!filtered.length) {
+    if (selectedDate && currentProgramacionIdTarget && !table2ReloadingMissingRows) {
+      table2ReloadingMissingRows = true;
+      gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
+        Recargando filas de ${excelDateToReadable(selectedDate)}...
+      </td></tr>`;
+      loadTargetProgramacionByDate(selectedDate)
+        .then(() => renderTable2())
+        .catch((error) => {
+          console.error("No se pudo recargar la programacion seleccionada:", error);
+          gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
+            No se pudieron recargar las filas de ${excelDateToReadable(selectedDate)}.
+          </td></tr>`;
+        })
+        .finally(() => {
+          table2ReloadingMissingRows = false;
+        });
+      renderDrivers();
+      return;
+    }
     gridBody2.innerHTML = `<tr><td colspan="99" class="muted" style="padding:20px;text-align:center">
       No hay filas en DB nueva con los filtros actuales.
     </td></tr>`;
@@ -2605,9 +2698,9 @@ function renderTable2(){
             if (!typed) {
               if (!previousName) return;
               r[k] = UNASSIGNED_LABEL;
-              renderTable2();
+              scheduleTargetEditSave(`Remocion guardada en DB nueva (${k}).`);
+              rebuildAssigned();
               renderDrivers();
-              await syncProgramacionRowsToTargetSupabase(`Remocion guardada en DB nueva (${k}).`);
               return;
             }
 
@@ -2634,15 +2727,18 @@ function renderTable2(){
             if (norm(previousName) === norm(matched)) return;
             r[k] = matched;
             setConductorNote(r, k, "");
-            renderTable2();
+            input.value = matched;
+            td.classList.add("filled");
+            scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
+            rebuildAssigned();
             renderDrivers();
-            await syncProgramacionRowsToTargetSupabase(`Asignacion guardada en DB nueva (${k}).`);
           } finally {
             commitInProgress = false;
           }
         };
 
         input.addEventListener("focus", () => {
+          targetEditingUntil = Date.now() + 3000;
           setDatalistOptionsForBase(getBaseCanonical(rowBaseCanonical || currentBase));
           input.select();
         });
@@ -2698,9 +2794,8 @@ function renderTable2(){
             if (data.tipo !== "conductor") return;
             r[k] = data.nombre;
             setConductorNote(r, k, "");
-            renderTable2();
+            scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
             renderDrivers();
-            await syncProgramacionRowsToTargetSupabase(`Asignacion guardada en DB nueva (${k}).`);
           } catch (e) {
             console.error("No se pudo asignar conductor en tabla 2:", e);
             showToast("No se pudo asignar conductor en Turnos del dia 2.", "err");
@@ -2712,9 +2807,8 @@ function renderTable2(){
           const ok = confirm(`Quitar a ${existingName} de ${k} en DB nueva?`);
           if (!ok) return;
           r[k] = UNASSIGNED_LABEL;
-          renderTable2();
+          scheduleTargetEditSave(`Remocion guardada en DB nueva (${k}).`);
           renderDrivers();
-          await syncProgramacionRowsToTargetSupabase(`Remocion guardada en DB nueva (${k}).`);
         };
       } else if (vehiculoKey && k === vehiculoKey) {
         const vehLabel = v || "";
@@ -2851,19 +2945,21 @@ function renderMigrationDbInfo(){
   migrationDbInfo.textContent = `Origen viejo: ${PROGRAMACIONES_SOURCE_REF} | Destino nuevo: ${PROGRAMACIONES_TARGET_REF}`;
 }
 
-async function fetchProgramacionRowsFromClient(client, programacionId){
+async function fetchProgramacionRowsFromClient(client, programacionId, options = {}){
   if (!programacionId) return { ok: true, rows: [] };
+  const fechaScope = normalizeDateToISO(options?.fecha || "");
   const pageSize = 1000;
   const allRows = [];
   let offset = 0;
 
   while (true) {
-    const { data, error } = await client
+    let query = client
       .from("programacion_filas")
       .select("row_data")
       .eq("programacion_id", programacionId)
-      .order("id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
+      .order("id", { ascending: true });
+    if (fechaScope) query = query.eq("fecha", fechaScope);
+    const { data, error } = await query.range(offset, offset + pageSize - 1);
     if (error) {
       if (isProgramacionFilasUnavailable(error)) {
         return { ok: false, unavailable: true, rows: [] };
@@ -2882,8 +2978,9 @@ async function fetchProgramacionRowsFromClient(client, programacionId){
   };
 }
 
-async function syncProgramacionRowsTableWithClient(client, programacionId, rowsInput, updatedByOverride = null){
+async function syncProgramacionRowsTableWithClient(client, programacionId, rowsInput, updatedByOverride = null, options = {}){
   if (!programacionId) return { ok: false, skipped: true };
+  const fechaScope = normalizeDateToISO(options?.fecha || "");
   const payload = buildProgramacionFilaPayload(rowsInput, programacionId).map(item => ({
     ...item,
     updated_by: updatedByOverride || item.updated_by || null
@@ -2892,12 +2989,13 @@ async function syncProgramacionRowsTableWithClient(client, programacionId, rowsI
   const existingRows = [];
   let offset = 0;
   while (true) {
-    const existingResult = await client
+    let existingQuery = client
       .from("programacion_filas")
       .select("row_key")
       .eq("programacion_id", programacionId)
-      .order("id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
+      .order("id", { ascending: true });
+    if (fechaScope) existingQuery = existingQuery.eq("fecha", fechaScope);
+    const existingResult = await existingQuery.range(offset, offset + pageSize - 1);
     if (existingResult.error) {
       if (isProgramacionFilasUnavailable(existingResult.error)) {
         return { ok: false, unavailable: true };
@@ -2915,11 +3013,13 @@ async function syncProgramacionRowsTableWithClient(client, programacionId, rowsI
   const toDelete = Array.from(existingKeys).filter(k => !nextKeys.has(k));
 
   for (const keyChunk of chunkArray(toDelete, 300)) {
-    const delResult = await client
+    let deleteQuery = client
       .from("programacion_filas")
       .delete()
       .eq("programacion_id", programacionId)
       .in("row_key", keyChunk);
+    if (fechaScope) deleteQuery = deleteQuery.eq("fecha", fechaScope);
+    const delResult = await deleteQuery;
     if (delResult.error) throw delResult.error;
   }
 
@@ -2940,6 +3040,9 @@ async function syncProgramacionRowsTableWithClient(client, programacionId, rowsI
 }
 
 async function ensureTargetMigrationSession(options = {}){
+  if (authClient === programacionesTargetClient && currentUserId) {
+    return { userId: currentUserId, email: currentUserEmail || "" };
+  }
   const forceReauth = !!options?.forceReauth;
   const sessionResult = await programacionesTargetClient.auth.getSession();
   const existingUser = sessionResult?.data?.session?.user || null;
@@ -7473,30 +7576,47 @@ function bindUIEvents(){
     showToast("Solo el super administrador puede descargar el Excel.", "warn");
     return;
   }
-  if (!rows.length) {
+  const usingTargetFormato = USE_ONLY_NEW_DB || getActiveProgramacionMode() === "target" || (Array.isArray(rowsTarget) && rowsTarget.length > 0);
+  let sourceRows = usingTargetFormato ? rowsTarget : rows;
+  if (!sourceRows.length) {
     showToast("No hay datos para exportar.", "warn");
     return;
   }
 
-  const baseKey = getBaseKey();
-  const fechaKey = getFechaKey();
-  const puestoKey = getHeaderKeyByNorm(["PUESTO"]);
-  const numeroKey = getHeaderKeyByNorm(["#"]);
-  const vehiculoKey = getHeaderKeyByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
-  const horaFinKey = getHeaderKeyByNorm(["HORA FIN", "HORA FINAL"]);
-  const headerSet = new Set();
-  rows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
-  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(Array.from(headerSet));
-  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromRows();
-
-  const selectedDate = document.getElementById("filterDate")?.value || "";
+  const selectedDate = normalizeDateToISO((usingTargetFormato ? filterDate2?.value : document.getElementById("filterDate")?.value) || "");
   if (!selectedDate) {
-    showToast("Selecciona una fecha para descargar el formato operativo completo del dia.", "warn");
+    showToast(`Selecciona una fecha en ${usingTargetFormato ? "Turnos del dia 2" : "Turnos del dia"} para descargar el formato operativo.`, "warn");
     return;
   }
 
-  let exportData = rows.slice();
-  if (fechaKey) exportData = exportData.filter(r => normalizeDateToISO(r[fechaKey]) === selectedDate);
+  if (usingTargetFormato) {
+    const currentFechaKey = getFechaKeyFromArray(sourceRows);
+    const hasSelectedDate = sourceRows.some(r => getRowDateISO(r, currentFechaKey) === selectedDate);
+    if (!hasSelectedDate) {
+      try {
+        await loadTargetProgramacionByDate(selectedDate);
+      } catch (error) {
+        console.error("No se pudo cargar fecha para formato operativo:", error);
+      }
+    }
+  }
+
+  sourceRows = usingTargetFormato ? rowsTarget : sourceRows;
+  const headerSet = new Set();
+  sourceRows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
+  const headerKeys = Array.from(headerSet);
+  const findHeaderByNorm = (aliases) => headerKeys.find(k => aliases.includes(norm(k))) || null;
+  const baseKey = usingTargetFormato ? getBaseKeyFromRows(sourceRows) : getBaseKey();
+  const fechaKey = usingTargetFormato ? getFechaKeyFromArray(sourceRows) : getFechaKey();
+  const puestoKey = findHeaderByNorm(["PUESTO"]);
+  const numeroKey = findHeaderByNorm(["#"]);
+  const vehiculoKey = findHeaderByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
+  const horaFinKey = findHeaderByNorm(["HORA FIN", "HORA FINAL"]);
+  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(headerKeys);
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(sourceRows);
+
+  let exportData = sourceRows.slice();
+  if (fechaKey) exportData = exportData.filter(r => getRowDateISO(r, fechaKey) === selectedDate);
   if (!exportData.length) {
     showToast("No hay filas para la fecha seleccionada.", "warn");
     return;
@@ -7964,7 +8084,7 @@ async function initializeApp(){
       if (pendingTarget.programacion_id) currentProgramacionIdTarget = pendingTarget.programacion_id;
       if (pendingTarget.file_name) currentProgramacionFileNameTarget = pendingTarget.file_name;
       setSyncStatus("warn", "Pendiente DB nueva");
-      if (navigator.onLine) {
+      if (ENABLE_PROGRAMACION_AUTO_REFRESH && navigator.onLine) {
         try {
           await syncProgramacionRowsToTargetSupabase("Pendientes DB nueva sincronizados.", { skipQueueSave: true });
         } catch (syncTargetError) {
@@ -7986,6 +8106,7 @@ async function initializeApp(){
 
 function bindWindowEvents(){
   window.addEventListener("online", async () => {
+    if (!ENABLE_PROGRAMACION_AUTO_REFRESH) return;
     showToast("Conexion restablecida. Sincronizando...", "ok");
     setSyncStatus("warn", "Reconectado - sincronizando");
     await syncProgramacionRowsToSupabase("Cambios pendientes sincronizados.");
@@ -8024,6 +8145,8 @@ function bindWindowEvents(){
   });
 
   window.addEventListener("focus", async () => {
+    if (!ENABLE_PROGRAMACION_AUTO_REFRESH) return;
+    if (isTargetTableEditing()) return;
     if (navigator.onLine && hasPendingRowsLocal()) {
       await syncProgramacionRowsToSupabase("Sincronizacion al volver a la ventana.");
     }
@@ -8038,7 +8161,9 @@ function bindWindowEvents(){
   });
 
   document.addEventListener("visibilitychange", async () => {
+    if (!ENABLE_PROGRAMACION_AUTO_REFRESH) return;
     if (document.visibilityState !== "visible") return;
+    if (isTargetTableEditing()) return;
     if (navigator.onLine && hasPendingRowsLocal()) {
       await syncProgramacionRowsToSupabase("Sincronizacion al volver a la pestana.");
     }
@@ -8052,9 +8177,10 @@ function bindWindowEvents(){
     await refreshFromSupabaseIfSafe();
   });
 
-  if (!autoRefreshTimer) {
+  if (ENABLE_PROGRAMACION_AUTO_REFRESH && !autoRefreshTimer) {
     autoRefreshTimer = setInterval(async () => {
       if (!navigator.onLine) return;
+      if (isTargetTableEditing()) return;
       if (hasPendingRowsLocal()) {
         await syncProgramacionRowsToSupabase("Reintento automatico de pendientes.");
         return;
@@ -8082,6 +8208,12 @@ function bindWindowEvents(){
 
   window.addEventListener("resize", adjustDynamicTableViewport);
 }
+
+
+
+
+
+
 
 
 
