@@ -1,0 +1,4 @@
+﻿bindUIEvents();
+bindWindowEvents();
+initAuth();
+

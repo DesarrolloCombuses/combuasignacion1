@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0078d4" />
+<meta name="description" content="CombuAsigna - Portal de afiliados para asignacion de conductores y despachos." />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<title>CombuAsigna - Asignacion de Conductores</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div id="authPanel" class="auth-wrap">
+  <div class="card auth-card">
+    <div class="auth-brand">Portal Afiliados</div>
+    <h2 class="auth-title">Acceso</h2>
+    <p class="auth-sub">Ingresa con tu correo corporativo para operar tu base asignada.</p>
+    <div class="auth-field">
+      <label class="auth-label" for="authEmail">Correo afiliado</label>
+      <input id="authEmail" type="email" placeholder="usuario@combuses.com.co" autocomplete="email" />
+    </div>
+    <div class="auth-field">
+      <label class="auth-label" for="authPassword">Contrasena</label>
+      <input id="authPassword" type="password" placeholder="Tu contrasena" autocomplete="current-password" />
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" id="btnSignIn">Iniciar sesion</button>
+      <button class="btn btn-ghost hidden" id="btnSignUp" disabled>Crear cuenta</button>
+    </div>
+    <div class="auth-help">
+      <div class="auth-help-item">Acceso solo para usuarios creados por administracion.</div>
+      <div class="auth-help-item">Si no puedes ingresar, solicita validacion de cuenta.</div>
+    </div>
+    <div id="authStatus" class="auth-status warn">Inicia sesion para continuar.</div>
+  </div>
+</div>
+
+<div id="appWrap" class="wrap hidden">
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="row">
+      <button class="btn btn-primary" id="btnGoOperativo">Operacion diaria</button>
+      <button class="btn btn-ghost" id="btnGoAdmin">Panel Administrativo</button>
+      <button class="btn btn-ghost hidden" id="btnGoConverter">Convertidor</button>
+    </div>
+    <div class="row">
+      <span class="pill" id="lblGlobal">Sin archivo cargado</span>
+      <span class="pill" id="lblCurrentBase">Base: -</span>
+      <span class="pill" id="lblDriversCount">Conductores: -</span>
+      <span class="pill pill-warn" id="lblSync">Sin validar</span>
+      <span class="pill" id="authUserLabel">No autenticado</span>
+      <span class="pill pill-version" id="lblAppVersion" title="Version actual">v-</span>
+      <button class="btn btn-danger hidden" id="btnLogout">Cerrar sesion</button>
+    </div>
+  </div>
+
+  <!-- ===================== ADMIN PANEL ===================== -->
+  <div id="adminPanel" class="card hidden">
+    <h2>Panel Administrativo</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>Subir Programacion</h3>
+        <input id="fileProgNewDb" type="file" accept=".xlsx,.xls,.csv"/>
+        <label for="fileProgNewDb" class="file">Cargar Excel Programacion (DB nueva)</label>
+        <div class="row" style="margin-top:10px">
+          <input id="adminDayDate" type="date" placeholder="Dia a editar">
+          <button class="btn btn-danger" id="btnDeleteDay">Eliminar dia</button>
+        </div>
+        <div class="muted" style="margin-top:6px">
+          Si seleccionas un dia arriba y cargas un Excel, solo se reemplaza ese dia.
+        </div>
+        <div class="row" style="margin-top:10px">
+          <select id="historyProgramacion" style="min-width:320px">
+            <option value="">Historial de programaciones...</option>
+          </select>
+          <button class="btn btn-ghost" id="btnLoadHistoryProgramacion">Cargar historial</button>
+        </div>
+        <div style="margin-top:10px" class="row">
+          <button class="btn btn-success" id="btnExport" disabled>Descargar Excel</button>
+          <button class="btn btn-success" id="btnExportFormato" disabled>Descargar Formato Operativo</button>
+          <button class="btn btn-danger" id="clearProg">Limpiar</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Gestion de Bases</h3>
+        <div class="row">
+          <input id="newBase" type="text" placeholder="Ej: 1, 2, 3..." />
+          <button class="btn btn-primary" id="btnAddBase">Agregar</button>
+        </div>
+        <select id="basesList" size="4" style="width:100%;margin:10px 0"></select>
+        <div class="row">
+          <button class="btn btn-danger" id="btnRemoveBase">Eliminar</button>
+          <button class="btn btn-primary" id="btnReloadDrivers">Recargar CSV</button>
+        </div>
+        <div id="csvStatus" class="muted" style="margin-top:10px">Cargando conductores...</div>
+      </div>
+    </div>
+    <div class="card" id="adminComplianceCard" style="margin-top:12px">
+      <div class="admin-progress-head">
+        <h3 style="margin:0">Cumplimiento por base</h3>
+        <div class="row">
+          <select id="adminComplianceDate" style="min-width:220px">
+            <option value="">Selecciona fecha...</option>
+          </select>
+          <button class="btn btn-ghost" id="btnRefreshCompliance">Actualizar</button>
+          <span class="admin-progress-badge" id="adminComplianceSummary">Sin datos</span>
+        </div>
+      </div>
+      <div style="overflow:auto;max-height:42vh">
+        <table id="adminComplianceGrid">
+          <thead>
+            <tr>
+              <th>Base</th>
+              <th>Estado</th>
+              <th>Turnos</th>
+              <th>Pendientes</th>
+              <th>Sobrantes</th>
+            </tr>
+          </thead>
+          <tbody id="adminComplianceBody">
+            <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos de cumplimiento.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="converterPanel" class="card hidden">
+    <h2 style="margin:0 0 10px">Convertidor de programacion</h2>
+    <iframe
+      class="converter-frame"
+      src="https://desarrollocombuses.github.io/converter/programacionlocal.html"
+      title="Convertidor de programacion"
+      loading="lazy"
+    ></iframe>
+  </div>
+
+  <!-- ===================== OPERATIVO ===================== -->
+  <div id="operativoPanel" class="card">
+    <h2 id="operativoMainTitle">Panel de operacion</h2>
+    
+    <!-- Selector de base -->
+    <div class="row" style="margin-bottom:12px">
+      <select id="startBase">
+        <option value="">Selecciona una base operativa...</option>
+      </select>
+      <button class="btn btn-primary" id="btnEnterBase">Abrir base</button>
+      <button class="btn btn-ghost" id="btnExitBase">Salir de base</button>
+    </div>
+
+    <!-- Panel interno operativo -->
+    <div id="operativoInner" class="layout hidden">
+      
+      <!-- Columna izquierda: Pestanas -->
+      <div class="card">
+        <div class="tabs">
+          <div class="tab hidden" data-tab="programacion">Turnos del dia</div>
+          <div class="tab hidden" data-tab="novedades">Estados del personal</div>
+          <div class="tab active" data-tab="programacion2">Turnos del dia</div>
+          <div class="tab" data-tab="novedades2">Estados del personal</div>
+          <div class="tab" data-tab="planilla-afiliados">PLANILLA DE DESPACHOS</div>
+          <div class="tab" data-tab="llegadas-aeropuerto">Llegadas Aeropuerto</div>
+          <div class="tab" data-tab="llegadas-san-diego">Llegadas San Diego</div>
+          <div class="tab" data-tab="llegadas-nutibara">Llegadas Nutibara</div>
+          <div class="tab" data-tab="llegadas-104">Planilla de enturnamiento aeropuerto</div>
+          <div class="tab" data-tab="mapa-aeropuerto">Mapa enturnamiento aeropuerto</div>
+          <div class="tab" data-tab="llegadas-novedades">Novedades Llegadas</div>
+          <div class="tab" data-tab="asistencias">Asistencias</div>
+          <div class="tab" data-tab="consulta">Consulta por fechas</div>
+          <div class="tab" data-tab="visor">Visor Excel en linea</div>
+          <div class="tab" data-tab="audit">Auditoria</div>
+          <div class="tab" data-tab="debugsupabase">Diagnostico Supabase</div>
+        </div>
+        
+        <!-- Contenido Programacion -->
+        <div id="tab-programacion" class="tab-content">
+          <div class="workflow" id="workflowGuide">
+            <span class="workflow-step active" id="stepSelectDate">1. Selecciona fecha</span>
+            <span class="workflow-step" id="stepAssignDrivers">2. Llena turnos</span>
+            <span class="workflow-step" id="stepRegisterStates">3. Sobrantes a estados</span>
+            <span class="workflow-note" id="workflowNote">Primero elige una fecha disponible para habilitar asignaciones.</span>
+          </div>
+          <div class="row" style="margin-bottom:10px">
+            <select id="filterDate">
+              <option value="">Selecciona fecha...</option>
+            </select>
+            <button class="btn btn-ghost" id="clearFilter">Limpiar filtro</button>
+            <span class="muted">Intercambio de vehiculo por arrastre: disponible en BASE 3 y para administrador en todas las bases.</span>
+          </div>
+          <div id="gridViewport" style="overflow:visible;max-height:none">
+            <table id="grid"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+        
+        <!-- Contenido Novedades -->
+        <div id="tab-novedades" class="tab-content">
+          <div class="stats-bar">
+            <span>Base seleccionada: <strong id="novedadesBaseDisplay">-</strong></span>
+            <span>Conductores con novedad: <strong id="novedadesCount">0</strong></span>
+          </div>
+          <div id="novedadesViewport" style="overflow:auto;max-height:60vh">
+            <table class="novedades-table" id="novedadesGrid">
+              <thead>
+                <tr>
+                  <th>Conductor</th>
+                  <th>Base</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="novedadesBody">
+                <!-- Se llena dinamicamente -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="tab-programacion2" class="tab-content active">
+          <div class="workflow">
+            <span class="workflow-step active">1. Selecciona fecha (DB nueva)</span>
+            <span class="workflow-note" id="workflowNote2">Vista independiente de programacion desde la base nueva.</span>
+          </div>
+          <div class="row" style="margin-bottom:10px">
+            <select id="filterDate2">
+              <option value="">Selecciona fecha...</option>
+            </select>
+            <button class="btn btn-ghost" id="clearFilter2">Limpiar filtro</button>
+            <button class="btn btn-ghost" id="btnRefreshProgramacion2">Actualizar DB nueva</button>
+            <span class="muted">Fuente: proyecto nuevo de Supabase.</span>
+          </div>
+          <div id="gridViewport2" style="overflow:auto;max-height:60vh">
+            <table id="grid2"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+
+        <div id="tab-novedades2" class="tab-content">
+          <div class="stats-bar">
+            <span>Base seleccionada: <strong id="novedadesBaseDisplay2">-</strong></span>
+            <span>Conductores con novedad: <strong id="novedadesCount2">0</strong></span>
+          </div>
+          <div class="row" style="margin-bottom:10px">
+            <input id="novedadManualInput2" list="novedadManualList2" type="text" placeholder="Escribe o pega el nombre del conductor..." />
+            <datalist id="novedadManualList2"></datalist>
+            <button class="btn btn-primary" id="btnAddNovedadManual2">Asignar por nombre</button>
+            <span class="muted">Tambien puedes arrastrar y soltar conductores.</span>
+          </div>
+          <div id="novedadesViewport2" style="overflow:auto;max-height:60vh">
+            <table class="novedades-table" id="novedadesGrid2">
+              <thead>
+                <tr>
+                  <th>Conductor</th>
+                  <th>Base</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="novedadesBody2">
+                <tr><td colspan="4" style="text-align:center;padding:20px" class="muted">Selecciona una fecha para comenzar.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Planilla Afiliados -->
+        <div id="tab-planilla-afiliados" class="tab-content">
+          <div class="row planilla-toolbar" style="margin-bottom:10px">
+            <input id="planillaFilterInterno" type="text" placeholder="Filtrar interno..." />
+            <input id="planillaFilterBase" type="text" placeholder="Filtrar base..." />
+            <select id="planillaFilterTipo">
+              <option value="">Todos los tipos</option>
+              <option value="Llegada Aeropuerto">Llegada Aeropuerto</option>
+              <option value="Llegada San Diego">Llegada San Diego</option>
+              <option value="Llegada Nutibara">Llegada Nutibara</option>
+            </select>
+            <input id="planillaFilterHoraLlegada" type="text" placeholder="Filtrar hora llegada..." />
+            <button class="btn btn-ghost" id="btnRefreshPlanilla">Actualizar planilla</button>
+            <button class="btn btn-success" id="btnDownloadLlegadas">Descargar llegadas</button>
+            <button class="btn btn-success" id="btnDownloadDespachos">Descargar despachos</button>
+            <span class="muted">Registros: <strong id="planillaCount">0</strong></span>
+            <span class="muted" id="planillaStatus">Sin cargar</span>
+          </div>
+          <div class="planilla-wrap" style="overflow:auto;max-height:60vh">
+            <table id="planillaTable">
+              <thead id="planillaHead"></thead>
+              <tbody id="planillaBody">
+                <tr><td class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas Aeropuerto -->
+        <div id="tab-llegadas-aeropuerto" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasAeropuertoTitle" style="margin:0">Ultimas Llegadas Aeropuerto (104)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasAeropuerto">Actualizar</button>
+            <input id="aeropuertoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="aeropuertoEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
+            <label class="consulta-mini" for="aeropuertoUploadFrom">Subida desde</label>
+            <input id="aeropuertoUploadFrom" type="date" />
+            <label class="consulta-mini" for="aeropuertoUploadTo">hasta</label>
+            <input id="aeropuertoUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasAeropuerto">Descargar aeropuerto</button>
+            <span class="muted">Registros: <strong id="llegadasAeropuertoCount">0</strong></span>
+            <span class="muted" id="llegadasAeropuertoStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
+          <div id="llegadasAeropuertoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasAeropuertoTable">
+              <thead>
+                <tr>
+                  <th>Hora ultima llegada Aeropuerto</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasAeropuertoBody">
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas San Diego -->
+        <div id="tab-llegadas-san-diego" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasSanDiegoTitle" style="margin:0">Ultimas Llegadas San Diego (101)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasSanDiego">Actualizar</button>
+            <input id="sanDiegoSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="sanDiegoEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
+            <label class="consulta-mini" for="sanDiegoUploadFrom">Subida desde</label>
+            <input id="sanDiegoUploadFrom" type="date" />
+            <label class="consulta-mini" for="sanDiegoUploadTo">hasta</label>
+            <input id="sanDiegoUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasSanDiego">Descargar San Diego</button>
+            <span class="muted">Registros: <strong id="llegadasSanDiegoCount">0</strong></span>
+            <span class="muted" id="llegadasSanDiegoStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
+          <div id="llegadasSanDiegoTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasSanDiegoTable">
+              <thead>
+                <tr>
+                  <th>Hora ultima llegada San Diego</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasSanDiegoBody">
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Llegadas Nutibara -->
+        <div id="tab-llegadas-nutibara" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasNutibaraTitle" style="margin:0">Ultimas Llegadas Nutibara (110)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasNutibara">Actualizar</button>
+            <input id="nutibaraSearch" type="text" placeholder="Buscar en todos los campos..." />
+            <select id="nutibaraEstadoFilter">
+              <option value="">Todos</option>
+              <option value="en_espera">En espera</option>
+              <option value="despachado">Despachados</option>
+            </select>
+            <label class="consulta-mini" for="nutibaraUploadFrom">Subida desde</label>
+            <input id="nutibaraUploadFrom" type="date" />
+            <label class="consulta-mini" for="nutibaraUploadTo">hasta</label>
+            <input id="nutibaraUploadTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadasNutibara">Descargar Nutibara</button>
+            <span class="muted">Registros: <strong id="llegadasNutibaraCount">0</strong></span>
+            <span class="muted" id="llegadasNutibaraStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Hora: hora de llegada al destino de esta pestana. Se muestran separados: itinerario de llegada e itinerario de despacho.
+          </div>
+          <div id="llegadasNutibaraTabs" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap"></div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasNutibaraTable">
+              <thead>
+                <tr>
+                  <th>Hora ultima llegada Nutibara</th>
+                  <th>Despacho</th>
+                  <th>Estado</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Itinerario llegada</th>
+                  <th>Itinerario despacho</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasNutibaraBody">
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Planilla de enturnamiento aeropuerto -->
+        <div id="tab-llegadas-104" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 style="margin:0">Planilla de enturnamiento aeropuerto</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadas104">Actualizar</button>
+            <label class="consulta-mini" for="llegadas104From">Desde</label>
+            <input id="llegadas104From" type="date" />
+            <label class="consulta-mini" for="llegadas104To">Hasta</label>
+            <input id="llegadas104To" type="date" />
+            <button class="btn btn-success" id="btnDownloadLlegadas104">Descargar Excel</button>
+            <span class="muted">Registros: <strong id="llegadas104Count">0</strong></span>
+            <span class="muted" id="llegadas104Status">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Lectura de la tabla `llegadas_104`. Solo lectura.
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadas104Table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Hora llegada</th>
+                  <th>Vehiculo</th>
+                  <th>Interno</th>
+                  <th>Itinerario</th>
+                  <th>Posicion</th>
+                  <th>Base</th>
+                  <th>Conductor</th>
+                  <th>Distancia (m)</th>
+                  <th>Listo</th>
+                  <th>Ubicacion</th>
+                  <th>Lat</th>
+                  <th>Lon</th>
+                  <th>Actualizado</th>
+                </tr>
+              </thead>
+              <tbody id="llegadas104Body">
+                <tr><td colspan="14" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Mapa enturnamiento aeropuerto -->
+        <div id="tab-mapa-aeropuerto" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 style="margin:0">Mapa enturnamiento aeropuerto</h3>
+            <button class="btn btn-ghost" id="btnRefreshMapaAeropuerto">Actualizar</button>
+            <span class="muted">Vehiculos: <strong id="mapaAeropuertoCount">0</strong></span>
+            <span class="muted" id="mapaAeropuertoStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Posiciones de los vehiculos de la planilla `llegadas_104`. Cada marcador muestra el numero interno; haz click para ver los detalles del vehiculo.
+          </div>
+          <div id="mapaAeropuerto" style="height:65vh;min-height:420px;border-radius:8px;border:1px solid var(--color-border,#e2e8f0);background:#f8fafc"></div>
+        </div>
+
+        <!-- Contenido Novedades Llegadas -->
+        <div id="tab-llegadas-novedades" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="llegadasNovedadesTitle" style="margin:0">Novedades de llegadas en espera (+3h)</h3>
+            <button class="btn btn-ghost" id="btnRefreshLlegadasNovedades">Actualizar</button>
+            <span class="muted">Registros: <strong id="llegadasNovedadesCount">0</strong></span>
+            <span class="muted" id="llegadasNovedadesStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Regla: separa llegadas sin despacho con mas de 3 horas en espera para validacion operativa.
+            Si aparece despacho para el mismo vehiculo/base, se retira automaticamente de esta lista.
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="llegadasNovedadesTable">
+              <thead>
+                <tr>
+                  <th>Hora llegada</th>
+                  <th>Hace</th>
+                  <th>Base</th>
+                  <th>Interno</th>
+                  <th>Tipo</th>
+                  <th>Itinerario llegada</th>
+                  <th>Motivo</th>
+                  <th>Accion sugerida</th>
+                </tr>
+              </thead>
+              <tbody id="llegadasNovedadesBody">
+                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px">Sin novedades de llegadas.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Asistencias -->
+        <div id="tab-asistencias" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 style="margin:0">Asistencias (entradas y salidas)</h3>
+            <button class="btn btn-ghost" id="btnRefreshAsistencias">Actualizar</button>
+            <label class="consulta-mini" for="asistenciasFrom">Desde</label>
+            <input id="asistenciasFrom" type="date" />
+            <label class="consulta-mini" for="asistenciasTo">Hasta</label>
+            <input id="asistenciasTo" type="date" />
+            <input id="asistenciasSearch" type="text" placeholder="Buscar colaborador, base, origen..." />
+            <span class="muted" id="asistenciasBaseHint" style="font-weight:600"></span>
+            <select id="asistenciasSentido">
+              <option value="">Sentido: todos</option>
+              <option value="entrada">Entradas</option>
+              <option value="salida">Salidas</option>
+            </select>
+            <button class="btn btn-success" id="btnDownloadAsistencias">Descargar Excel</button>
+            <span class="muted">Registros: <strong id="asistenciasCount">0</strong></span>
+            <span class="muted" id="asistenciasStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Marcas operativas con foto, geolocalizacion e integracion a Buk/Ctrlit. Solo lectura.
+          </div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="asistenciasTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Hora</th>
+                  <th>Jornada</th>
+                  <th>Sentido</th>
+                  <th>Colaborador</th>
+                  <th>Base</th>
+                  <th>Origen</th>
+                </tr>
+              </thead>
+              <tbody id="asistenciasBody">
+                <tr><td colspan="7" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Consulta por fechas -->
+        <div id="tab-consulta" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <label class="consulta-mini" for="consultaFrom">Desde</label>
+            <input id="consultaFrom" type="date" />
+            <label class="consulta-mini" for="consultaTo">Hasta</label>
+            <input id="consultaTo" type="date" />
+            <button class="btn btn-ghost" id="btnApplyConsulta">Ver resumen</button>
+          </div>
+          <div class="stats-bar" id="consultaSummaryBar">
+            <span>Base: <strong id="consultaBaseLabel">-</strong></span>
+            <span>Programados: <strong id="consultaProgramadosCount">0</strong></span>
+            <span>Estados personal: <strong id="consultaEstadosCount">0</strong></span>
+          </div>
+          <div class="consulta-grid">
+            <div class="consulta-box">
+              <h4>Conductores programados</h4>
+              <div style="overflow:auto;max-height:46vh">
+                <table id="consultaProgramadosTable">
+                  <thead>
+                    <tr><th>Conductor</th><th>Turnos</th><th>Fechas</th></tr>
+                  </thead>
+                  <tbody id="consultaProgramadosBody">
+                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="consulta-box">
+              <h4>Estados del personal</h4>
+              <div style="overflow:auto;max-height:46vh">
+                <table id="consultaEstadosTable">
+                  <thead>
+                    <tr><th>Fecha</th><th>Conductor</th><th>Estado</th></tr>
+                  </thead>
+                  <tbody id="consultaEstadosBody">
+                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="gantt-wrap">
+            <h4 style="margin:0 0 8px">Vista operativa (timeline)</h4>
+            <div class="consulta-mini" style="margin-bottom:8px">Muestra vehiculo programado y destaca fichos de salida por fecha.</div>
+            <div id="consultaTimeline"></div>
+          </div>
+        </div>
+
+        <!-- Contenido Visor Excel -->
+        <div id="tab-visor" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <label class="consulta-mini" for="visorDateSelect">Fecha</label>
+            <select id="visorDateSelect">
+              <option value="">Selecciona fecha...</option>
+            </select>
+            <label class="consulta-mini" for="visorScopeSelect">Alcance</label>
+            <select id="visorScopeSelect">
+              <option value="all">Ver todo</option>
+              <option value="base">Ver base logueada</option>
+            </select>
+            <button class="btn btn-ghost" id="btnRefreshVisor">Actualizar visor</button>
+            <button class="btn btn-success" id="btnExportVisor">Descargar visor Excel</button>
+            <span class="muted">Vista previa en tiempo real de como se va formando el formato operativo (todas las bases).</span>
+          </div>
+          <div id="liveExcelPreview" style="overflow:auto;max-height:60vh">
+            <div class="muted" style="padding:12px;text-align:center">Sin datos para visualizar.</div>
+          </div>
+        </div>
+
+        <!-- Contenido Auditoria -->
+        <div id="tab-audit" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <input id="auditFrom" type="date" />
+            <input id="auditTo" type="date" />
+            <input id="auditUserFilter" type="text" placeholder="Filtrar por correo..." />
+            <select id="auditTableFilter">
+              <option value="">Todas las tablas</option>
+              <option value="programaciones">programaciones</option>
+              <option value="programacion_filas">programacion_filas</option>
+              <option value="novedades">novedades</option>
+            </select>
+            <select id="auditOpFilter">
+              <option value="">Todas las operaciones</option>
+              <option value="INSERT">INSERT</option>
+              <option value="UPDATE">UPDATE</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+            <button class="btn btn-ghost" id="btnRefreshAudit">Actualizar</button>
+            <span class="muted">Eventos: <strong id="auditCount">0</strong></span>
+          </div>
+          <div style="overflow:auto;max-height:52vh">
+            <table id="auditGrid">
+              <thead>
+                <tr>
+                  <th>Fecha/Hora</th>
+                  <th>Usuario</th>
+                  <th>Tabla</th>
+                  <th>Operacion</th>
+                  <th>Registro</th>
+                  <th>Cambio</th>
+                </tr>
+              </thead>
+              <tbody id="auditBody">
+                <tr><td colspan="6" class="muted" style="text-align:center;padding:14px">Sin datos de auditoria.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Contenido Diagnostico Supabase -->
+        <div id="tab-debugsupabase" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <button class="btn btn-ghost" id="btnRefreshDebug">Actualizar diagnostico</button>
+            <span class="muted">Lee la ultima programacion guardada en Supabase</span>
+          </div>
+          <div class="row" style="margin-bottom:10px;flex-wrap:wrap">
+            <span id="migrationDbInfo" class="muted">Origen: - | Destino: -</span>
+            <button class="btn btn-ghost" id="btnMigrationStatus">Estado viejo/nuevo</button>
+            <button class="btn btn-primary" id="btnMigrateLatestProgramacion">Migrar ultima al nuevo</button>
+            <button class="btn btn-ghost" id="btnMigrateSelectedProgramacion">Migrar seleccion del historial</button>
+          </div>
+          <pre id="migrationOutput" class="muted" style="white-space:pre-wrap;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px;max-height:30vh;overflow:auto">Migracion manual: pendiente.</pre>
+          <pre id="debugOutput" class="muted" style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;max-height:52vh;overflow:auto">Sin datos de diagnostico.</pre>
+        </div>
+      </div>
+
+      <!-- Columna derecha: Conductores disponibles -->
+      <div class="card drivers">
+        <h3>Conductores disponibles - <span id="currentBaseDisplay">Base -</span></h3>
+        <input id="filterDrivers" type="text" placeholder="Buscar por nombre...">
+        <div class="list" id="driversList"></div>
+        <p class="muted" style="margin-top:8px;text-align:center">
+          Arrastra un conductor a la tabla de estados<br>
+          <span style="font-size:11px">Asignacion solo por arrastre a CONDUCTOR 1/2</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="appToast" class="toast" aria-live="polite"></div>
+<div id="swapModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="swapModalTitle">
+  <div class="modal-card">
+    <h3 id="swapModalTitle" class="modal-title">Confirmar cambio de carro</h3>
+    <div class="modal-sub">Verifica la posicion origen y destino antes de confirmar.</div>
+    <div class="swap-grid">
+      <div class="swap-box">
+        <h4>Origen</h4>
+        <div class="swap-line" id="swapSourceLabel">-</div>
+        <div class="swap-line">Vehiculo actual:</div>
+        <div class="swap-veh" id="swapSourceVeh">-</div>
+      </div>
+      <div class="swap-box">
+        <h4>Destino</h4>
+        <div class="swap-line" id="swapTargetLabel">-</div>
+        <div class="swap-line">Vehiculo actual:</div>
+        <div class="swap-veh" id="swapTargetVeh">-</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btnSwapCancel">Cancelar</button>
+      <button class="btn btn-primary" id="btnSwapConfirm">Confirmar cambio</button>
+    </div>
+  </div>
+</div>
+<div id="noteModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="noteModalTitle">
+  <div class="modal-card">
+    <h3 id="noteModalTitle" class="modal-title">Nota en casilla sin conductor</h3>
+    <div class="modal-sub" id="noteModalSub">Escribe una nota para este turno.</div>
+    <textarea id="noteModalInput" class="note-input" maxlength="1200" placeholder="Ej: conductor pendiente por confirmar..."></textarea>
+    <div class="modal-actions" style="margin-top:10px">
+      <button class="btn btn-ghost" id="btnNoteClear">Limpiar nota</button>
+      <button class="btn btn-ghost" id="btnNoteCancel">Cancelar</button>
+      <button class="btn btn-primary" id="btnNoteSave">Guardar nota</button>
+    </div>
+  </div>
+</div>
+
+<!-- Banner de actualizacion de PWA -->
+<div id="pwaUpdateBanner" class="pwa-update-banner hidden" role="status" aria-live="polite" aria-hidden="true">
+  <div class="pwa-update-text">
+    <strong>Nueva version disponible</strong>
+    <span>Recarga para aplicar los ultimos cambios.</span>
+  </div>
+  <div class="pwa-update-actions">
+    <button class="btn btn-ghost" id="pwaUpdateLater" type="button">Mas tarde</button>
+    <button class="btn btn-primary" id="pwaUpdateReload" type="button">Recargar ahora</button>
+  </div>
+</div>
+
+<script src="js/functions.js?v=20260512-novedades-refresh"></script>
+<script src="js/main.js?v=20260512-novedades-refresh"></script>
+<script src="js/pwa.js"></script>
+</body>
+</html>
+
+
+
