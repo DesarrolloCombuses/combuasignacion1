@@ -18,6 +18,14 @@ Convencion de version:
 
 ---
 
+## [1.5.2] - 2026-05-20
+
+### Cambiado
+- Cache-busting de assets criticos: `index.html` ahora referencia `js/functions.js?v=1.5.2` y `css/styles.css?v=1.5.2` (antes el query era `?v=20260512-novedades-refresh`, lo que dejaba navegadores con copias antiguas tras la migracion al nuevo repositorio).
+- El Service Worker ya hacia network-first sobre `version.json` y la navegacion, asi que tras este cambio los navegadores con copia rancia veran el banner de actualizacion en el siguiente refresco.
+
+---
+
 ## [1.5.1] - 2026-05-20
 
 ### Cambiado

@@ -1,6 +1,6 @@
 {
-  "version": "1.5.1",
+  "version": "1.5.2",
   "buildDate": "2026-05-20",
   "channel": "stable",
-  "notes": "El mapa de vehiculos se separa en su propia pestana 'Mapa enturnamiento aeropuerto', alimentada por los mismos datos de la planilla."
+  "notes": "Cache-busting: se actualizan los query-strings de functions.js y styles.css para forzar a los navegadores a descargar la version mas reciente tras el rebuild."
 }
