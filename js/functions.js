@@ -6,6 +6,9 @@ const PLANILLA_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ
 const PROGRAMACIONES_TARGET_SUPABASE_URL = "https://cbplebkmxrkaafqdhiyi.supabase.co";
 const PROGRAMACIONES_TARGET_SUPABASE_ANON_KEY = "sb_publishable_DZCceNTENY4ViP17-eZrGg_bdMElZ9X";
 const PLANILLA_TABLE_NAME = "planilla_afiliados_2";
+// PAUSA de las pestanas de Llegadas (Aeropuerto / San Diego / Nutibara / Novedades).
+// true = ocultas y SIN consultar (no carga ni realtime). Cambiar a false para reactivar.
+const LLEGADAS_PAUSED = true;
 const PLANILLA_SELECT_COLUMNS = [
   "hora_llegada",
   "tipo_llegada",
@@ -23,6 +26,24 @@ const PLANILLA_SELECT_COLUMNS = [
 const PLANILLA_FETCH_LIMIT = 500;
 const PLANILLA_FETCH_LIMIT_RANGED = 300;
 const PLANILLA_FETCH_LIMIT_WAITING = 200;
+const DESPACHOS_TABLE_NAME = "despachos_realizados";
+const DESPACHOS_COLABORADORES_TABLE = "colaboradores";
+const DESPACHOS_SELECT_COLUMNS = [
+  "id",
+  "reg_id",
+  "vehicle_id",
+  "interno",
+  "placa",
+  "itinerario_id",
+  "itinerario",
+  "driver_id",
+  "observaciones",
+  "pasajeros",
+  "estado",
+  "cancelled_at",
+  "created_at"
+].join(", ");
+const DESPACHOS_PAGE_SIZE = 50;
 const ARRIVAL_OMIT_WINDOW_MINUTES = 30;
 const WAITING_NOVEDAD_THRESHOLD_MINUTES = 180;
 const MAX_COHERENT_DISPATCH_MINUTES = 360;
@@ -332,6 +353,8 @@ function canExportXlsx(){
 function updateExportAccess(){
   const btnExport = document.getElementById("btnExport");
   const btnExportFormato = document.getElementById("btnExportFormato");
+  const btnExportTurnos = document.getElementById("btnExportTurnos");
+  const btnExportReporteTurnos = document.getElementById("btnExportReporteTurnos");
   const btnDeleteDay = document.getElementById("btnDeleteDay");
   const adminDayDate = document.getElementById("adminDayDate");
   if (!btnExport && !btnExportFormato) return;
@@ -344,6 +367,14 @@ function updateExportAccess(){
       btnExportFormato.classList.remove("hidden");
       btnExportFormato.disabled = rows.length === 0;
     }
+    if (btnExportTurnos) {
+      btnExportTurnos.classList.remove("hidden");
+      btnExportTurnos.disabled = rows.length === 0;
+    }
+    if (btnExportReporteTurnos) {
+      btnExportReporteTurnos.classList.remove("hidden");
+      btnExportReporteTurnos.disabled = false;
+    }
     if (btnDeleteDay) btnDeleteDay.disabled = rows.length === 0;
     if (adminDayDate) adminDayDate.disabled = false;
     return;
@@ -355,6 +386,14 @@ function updateExportAccess(){
   if (btnExportFormato) {
     btnExportFormato.classList.add("hidden");
     btnExportFormato.disabled = true;
+  }
+  if (btnExportTurnos) {
+    btnExportTurnos.classList.add("hidden");
+    btnExportTurnos.disabled = true;
+  }
+  if (btnExportReporteTurnos) {
+    btnExportReporteTurnos.classList.add("hidden");
+    btnExportReporteTurnos.disabled = true;
   }
   if (btnDeleteDay) btnDeleteDay.disabled = true;
   if (adminDayDate) adminDayDate.disabled = true;
@@ -807,6 +846,7 @@ function applyAuthState(session){
         : `Usuario: ${currentUserEmail || "sin correo"}`;
     setAuthStatus("Sesion iniciada.", "ok");
     updateExportAccess();
+    startRealtimeSubscriptions();
     if(!appInitialized){
       setSyncStatus("warn", "Validando datos...");
       appInitialized = true;
@@ -820,6 +860,7 @@ function applyAuthState(session){
       applyRoleRestrictions();
     }
   }else{
+    stopRealtimeSubscriptions();
     currentUserId = null;
     currentUserEmail = "";
     currentUserRole = "";
@@ -1794,6 +1835,9 @@ const ARRIVALS_PANEL_TAB_IDS = ["llegadas-aeropuerto", "llegadas-san-diego", "ll
 const PLANILLA_REFRESH_MAX_AGE_MS = 180000;
 const PLANILLA_AUTO_REFRESH_MS = 120000;
 const DRIVERS_CACHE_KEY = "driversByBaseCacheV1";
+const DRIVERS_CEDULA_CACHE_KEY = "driverCedulaByNameV1";
+// Mapa nombre(normalizado por nameKeyForMatch) -> cedula, tomado del CSV de conductores.
+let driverCedulaByName = new Map();
 
 function loadDriversCache(){
   try {
@@ -1801,6 +1845,12 @@ function loadDriversCache(){
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed || typeof parsed !== "object") return false;
     driversByBase = parsed;
+    // Recupera tambien el mapa de cedulas si existe.
+    try {
+      const rawCed = localStorage.getItem(DRIVERS_CEDULA_CACHE_KEY);
+      const obj = rawCed ? JSON.parse(rawCed) : null;
+      if (obj && typeof obj === "object") driverCedulaByName = new Map(Object.entries(obj));
+    } catch (e) {}
     return true;
   } catch (e) {
     return false;
@@ -1810,7 +1860,16 @@ function loadDriversCache(){
 function saveDriversCache(){
   try {
     localStorage.setItem(DRIVERS_CACHE_KEY, JSON.stringify(driversByBase || {}));
+    localStorage.setItem(DRIVERS_CEDULA_CACHE_KEY, JSON.stringify(Object.fromEntries(driverCedulaByName)));
   } catch (e) {}
+}
+
+// Asegura el mapa de cedulas del CSV; si esta vacio, recarga el CSV de conductores.
+async function ensureDriverCedulaMap(){
+  if (driverCedulaByName && driverCedulaByName.size) return driverCedulaByName;
+  if (loadDriversCache() && driverCedulaByName.size) return driverCedulaByName;
+  try { await loadDriversFromCSV(); } catch (e) { console.warn("ensureDriverCedulaMap:", e?.message || e); }
+  return driverCedulaByName;
 }
 
 // Estructura para novedades (conductores con estado)
@@ -1923,7 +1982,6 @@ const planillaFilterTipo = document.getElementById("planillaFilterTipo");
 const planillaFilterHoraLlegada = document.getElementById("planillaFilterHoraLlegada");
 const btnRefreshPlanilla = document.getElementById("btnRefreshPlanilla");
 const btnDownloadLlegadas = document.getElementById("btnDownloadLlegadas");
-const btnDownloadDespachos = document.getElementById("btnDownloadDespachos");
 const planillaStatus = document.getElementById("planillaStatus");
 const planillaCount = document.getElementById("planillaCount");
 const planillaHead = document.getElementById("planillaHead");
@@ -1966,6 +2024,27 @@ const llegadasNovedadesTitle = document.getElementById("llegadasNovedadesTitle")
 const llegadasNovedadesCount = document.getElementById("llegadasNovedadesCount");
 const llegadasNovedadesStatus = document.getElementById("llegadasNovedadesStatus");
 const llegadasNovedadesBody = document.getElementById("llegadasNovedadesBody");
+
+/* ---- Despachos realizados (solo consulta, paginado) ---- */
+const btnRefreshDespachos = document.getElementById("btnRefreshDespachos");
+const despachoSearch = document.getElementById("despachoSearch");
+const despachoEstadoFilter = document.getElementById("despachoEstadoFilter");
+const despachoSentidoFilter = document.getElementById("despachoSentidoFilter");
+const despachoFrom = document.getElementById("despachoFrom");
+const despachoTo = document.getElementById("despachoTo");
+const btnDownloadDespachos = document.getElementById("btnDownloadDespachos");
+const despachoCount = document.getElementById("despachoCount");
+const despachoStatus = document.getElementById("despachoStatus");
+const despachoBody = document.getElementById("despachoBody");
+const despachoPager = document.getElementById("despachoPager");
+const despachoTitle = document.getElementById("despachoTitle");
+let despachosRows = [];
+let despachosPage = 0;
+let despachosTotalCount = 0;
+let despachosLoading = false;
+let despachosLoadedOnce = false;
+let despachosColabMap = null;
+let despachosColabLoading = null;
 
 /* ===================== UTIL ===================== */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
@@ -4217,12 +4296,6 @@ function handleDownloadLlegadas(){
   exportPlanillaRowsToExcel(onlyLlegadas, "llegadas", "llegadas_planilla");
 }
 
-function handleDownloadDespachos(){
-  const filtered = getFilteredPlanillaRowsForExport();
-  const onlyDespachos = filtered.filter(row => !!String(row?.hora_despacho || "").trim());
-  exportPlanillaRowsToExcel(onlyDespachos, "despachos", "despachos_planilla");
-}
-
 function handleDownloadLlegadasAeropuerto(){
   exportPlanillaRowsToExcel(lastAeropuertoRenderedRows, "llegadas", "llegadas_aeropuerto");
 }
@@ -4293,6 +4366,7 @@ function isPlanillaRelatedTab(tabId){
 }
 
 async function ensureFreshPlanillaData(options = {}){
+  if (LLEGADAS_PAUSED) return; // Llegadas en pausa: no consultar.
   const force = !!options.force;
   const maxAgeMs = Number(options.maxAgeMs || PLANILLA_REFRESH_MAX_AGE_MS);
   const stale = !planillaAfiliadosLoadedOnce || !planillaLastLoadedAt || ((Date.now() - planillaLastLoadedAt) > maxAgeMs);
@@ -4308,6 +4382,7 @@ async function ensureFreshPlanillaData(options = {}){
 }
 
 async function loadPlanillaAfiliadosFromSupabase(){
+  if (LLEGADAS_PAUSED) return; // Llegadas en pausa: no consultar Supabase.
   if (planillaAfiliadosLoading) return;
   if (!currentUserId) return;
   planillaAfiliadosLoading = true;
@@ -5851,19 +5926,28 @@ async function loadDriversFromCSV() {
     const nombreIdx = headers.findIndex(h => norm(h) === 'NOMBRE');
     const emailIdx = headers.findIndex(h => norm(h) === 'EMAIL');
     const statusIdx = headers.findIndex(h => norm(h) === 'STATUS');
+    const cedulaIdx = headers.findIndex(h => ['CEDULA', 'RUT', 'DOCUMENTO', 'IDENTIFICACION', 'NUMERO DOCUMENTO', 'NRO DOCUMENTO', 'DOC'].includes(norm(h)));
     if (nombreIdx < 0 || emailIdx < 0) {
       throw new Error("Columnas NOMBRE/EMAIL no encontradas en CSV");
     }
-    
+
     const newDriversByBase = {};
+    const newCedulaByName = new Map();
     let totalEnabled = 0;
-    
+
     for (let i = 1; i < lines.length; i++) {
       const values = parseCsvRow(lines[i]);
       const nombre = values[nombreIdx]?.trim() || '';
       const email = values[emailIdx]?.trim() || '';
       const status = statusIdx !== -1 ? values[statusIdx]?.trim().toUpperCase() : 'ENABLED';
-      
+      const cedula = cedulaIdx !== -1 ? (values[cedulaIdx]?.trim() || '') : '';
+
+      // Cedula por nombre: para TODOS (habilitados o no), para tener el RUT de cualquiera.
+      if (nombre && cedula) {
+        const k = nameKeyForMatch(nombre);
+        if (!newCedulaByName.has(k)) newCedulaByName.set(k, cedula);
+      }
+
       const baseMatch = email.match(/BASE\s*(\d+)/i);
       if (baseMatch && nombre && status === 'ENABLED') {
         const baseNumber = baseMatch[1];
@@ -5872,13 +5956,14 @@ async function loadDriversFromCSV() {
         totalEnabled++;
       }
     }
-    
+
     // Ordenar
     Object.keys(newDriversByBase).forEach(base => {
       newDriversByBase[base].sort((a, b) => a.localeCompare(b));
     });
-    
+
     driversByBase = newDriversByBase;
+    if (newCedulaByName.size) driverCedulaByName = newCedulaByName;
     saveDriversCache();
     
     const totalBases = Object.keys(driversByBase).length;
@@ -6996,6 +7081,939 @@ function renderTable(){
   renderTable2();
 }
 
+/* ===================== DESPACHOS REALIZADOS ===================== */
+// Vista de solo consulta sobre la tabla `despachos_realizados`.
+// Paginacion server-side (mas reciente primero) + cruce de cedula->nombre con colaboradores.
+
+function despachoPickKey(sampleObj, candidates){
+  const keys = Object.keys(sampleObj || {});
+  const lower = keys.map(k => ({ k, l: String(k).toLowerCase() }));
+  for (const c of candidates) {
+    const hit = lower.find(x => x.l === c);
+    if (hit) return hit.k;
+  }
+  for (const c of candidates) {
+    const hit = lower.find(x => x.l.includes(c));
+    if (hit) return hit.k;
+  }
+  return "";
+}
+
+// Carga (una sola vez) la tabla colaboradores y construye un mapa cedula -> nombre.
+// Autodetecta las columnas para no depender de un esquema fijo. Si RLS lo bloquea
+// o falla, deja el mapa vacio y la vista cae a mostrar la cedula.
+async function ensureDespachosColaboradores(){
+  if (despachosColabMap) return despachosColabMap;
+  if (despachosColabLoading) return despachosColabLoading;
+  despachosColabLoading = (async () => {
+    const map = new Map();
+    try {
+      const { data, error } = await planillaSupabaseClient
+        .from(DESPACHOS_COLABORADORES_TABLE)
+        .select("*")
+        .limit(5000);
+      if (error) throw error;
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length) {
+        const sample = rows[0];
+        const cedKey = despachoPickKey(sample, ["cedula", "documento", "identificacion", "numero_documento", "num_documento", "nro_documento", "doc", "driver_id", "id_conductor"]);
+        const nameKey = despachoPickKey(sample, ["nombre_completo", "nombrecompleto", "nombre", "nombres", "full_name", "razon_social"]);
+        const apeKey = despachoPickKey(sample, ["apellidos", "apellido"]);
+        const combineApellido = nameKey && /^nombres?$/i.test(nameKey) && apeKey;
+        rows.forEach(r => {
+          const ced = cedKey ? String(r[cedKey] ?? "").trim() : "";
+          if (!ced) return;
+          let nom = nameKey ? String(r[nameKey] ?? "").trim() : "";
+          if (combineApellido) {
+            const ape = String(r[apeKey] ?? "").trim();
+            if (ape) nom = `${nom} ${ape}`.trim();
+          }
+          if (nom) map.set(ced, nom);
+        });
+      }
+    } catch (e) {
+      console.warn("No se pudo cargar colaboradores para nombres de conductor:", e?.message || e);
+    }
+    despachosColabMap = map;
+    return map;
+  })();
+  return despachosColabLoading;
+}
+
+function resolveConductorNombre(cedula){
+  const ced = String(cedula ?? "").trim();
+  if (!ced) return "-";
+  const nom = despachosColabMap ? despachosColabMap.get(ced) : "";
+  return nom || ced;
+}
+
+// Clave de comparacion de nombres tolerante a orden de palabras y acentos/n~.
+// "OCAMPO HERRERA JOHN JAIRO" y "JOHN JAIRO OCAMPO HERRERA" producen la misma clave.
+function nameKeyForMatch(s){
+  const base = String(s ?? "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "") // quita acentos y la tilde de la n~
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, " ");
+  return base.split(/\s+/).filter(Boolean).sort().join(" ");
+}
+
+// Mapa nombre(normalizado) -> cedula, a partir de la tabla colaboradores.
+let nombreToCedulaMap = null;
+let nombreToCedulaLoading = null;
+async function ensureNombreToCedula(){
+  if (nombreToCedulaMap) return nombreToCedulaMap;
+  if (nombreToCedulaLoading) return nombreToCedulaLoading;
+  nombreToCedulaLoading = (async () => {
+    const map = new Map();
+    try {
+      const { data, error } = await planillaSupabaseClient
+        .from(DESPACHOS_COLABORADORES_TABLE)
+        .select("*")
+        .limit(10000);
+      if (error) throw error;
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length) {
+        const sample = rows[0];
+        const cedKey = despachoPickKey(sample, ["cedula", "documento", "identificacion", "numero_documento", "num_documento", "nro_documento", "doc", "driver_id", "id_conductor"]);
+        const nameKey = despachoPickKey(sample, ["nombre_completo", "nombrecompleto", "nombre", "nombres", "full_name", "razon_social"]);
+        const apeKey = despachoPickKey(sample, ["apellidos", "apellido"]);
+        const combineApellido = nameKey && /^nombres?$/i.test(nameKey) && apeKey;
+        rows.forEach(r => {
+          const ced = cedKey ? String(r[cedKey] ?? "").trim() : "";
+          if (!ced) return;
+          let nom = nameKey ? String(r[nameKey] ?? "").trim() : "";
+          if (combineApellido) {
+            const ape = String(r[apeKey] ?? "").trim();
+            if (ape) nom = `${nom} ${ape}`.trim();
+          }
+          const key = nameKeyForMatch(nom);
+          if (key && !map.has(key)) map.set(key, ced);
+        });
+      }
+    } catch (e) {
+      console.warn("No se pudo cargar colaboradores (nombre->cedula):", e?.message || e);
+    }
+    nombreToCedulaMap = map;
+    return map;
+  })();
+  return nombreToCedulaLoading;
+}
+
+// Descarga la "Planilla de turnos": lista plana de los turnos del operativo.
+// Bloque 1 = CONDUCTOR 1 de cada turno (hora = relevo / INICIA 2).
+// Bloque 2 = CONDUCTOR 2 de cada turno (hora = HORA FIN).
+// Columnas: #, TURNO, CEDULA, CONDUCTOR, HORA.
+async function handleExportPlanillaTurnos(){
+  if (!canExportXlsx()) { showToast("Solo el super administrador puede descargar el Excel.", "warn"); return; }
+  const usingTargetFormato = USE_ONLY_NEW_DB || getActiveProgramacionMode() === "target" || (Array.isArray(rowsTarget) && rowsTarget.length > 0);
+  let sourceRows = usingTargetFormato ? rowsTarget : rows;
+  if (!sourceRows.length) { showToast("No hay datos para exportar.", "warn"); return; }
+
+  const selectedDate = normalizeDateToISO((usingTargetFormato ? filterDate2?.value : document.getElementById("filterDate")?.value) || "");
+  if (!selectedDate) { showToast("Selecciona una fecha para descargar la planilla de turnos.", "warn"); return; }
+
+  if (usingTargetFormato) {
+    const currentFechaKey = getFechaKeyFromArray(sourceRows);
+    const hasSelectedDate = sourceRows.some(r => getRowDateISO(r, currentFechaKey) === selectedDate);
+    if (!hasSelectedDate) {
+      try { await loadTargetProgramacionByDate(selectedDate); }
+      catch (error) { console.error("No se pudo cargar fecha para planilla de turnos:", error); }
+    }
+  }
+
+  sourceRows = usingTargetFormato ? rowsTarget : sourceRows;
+  const headerSet = new Set();
+  sourceRows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
+  const headerKeys = Array.from(headerSet);
+  const findHeaderByNorm = (aliases) => headerKeys.find(k => aliases.includes(norm(k))) || null;
+  const fechaKey = usingTargetFormato ? getFechaKeyFromArray(sourceRows) : getFechaKey();
+  const numeroKey = findHeaderByNorm(["#"]);
+  const horaFinKey = findHeaderByNorm(["HORA FIN", "HORA FINAL"]);
+  const { key2: horaInicio2Key } = inferInicioKeysFromList(headerKeys);
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(sourceRows);
+
+  let exportData = sourceRows.slice();
+  if (fechaKey) exportData = exportData.filter(r => getRowDateISO(r, fechaKey) === selectedDate);
+  if (!exportData.length) { showToast("No hay filas para la fecha seleccionada.", "warn"); return; }
+  if (!window.ExcelJS) { showToast("No se pudo cargar ExcelJS para exportar con estilos.", "err"); return; }
+
+  const ordered = dedupeProgramacionRows(exportData).rows;
+  // Solo turnos reales (sin filas FICHO), ordenados por numero de turno.
+  const dataRows = ordered
+    .filter(r => !isFichoRowByContent(r))
+    .sort((a, b) => (getNumericTurnNumber(numeroKey ? a[numeroKey] : null) ?? 9999) - (getNumericTurnNumber(numeroKey ? b[numeroKey] : null) ?? 9999));
+
+  const cedulaCsv = await ensureDriverCedulaMap();
+  const nombreCedula = await ensureNombreToCedula();
+  const cedulaDe = (rawConductor) => {
+    const nom = extractConductorName(rawConductor || "");
+    if (!nom) return "";
+    const k = nameKeyForMatch(nom);
+    return cedulaCsv.get(k) || nombreCedula.get(k) || "";
+  };
+  const nombreDe = (rawConductor) => extractConductorName(rawConductor || "") || UNASSIGNED_LABEL;
+
+  const N = dataRows.length;
+  const filas = [];
+  dataRows.forEach((r, i) => {
+    const raw = conductor1Key ? r[conductor1Key] : "";
+    filas.push({ turno: i + 1, cedula: cedulaDe(raw), conductor: nombreDe(raw), hora: horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "" });
+  });
+  dataRows.forEach((r, i) => {
+    const raw = conductor2Key ? r[conductor2Key] : "";
+    filas.push({ turno: N + i + 1, cedula: cedulaDe(raw), conductor: nombreDe(raw), hora: horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : "" });
+  });
+
+  const border = {
+    top: { style: "thin", color: { argb: "FF000000" } },
+    left: { style: "thin", color: { argb: "FF000000" } },
+    bottom: { style: "thin", color: { argb: "FF000000" } },
+    right: { style: "thin", color: { argb: "FF000000" } }
+  };
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`TURNOS_${selectedDate}`);
+  ws.columns = [{ width: 8 }, { width: 12 }, { width: 16 }, { width: 42 }, { width: 10 }];
+
+  ws.mergeCells(1, 1, 1, 5);
+  ws.getRow(1).getCell(1).value = `PLANILLA DE TURNOS ${formatDateLongEs(selectedDate || "")}`.toUpperCase();
+  ws.getRow(1).getCell(1).style = {
+    fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } },
+    font: { bold: true, size: 18, color: { argb: "FF0F172A" } },
+    alignment: { horizontal: "center", vertical: "middle" }
+  };
+
+  ws.getRow(2).values = ["#", "TURNO", "CEDULA", "CONDUCTOR", "HORA"];
+  for (let c = 1; c <= 5; c++) {
+    const cell = ws.getRow(2).getCell(c);
+    cell.style = {
+      fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } },
+      font: { bold: true, color: { argb: "FF000000" } },
+      alignment: { horizontal: "center", vertical: "middle" }
+    };
+    cell.border = border;
+  }
+
+  let rn = 3;
+  filas.forEach(f => {
+    const row = ws.getRow(rn);
+    row.values = [f.turno, `TURNO ${f.turno}`, f.cedula || "", f.conductor, f.hora || ""];
+    row.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+    row.getCell(2).alignment = { horizontal: "center", vertical: "middle" };
+    row.getCell(3).alignment = { horizontal: "center", vertical: "middle" };
+    row.getCell(4).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+    row.getCell(5).alignment = { horizontal: "center", vertical: "middle" };
+    for (let c = 1; c <= 5; c++) row.getCell(c).border = border;
+    rn++;
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `planilla_turnos_${selectedDate}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  const sinCedula = filas.filter(f => f.conductor !== UNASSIGNED_LABEL && !f.cedula).length;
+  showToast(`Planilla de turnos generada (${filas.length} turnos)${sinCedula ? ` | ${sinCedula} sin cedula encontrada` : ""}.`, sinCedula ? "warn" : "ok");
+}
+
+// ================= REPORTE DE TURNOS (matriz persona x dias) =================
+// Recrea la plantilla "ReporteTurnosColaboradores": filas = colaboradores,
+// columnas = Nombre, RUT, Area, Supervisor + una por fecha. Cada celda lleva
+// el "TURNO N" (1..102) que la persona tuvo ese dia, o vacio si no tuvo.
+
+// Lista completa de colaboradores [{cedula, nombre}] (autodetecta columnas).
+async function fetchColaboradoresList(){
+  const list = [];
+  try {
+    const { data, error } = await planillaSupabaseClient.from(DESPACHOS_COLABORADORES_TABLE).select("*").limit(10000);
+    if (error) throw error;
+    const rows = Array.isArray(data) ? data : [];
+    if (rows.length) {
+      const sample = rows[0];
+      const cedKey = despachoPickKey(sample, ["cedula", "documento", "identificacion", "numero_documento", "num_documento", "nro_documento", "doc", "driver_id", "id_conductor"]);
+      const nameKey = despachoPickKey(sample, ["nombre_completo", "nombrecompleto", "nombre", "nombres", "full_name", "razon_social"]);
+      const apeKey = despachoPickKey(sample, ["apellidos", "apellido"]);
+      const combineApellido = nameKey && /^nombres?$/i.test(nameKey) && apeKey;
+      rows.forEach(r => {
+        const ced = cedKey ? String(r[cedKey] ?? "").trim() : "";
+        let nom = nameKey ? String(r[nameKey] ?? "").trim() : "";
+        if (combineApellido) { const ape = String(r[apeKey] ?? "").trim(); if (ape) nom = `${nom} ${ape}`.trim(); }
+        if (ced || nom) list.push({ cedula: ced, nombre: nom });
+      });
+    }
+  } catch (e) { console.warn("fetchColaboradoresList:", e?.message || e); }
+  list.sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es", { sensitivity: "base" }));
+  return list;
+}
+
+// Trae las filas de programacion de una fecha (sin tocar la pantalla / globales).
+async function fetchProgramacionRowsForDate(dateIso){
+  const iso = normalizeDateToISO(dateIso || "");
+  if (!iso) return [];
+  try {
+    const probe = await programacionesTargetClient
+      .from("programacion_filas").select("programacion_id")
+      .eq("fecha", iso).order("programacion_id", { ascending: false }).limit(1).maybeSingle();
+    if (probe.error || !probe.data) return [];
+    const pid = Number(probe.data.programacion_id || 0);
+    if (!pid) return [];
+    const pageSize = 1000; const all = []; let offset = 0;
+    while (true) {
+      const { data, error } = await programacionesTargetClient
+        .from("programacion_filas").select("row_data")
+        .eq("fecha", iso).eq("programacion_id", pid)
+        .order("id", { ascending: true }).range(offset, offset + pageSize - 1);
+      if (error) return [];
+      const chunk = Array.isArray(data) ? data : [];
+      all.push(...chunk);
+      if (chunk.length < pageSize) break;
+      offset += pageSize;
+    }
+    const raw = all.map(r => r?.row_data).filter(r => r && typeof r === "object");
+    if (!raw.length) return [];
+    const prepared = normalizeProgramacionRows(raw);
+    const rowsOut = dedupeProgramacionRows(prepared.normalized).rows;
+    const { key1, key2 } = getConductorKeysFromArray(rowsOut);
+    sanitizeFichoConductorSlots(rowsOut, key1, key2);
+    return rowsOut;
+  } catch (e) { console.warn("fetchProgramacionRowsForDate", iso, e?.message || e); return []; }
+}
+
+// Para un dia: devuelve { turnos: Map(nameKey->turnoN 1..102), nombres: Map(nameKey->nombreVisible) }.
+function buildTurnoMapForRows(rowsInput){
+  const turnos = new Map();
+  const nombres = new Map();
+  const rowsArr = Array.isArray(rowsInput) ? rowsInput : [];
+  if (!rowsArr.length) return { turnos, nombres };
+  const headerKeys = Array.from(new Set(rowsArr.slice(0, 200).flatMap(r => Object.keys(r || {}))));
+  const numeroKey = headerKeys.find(k => norm(k) === "#") || null;
+  const { key1: c1, key2: c2 } = getConductorKeysFromArray(rowsArr);
+  const dataRows = rowsArr
+    .filter(r => !isFichoRowByContent(r))
+    .sort((a, b) => (getNumericTurnNumber(numeroKey ? a[numeroKey] : null) ?? 9999) - (getNumericTurnNumber(numeroKey ? b[numeroKey] : null) ?? 9999));
+  const N = dataRows.length;
+  const add = (rawName, turnoN) => {
+    const nom = extractConductorName(rawName || "");
+    if (!nom) return;
+    const k = nameKeyForMatch(nom);
+    if (!turnos.has(k)) turnos.set(k, turnoN);
+    if (!nombres.has(k)) nombres.set(k, nom);
+  };
+  dataRows.forEach((r, i) => {
+    add(c1 ? r[c1] : "", i + 1);
+    add(c2 ? r[c2] : "", N + i + 1);
+  });
+  return { turnos, nombres };
+}
+
+// Novedades de un rango de fechas (consulta directa a la tabla).
+async function fetchNovedadesRange(desdeIso, hastaIso){
+  try {
+    let query = supabaseClient
+      .from("novedades")
+      .select("nombre, base, estado, fecha")
+      .gte("fecha", desdeIso).lte("fecha", hastaIso);
+    if (typeof canViewAllRowsByRole === "function" && !canViewAllRowsByRole() && currentUserId) {
+      query = query.eq("user_id", currentUserId);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return Array.isArray(data) ? data : [];
+  } catch (e) { console.warn("fetchNovedadesRange:", e?.message || e); return []; }
+}
+
+async function handleExportReporteTurnos(){
+  if (!canExportXlsx()) { showToast("Solo el super administrador puede descargar el Excel.", "warn"); return; }
+  const desde = normalizeDateToISO(document.getElementById("reporteTurnosDesde")?.value || "");
+  const hasta = normalizeDateToISO(document.getElementById("reporteTurnosHasta")?.value || "");
+  if (!desde || !hasta) { showToast("Selecciona el rango de fechas (desde y hasta) del reporte.", "warn"); return; }
+  if (desde > hasta) { showToast("La fecha 'desde' no puede ser mayor que 'hasta'.", "warn"); return; }
+  if (!window.ExcelJS) { showToast("No se pudo cargar ExcelJS para exportar.", "err"); return; }
+
+  // Lista de fechas del rango (inclusive).
+  const pad = (n) => String(n).padStart(2, "0");
+  const dates = [];
+  let cur = new Date(`${desde}T00:00:00`);
+  const end = new Date(`${hasta}T00:00:00`);
+  while (cur <= end) { dates.push(`${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`); cur.setDate(cur.getDate() + 1); }
+  if (dates.length > 62) { showToast("El rango es muy grande (maximo ~2 meses).", "warn"); return; }
+
+  const btn = document.getElementById("btnExportReporteTurnos");
+  if (btn) btn.disabled = true;
+  showToast(`Generando reporte de turnos (${dates.length} dias)...`, "ok");
+  try {
+    // Personas = SOLO las que aparecen en la programacion del rango + las de novedades.
+    const personasMap = new Map(); // nameKey -> nombre visible
+    const dayMaps = {};            // fecha -> Map(nameKey -> turnoN)
+    for (const ds of dates) {
+      const { turnos, nombres } = buildTurnoMapForRows(await fetchProgramacionRowsForDate(ds));
+      dayMaps[ds] = turnos;
+      nombres.forEach((nom, k) => { if (!personasMap.has(k)) personasMap.set(k, nom); });
+    }
+    // Agregar personas de novedades del rango + indexar novedad por persona+fecha.
+    const novs = await fetchNovedadesRange(desde, hasta);
+    const novedadByKeyDate = new Map(); // `${nameKey}|${fechaIso}` -> estado
+    novs.forEach(n => {
+      const nom = String(n?.nombre || "").trim();
+      if (!nom) return;
+      const k = nameKeyForMatch(nom);
+      if (!personasMap.has(k)) personasMap.set(k, nom);
+      const f = normalizeDateToISO(n?.fecha || "");
+      const est = String(n?.estado || "").trim().toUpperCase();
+      if (f && est) novedadByKeyDate.set(`${k}|${f}`, est);
+    });
+
+    if (!personasMap.size) { showToast("No se encontraron personas en la programacion ni en novedades para ese rango.", "warn"); return; }
+
+    // Cedula (RUT): primero el CSV de conductores (trae 'cedula'); respaldo: colaboradores.
+    const cedulaCsv = await ensureDriverCedulaMap();
+    const nombreCedula = await ensureNombreToCedula();
+    const cedulaDe = (k) => cedulaCsv.get(k) || nombreCedula.get(k) || "";
+
+    const personas = Array.from(personasMap.entries())
+      .map(([k, nombre]) => ({ key: k, nombre, cedula: cedulaDe(k) }))
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es", { sensitivity: "base" }));
+
+    const AREA_FIJA = "OPERATIVA";
+    const SUPERVISOR_FIJO = "JOHN MILLER CORREA ROMERO";
+    const fmtHdr = (iso) => { const [y, m, d] = iso.split("-"); return `${d}-${m}-${y}`; };
+
+    const border = {
+      top: { style: "thin", color: { argb: "FFD0D5DD" } },
+      left: { style: "thin", color: { argb: "FFD0D5DD" } },
+      bottom: { style: "thin", color: { argb: "FFD0D5DD" } },
+      right: { style: "thin", color: { argb: "FFD0D5DD" } }
+    };
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Reporte Turnos");
+    const fixedHeaders = ["Nombre del Colaborador", "RUT", "Área", "Supervisor"];
+    const headers = fixedHeaders.concat(dates.map(fmtHdr));
+    ws.columns = headers.map((h, i) => ({ width: i === 0 ? 34 : (i < 4 ? 16 : 15) }));
+    ws.views = [{ state: "frozen", xSplit: 1, ySplit: 1 }];
+
+    const headRow = ws.getRow(1);
+    headRow.values = headers;
+    for (let c = 1; c <= headers.length; c++) {
+      const cell = headRow.getCell(c);
+      cell.style = {
+        fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } },
+        font: { bold: true, color: { argb: "FF000000" } },
+        alignment: { horizontal: c <= 1 ? "left" : "center", vertical: "middle", wrapText: true }
+      };
+      cell.border = border;
+    }
+
+    let rn = 2;
+    let conTurno = 0;
+    personas.forEach(p => {
+      const values = [p.nombre, p.cedula || "", AREA_FIJA, SUPERVISOR_FIJO];
+      let tuvoAlguno = false;
+      dates.forEach(ds => {
+        const n = dayMaps[ds].get(p.key);
+        if (n) {
+          values.push(`TURNO ${n}`);
+          tuvoAlguno = true;
+        } else {
+          // Sin turno ese dia: mostrar la novedad si existe; si no, NO PROGRAMADO.
+          const est = novedadByKeyDate.get(`${p.key}|${ds}`);
+          values.push(est ? est : "NO PROGRAMADO");
+        }
+      });
+      if (tuvoAlguno) conTurno++;
+      const row = ws.getRow(rn);
+      row.values = values;
+      for (let c = 1; c <= headers.length; c++) {
+        const cell = row.getCell(c);
+        cell.alignment = { horizontal: c === 1 ? "left" : "center", vertical: "middle" };
+        cell.border = border;
+      }
+      rn++;
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reporte_turnos_${desde}_a_${hasta}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    const sinCedula = personas.filter(p => !p.cedula).length;
+    showToast(`Reporte generado: ${personas.length} personas, ${dates.length} dias (${conTurno} con turno)${sinCedula ? ` | ${sinCedula} sin cedula` : ""}.`, sinCedula ? "warn" : "ok");
+  } catch (err) {
+    console.error("Reporte de turnos:", err);
+    showToast("Error al generar el reporte: " + (err?.message || "desconocido"), "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Construye UNA hoja del formato operativo (para una fecha) dentro del workbook `wb`.
+// rowsForDate = filas (row_data) de esa fecha; novedadesAll = todas las novedades (se filtran por fecha).
+// Devuelve el numero de filas de turnos escritas.
+function buildOperativoSheet(wb, dateIso, rowsForDate, novedadesAll){
+  const rowsArr = Array.isArray(rowsForDate) ? rowsForDate : [];
+  const headerSet = new Set();
+  rowsArr.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
+  const headerKeys = Array.from(headerSet);
+  const findHeaderByNorm = (aliases) => headerKeys.find(k => aliases.includes(norm(k))) || null;
+  const baseKey = getBaseKeyFromRows(rowsArr);
+  const fechaKey = getFechaKeyFromArray(rowsArr);
+  const puestoKey = findHeaderByNorm(["PUESTO"]);
+  const numeroKey = findHeaderByNorm(["#"]);
+  const vehiculoKey = findHeaderByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
+  const horaFinKey = findHeaderByNorm(["HORA FIN", "HORA FINAL"]);
+  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(headerKeys);
+  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(rowsArr);
+
+  const selectedDate = dateIso;
+  const ordered = dedupeProgramacionRows(rowsArr).rows;
+  const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
+  const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
+  const titleDate = formatDateLongEs(dateIso || "");
+  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, { baseKey, fechaKey });
+
+  const ws = wb.addWorksheet(`DIA_${dateIso}`);
+  ws.columns = [
+    { width: 8 }, { width: 10 }, { width: 8 }, { width: 36 }, { width: 10 },
+    { width: 36 }, { width: 10 }, { width: 3 }, { width: 18 }, { width: 34 }, { width: 16 }
+  ];
+
+  const styleTitle = { fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } }, font: { bold: true, color: { argb: "FF0F172A" }, size: 26 }, alignment: { horizontal: "center", vertical: "middle" } };
+  const styleHeader = { fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } }, font: { bold: true, color: { argb: "FF000000" } }, alignment: { horizontal: "center", vertical: "middle" } };
+  const styleFichoGreen = { fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF16A34A" } }, font: { bold: true, color: { argb: "FFFFFFFF" } } };
+  const styleFichoBlue = { fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF2563EB" } }, font: { bold: true, color: { argb: "FFFFFFFF" } } };
+  const styleRedRow = { fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFF0000" } }, font: { bold: true, color: { argb: "FFFFFFFF" } } };
+  const OPERATIVO_RED_TURNS = new Set([24, 26, 28, 30, 32, 34]);
+  const styleBorderThin = {
+    top: { style: "thin", color: { argb: "FF000000" } }, left: { style: "thin", color: { argb: "FF000000" } },
+    bottom: { style: "thin", color: { argb: "FF000000" } }, right: { style: "thin", color: { argb: "FF000000" } }
+  };
+
+  const applyRowStyle = (rowNumber, styleObj, fromCol = 1, toCol = 7) => {
+    for (let c = fromCol; c <= toCol; c++) { const cell = ws.getRow(rowNumber).getCell(c); cell.style = { ...(cell.style || {}), ...styleObj }; }
+  };
+  const applyBorderRow = (rowNumber, fromCol = 1, toCol = 7) => {
+    for (let c = fromCol; c <= toCol; c++) { ws.getRow(rowNumber).getCell(c).border = styleBorderThin; }
+  };
+
+  const formatConductorForExport = (rowObj, conductorKey) => {
+    if (!conductorKey) return "";
+    const raw = String(rowObj?.[conductorKey] || "");
+    const note = getConductorNote(rowObj, conductorKey);
+    const assigned = extractConductorName(raw);
+    const isUnassigned = !raw || norm(raw) === UNASSIGNED_LABEL || !assigned;
+    if (!note) return raw;
+    if (!isUnassigned) return raw;
+    return `${UNASSIGNED_LABEL}\nNOTA: ${note}`;
+  };
+
+  let currentRow = 1;
+  let turnosEscritos = 0;
+  const openSection = (puestoLabel) => {
+    const sectionDisplay = getOperationalSectionDisplayName(puestoLabel);
+    if (currentRow > 1) currentRow++;
+    ws.mergeCells(currentRow, 1, currentRow, 7);
+    ws.getRow(currentRow).getCell(1).value = `${String(sectionDisplay || "SIN PUESTO").toUpperCase()} ${titleDate}`;
+    applyRowStyle(currentRow, styleTitle);
+    applyBorderRow(currentRow, 1, 7);
+    currentRow++;
+    ws.getRow(currentRow).values = ["#", "INICIA", "VEH", "CONDUCTOR 1", "INICIA", "CONDUCTOR 2", "HORA FIN"];
+    applyRowStyle(currentRow, styleHeader);
+    applyBorderRow(currentRow, 1, 7);
+    currentRow++;
+  };
+
+  groupedSections.forEach(section => {
+    const sectionLabel = canonicalizePuestoLabel(section.puesto);
+    const sectionEntries = getSectionEntriesForOperationalView(sectionLabel, section.entries);
+    if (!sectionEntries.length) return;
+    openSection(sectionLabel);
+    sectionEntries.forEach(entry => {
+      const r = entry.row;
+      const isFichoMarker = entry.isFichoMarker;
+      const vehNote = getVehiculoNote(r);
+      const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
+      let vehValue = vehiculoKey ? (r[vehiculoKey] || "") : "";
+      if (norm(sectionLabel).includes("NUTIBARA") && turnNum && turnNum >= 1 && turnNum <= 10) {
+        const rowBase = getRowCanonicalBase(r, baseKey);
+        const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
+        const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+        const assigned = fichoAssignments.get(groupKey)?.get(turnNum);
+        if (assigned?.veh) vehValue = assigned.veh;
+      }
+      if (vehNote) vehValue = `${vehValue}\nCOMENTARIO: ${vehNote}`;
+
+      ws.getRow(currentRow).values = [
+        numeroKey ? r[numeroKey] : (entry.idx + 1),
+        horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
+        vehValue,
+        formatConductorForExport(r, conductor1Key),
+        horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
+        formatConductorForExport(r, conductor2Key),
+        horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
+      ];
+      for (let c = 1; c <= 7; c++){
+        const wrap = (c === 3 || c === 4 || c === 6);
+        ws.getRow(currentRow).getCell(c).alignment = { horizontal: "center", vertical: "middle", wrapText: wrap };
+      }
+      applyBorderRow(currentRow, 1, 7);
+
+      if (isFichoMarker) {
+        const isFichoExpos = norm(sectionLabel).includes("EXPOSICIONES");
+        applyRowStyle(currentRow, isFichoExpos ? styleFichoBlue : styleFichoGreen);
+      } else if (Number.isFinite(turnNum) && OPERATIVO_RED_TURNS.has(turnNum)) {
+        applyRowStyle(currentRow, styleRedRow, 1, 7);
+      } else {
+        const isNutibara = norm(sectionLabel).includes("NUTIBARA");
+        let vehColor = null;
+        if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
+          const rowBase = getRowCanonicalBase(r, baseKey);
+          const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
+          const groupKey = `${rowBase || ""}|${rowDate || ""}`;
+          vehColor = fichoAssignments.get(groupKey)?.get(turnNum)?.color || null;
+        }
+        if (vehColor) {
+          const vehCell = ws.getRow(currentRow).getCell(3);
+          vehCell.style = { ...(vehCell.style || {}), fill: { type: "pattern", pattern: "solid", fgColor: { argb: vehColor === "blue" ? "FF2563EB" : "FF16A34A" } }, font: { ...(vehCell.style?.font || {}), bold: true, color: { argb: "FFFFFFFF" } } };
+        }
+      }
+      if (!isFichoMarker) turnosEscritos++;
+      currentRow++;
+    });
+  });
+
+  const novedadesDelDia = (novedadesAll || []).filter(n => normalizeDateToISO(n.fecha) === dateIso);
+  ws.mergeCells(1, 9, 1, 11);
+  ws.getRow(1).getCell(9).value = "NOVEDADES DEL DIA";
+  ws.getRow(1).getCell(9).style = styleTitle;
+  ws.getRow(2).getCell(9).value = "BASE";
+  ws.getRow(2).getCell(10).value = "CONDUCTOR";
+  ws.getRow(2).getCell(11).value = "ESTADO";
+  for (let c = 9; c <= 11; c++) {
+    ws.getRow(2).getCell(c).style = styleHeader;
+    ws.getRow(2).getCell(c).alignment = { horizontal: "center", vertical: "middle" };
+    ws.getRow(2).getCell(c).border = styleBorderThin;
+  }
+  let novRow = 3;
+  if (novedadesDelDia.length === 0) {
+    ws.getRow(novRow).getCell(9).value = "-";
+    ws.getRow(novRow).getCell(10).value = "Sin novedades";
+    ws.getRow(novRow).getCell(11).value = "-";
+    ws.getRow(novRow).getCell(9).alignment = { horizontal: "center", vertical: "middle" };
+    ws.getRow(novRow).getCell(10).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    ws.getRow(novRow).getCell(11).alignment = { horizontal: "center", vertical: "middle" };
+    applyBorderRow(novRow, 9, 11);
+  } else {
+    novedadesDelDia.forEach(n => {
+      ws.getRow(novRow).getCell(9).value = n.base || "-";
+      ws.getRow(novRow).getCell(10).value = n.nombre || "-";
+      ws.getRow(novRow).getCell(11).value = n.estado || "-";
+      ws.getRow(novRow).getCell(9).alignment = { horizontal: "center", vertical: "middle" };
+      ws.getRow(novRow).getCell(10).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      ws.getRow(novRow).getCell(11).alignment = { horizontal: "center", vertical: "middle" };
+      applyBorderRow(novRow, 9, 11);
+      novRow++;
+    });
+  }
+  return turnosEscritos;
+}
+
+// Resuelve la base del vehiculo del despacho a partir del interno.
+// Fuente principal: VEHICLE_TO_BASE_MAP (mapeo interno->base definido en el codigo).
+// Complemento: la programacion cargada en memoria (rowsTarget / rows) por si algun
+// vehiculo tiene base explicita que no este en el mapa estatico.
+function resolveVehiculoBase(row){
+  const interno = normalizeVehicleId(row?.interno);
+  if (!interno) return "-";
+  const fromMap = VEHICLE_TO_BASE_MAP[interno];
+  if (fromMap) return fromMap;
+  const fromProg = despachoBaseFromProgramacion(interno);
+  return fromProg || "-";
+}
+
+function despachoBaseFromProgramacion(interno){
+  if (!interno) return "";
+  const pools = [typeof rowsTarget !== "undefined" ? rowsTarget : null, typeof rows !== "undefined" ? rows : null];
+  for (const pool of pools) {
+    if (!Array.isArray(pool)) continue;
+    for (const r of pool) {
+      const vk = getVehiculoKey(r);
+      if (!vk) continue;
+      if (normalizeVehicleId(r[vk]) === interno) {
+        const canon = getRowCanonicalBase(r);
+        if (canon) return /^\d+$/.test(canon) ? `BASE ${canon}` : canon;
+      }
+    }
+  }
+  return "";
+}
+
+function getDespachoFilters(){
+  return {
+    search: String(despachoSearch?.value || "").trim(),
+    estado: despachoEstadoFilter?.value || "",
+    sentido: despachoSentidoFilter?.value || "",
+    fromIso: despachoFrom?.value || "",
+    toIso: despachoTo?.value || ""
+  };
+}
+
+async function loadDespachosPage(opts = {}){
+  if (despachosLoading) return;
+  if (!currentUserId) {
+    if (despachoStatus) despachoStatus.textContent = "Inicia sesion para ver despachos.";
+    return;
+  }
+  if (opts.resetPage) despachosPage = 0;
+  despachosLoading = true;
+  despachosLoadedOnce = true;
+  if (despachoStatus) despachoStatus.textContent = "Consultando Supabase...";
+  try {
+    await ensureDespachosColaboradores();
+    const f = getDespachoFilters();
+    const from = despachosPage * DESPACHOS_PAGE_SIZE;
+    const to = from + DESPACHOS_PAGE_SIZE - 1;
+    let q = planillaSupabaseClient
+      .from(DESPACHOS_TABLE_NAME)
+      .select(DESPACHOS_SELECT_COLUMNS, { count: "exact" })
+      .order("created_at", { ascending: false, nullsFirst: false })
+      .range(from, to);
+    if (f.estado) q = q.eq("estado", f.estado);
+    // Sentido respecto al aeropuerto (server-side para no romper la paginacion):
+    //  BAJADA = itinerario empieza en "Aeropuerto"; SUBIDA = termina en "Aeropuerto".
+    if (f.sentido === "BAJADA") q = q.ilike("itinerario", "Aeropuerto%");
+    else if (f.sentido === "SUBIDA") q = q.ilike("itinerario", "%Aeropuerto");
+    if (f.fromIso) q = q.gte("created_at", `${f.fromIso} 00:00:00`);
+    if (f.toIso) q = q.lte("created_at", `${f.toIso} 23:59:59`);
+    if (f.search) {
+      const term = f.search.replace(/[,()%]/g, " ").trim();
+      if (term) {
+        q = q.or(`interno.ilike.%${term}%,placa.ilike.%${term}%,itinerario.ilike.%${term}%,observaciones.ilike.%${term}%,vehicle_id.ilike.%${term}%`);
+      }
+    }
+    const { data, count, error } = await q;
+    if (error) throw error;
+    despachosRows = Array.isArray(data) ? data : [];
+    despachosTotalCount = typeof count === "number" ? count : despachosRows.length;
+    // Si tras un filtro la pagina actual quedo fuera de rango, reposiciona y recarga.
+    const maxPage = Math.max(0, Math.ceil(despachosTotalCount / DESPACHOS_PAGE_SIZE) - 1);
+    if (despachosPage > maxPage && despachosTotalCount > 0 && despachosRows.length === 0) {
+      despachosPage = maxPage;
+      despachosLoading = false;
+      return loadDespachosPage();
+    }
+    renderDespachos();
+    if (despachoStatus) {
+      despachoStatus.textContent = `Actualizado: ${new Date().toLocaleString("es-CO")}`;
+    }
+  } catch (e) {
+    console.error("Error cargando despachos_realizados:", e);
+    if (despachoStatus) despachoStatus.textContent = `Error: ${e?.message || "consulta fallida"}`;
+    showToast("No se pudo cargar despachos realizados desde Supabase.", "err");
+  } finally {
+    despachosLoading = false;
+  }
+}
+
+// Clasifica un itinerario en sentido respecto al aeropuerto:
+//  - BAJADA del aeropuerto: el itinerario EMPIEZA en "Aeropuerto".
+//  - SUBIDA al aeropuerto:  el itinerario TERMINA en "Aeropuerto".
+// Regla acordada con el usuario (2026-06). Tolerante a acentos/mayusculas y a
+// separadores "-", espacios o flechas.
+function getDespachoSentido(itin){
+  const raw = String(itin ?? "").trim();
+  if (!raw || raw === "-") return { kind: "", label: "-" };
+  const tokens = raw.split(/[\s\-–—>]+/).filter(Boolean);
+  if (!tokens.length) return { kind: "", label: "-" };
+  const norm = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+  const first = norm(tokens[0]);
+  const last = norm(tokens[tokens.length - 1]);
+  if (first === "AEROPUERTO") return { kind: "BAJADA", label: "Bajada del aeropuerto" };
+  if (last === "AEROPUERTO") return { kind: "SUBIDA", label: "Subida al aeropuerto" };
+  return { kind: "", label: "-" };
+}
+
+function getDespachoSentidoBadgeHtml(itin){
+  const s = getDespachoSentido(itin);
+  if (s.kind === "BAJADA") {
+    return `<span title="${escapeHtml(s.label)}" style="display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;white-space:nowrap">&#8595; Bajada</span>`;
+  }
+  if (s.kind === "SUBIDA") {
+    return `<span title="${escapeHtml(s.label)}" style="display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#fffbeb;color:#b45309;border:1px solid #fde68a;white-space:nowrap">&#8593; Subida</span>`;
+  }
+  return `<span class="muted">-</span>`;
+}
+
+function renderDespachos(){
+  if (!despachoBody) return;
+  const rows = despachosRows;
+  const total = despachosTotalCount;
+  const totalPages = Math.max(1, Math.ceil(total / DESPACHOS_PAGE_SIZE));
+  const pageNum = despachosPage + 1;
+  if (despachoCount) despachoCount.textContent = String(total);
+  if (rows.length === 0) {
+    despachoBody.innerHTML = `<tr><td colspan="9" class="muted" style="text-align:center;padding:12px">Sin despachos para los filtros actuales.</td></tr>`;
+  } else {
+    despachoBody.innerHTML = rows.map(row => {
+      const fecha = formatPlanillaDateTime(row?.created_at);
+      const interno = formatPlanillaCell(row?.interno);
+      const base = resolveVehiculoBase(row);
+      const itin = formatPlanillaCell(row?.itinerario) || "-";
+      const estadoUp = String(row?.estado ?? "").trim().toUpperCase();
+      const isCancel = estadoUp === "CANCELADO";
+      const badgeStyle = isCancel
+        ? "background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+        : "background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;";
+      const canceladoTxt = row?.cancelled_at ? formatPlanillaDateTime(row.cancelled_at) : "-";
+      const obs = formatPlanillaCell(row?.observaciones) || "";
+      return `<tr>
+        <td>${escapeHtml(fecha)}</td>
+        <td><strong>${escapeHtml(interno)}</strong></td>
+        <td>${escapeHtml(base)}</td>
+        <td>${escapeHtml(itin)}</td>
+        <td style="text-align:center">${getDespachoSentidoBadgeHtml(row?.itinerario)}</td>
+        <td style="text-align:center"><span title="Esta funcion se integrara proximamente" style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;white-space:nowrap">Proximamente</span></td>
+        <td><span style="display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;${badgeStyle}">${escapeHtml(estadoUp || "-")}</span></td>
+        <td>${escapeHtml(canceladoTxt)}</td>
+        <td>${escapeHtml(obs)}</td>
+      </tr>`;
+    }).join("");
+  }
+  if (despachoPager) {
+    const disPrev = despachosPage <= 0 ? "disabled" : "";
+    const disNext = despachosPage >= totalPages - 1 ? "disabled" : "";
+    despachoPager.innerHTML = `
+      <button class="btn btn-ghost" id="despachoFirst" ${disPrev}>&laquo; Primero</button>
+      <button class="btn btn-ghost" id="despachoPrev" ${disPrev}>&lsaquo; Anterior</button>
+      <span class="muted" style="font-weight:600">Pagina ${pageNum} de ${totalPages}</span>
+      <button class="btn btn-ghost" id="despachoNext" ${disNext}>Siguiente &rsaquo;</button>
+      <button class="btn btn-ghost" id="despachoLast" ${disNext}>Ultimo &raquo;</button>`;
+    const go = (p) => { despachosPage = Math.max(0, Math.min(totalPages - 1, p)); loadDespachosPage(); };
+    despachoPager.querySelector("#despachoFirst")?.addEventListener("click", () => go(0));
+    despachoPager.querySelector("#despachoPrev")?.addEventListener("click", () => go(despachosPage - 1));
+    despachoPager.querySelector("#despachoNext")?.addEventListener("click", () => go(despachosPage + 1));
+    despachoPager.querySelector("#despachoLast")?.addEventListener("click", () => go(totalPages - 1));
+  }
+}
+
+function ensureFreshDespachosData(){
+  if (!despachosLoadedOnce) {
+    loadDespachosPage({ resetPage: true });
+  }
+}
+
+function handleDownloadDespachos(){
+  if (!window.XLSX) { showToast("No se pudo cargar XLSX para exportar.", "err"); return; }
+  if (!despachosRows.length) { showToast("No hay datos para exportar.", "warn"); return; }
+  const mapped = despachosRows.map(row => ({
+    "Fecha creacion": formatPlanillaDateTime(row?.created_at),
+    "Interno": formatPlanillaCell(row?.interno),
+    "Base": resolveVehiculoBase(row),
+    "Placa": (String(row?.placa ?? "").trim().toUpperCase() === "EMPTY" ? "" : formatPlanillaCell(row?.placa)),
+    "Vehiculo": formatPlanillaCell(row?.vehicle_id),
+    "Itinerario": formatPlanillaCell(row?.itinerario),
+    "Sentido": getDespachoSentido(row?.itinerario).label,
+    "Conductor": resolveConductorNombre(row?.driver_id),
+    "Cedula conductor": formatPlanillaCell(row?.driver_id),
+    "Pasajeros": "Proximamente",
+    "Estado": formatPlanillaCell(row?.estado),
+    "Cancelado en": row?.cancelled_at ? formatPlanillaDateTime(row.cancelled_at) : "",
+    "Observaciones": formatPlanillaCell(row?.observaciones)
+  }));
+  const ws = XLSX.utils.json_to_sheet(mapped);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Despachos");
+  const s = new Date();
+  const stamp = `${s.getFullYear()}${String(s.getMonth() + 1).padStart(2, "0")}${String(s.getDate()).padStart(2, "0")}_${String(s.getHours()).padStart(2, "0")}${String(s.getMinutes()).padStart(2, "0")}`;
+  XLSX.writeFile(wb, safeFileName(`despachos_realizados_p${despachosPage + 1}_${stamp}.xlsx`));
+}
+
+/* ===================== REALTIME (Supabase) ===================== */
+// Actualizacion instantanea de las vistas cuando cambian las tablas en Supabase.
+// Se suscribe tras iniciar sesion y se limpia al cerrar. Recarga solo la vista
+// relevante y solo si esta activa (para no consultar de mas en segundo plano).
+let realtimeChannels = [];
+let realtimeStarted = false;
+
+function isTabActive(tabId){
+  const el = document.getElementById("tab-" + tabId);
+  return !!(el && el.classList.contains("active"));
+}
+
+function makeDebounced(fn, ms){
+  let t = null;
+  return function(){
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn(); }, ms);
+  };
+}
+
+function startRealtimeSubscriptions(){
+  if (realtimeStarted) return;
+  if (!planillaSupabaseClient || typeof planillaSupabaseClient.channel !== "function") return;
+  realtimeStarted = true;
+
+  // Recargas con debounce: agrupan rafagas de eventos (p.ej. posiciones GPS).
+  const reloadLlegadas104 = makeDebounced(() => {
+    if (document.hidden) return;
+    if (!(isTabActive("llegadas-104") || isTabActive("mapa-aeropuerto"))) return;
+    if (typeof window.__reloadLlegadas104 === "function") window.__reloadLlegadas104();
+  }, 800);
+
+  const reloadPlanilla = makeDebounced(() => {
+    if (document.hidden) return;
+    if (!(isTabActive("llegadas-aeropuerto") || isTabActive("llegadas-san-diego") || isTabActive("llegadas-nutibara") || isTabActive("llegadas-novedades"))) return;
+    if (typeof loadPlanillaAfiliadosFromSupabase === "function") loadPlanillaAfiliadosFromSupabase();
+  }, 800);
+
+  const reloadDespachos = makeDebounced(() => {
+    if (document.hidden) return;
+    if (!isTabActive("despachos-realizados")) return;
+    if (typeof loadDespachosPage === "function") loadDespachosPage();
+  }, 800);
+
+  const subs = [
+    { table: "llegadas_104", handler: reloadLlegadas104 },
+    // planilla_afiliados_2 solo si las Llegadas NO estan en pausa.
+    ...(LLEGADAS_PAUSED ? [] : [{ table: "planilla_afiliados_2", handler: reloadPlanilla }]),
+    { table: "despachos_realizados", handler: reloadDespachos }
+  ];
+
+  subs.forEach(s => {
+    try {
+      const ch = planillaSupabaseClient
+        .channel("rt-" + s.table)
+        .on("postgres_changes", { event: "*", schema: "public", table: s.table }, s.handler)
+        .subscribe((status) => {
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            console.warn("[realtime] canal", s.table, "estado:", status);
+          }
+        });
+      realtimeChannels.push(ch);
+    } catch (e) {
+      console.warn("[realtime] no se pudo suscribir a", s.table, e?.message || e);
+    }
+  });
+}
+
+function stopRealtimeSubscriptions(){
+  realtimeChannels.forEach(ch => {
+    try { planillaSupabaseClient.removeChannel(ch); } catch (e) {}
+  });
+  realtimeChannels = [];
+  realtimeStarted = false;
+}
+
 /* ===================== PESTANAS ===================== */
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -7007,7 +8025,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const tabId = tab.getAttribute('data-tab');
     document.getElementById(`tab-${tabId}`).classList.add('active');
-    
+
     // Si es la pestana de novedades, renderizar
     if (tabId === 'novedades') {
       refreshNovedadesFromDbAndRender().catch((error) => {
@@ -7052,6 +8070,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
     if (tabId === 'llegadas-novedades') {
       ensureFreshPlanillaData({ force: false });
+    }
+    if (tabId === 'despachos-realizados') {
+      // Refresca al entrar (primera vez o al volver). Las actualizaciones en vivo
+      // llegan por la suscripcion Realtime de despachos_realizados.
+      loadDespachosPage({ resetPage: !despachosLoadedOnce });
     }
     if (tabId === 'consulta') {
       renderConsultaBaseView();
@@ -7582,6 +8605,16 @@ function bindUIEvents(){
     btnExport.addEventListener("click", handleExportProgramacionClick);
   }
 
+  const btnExportTurnos = document.getElementById("btnExportTurnos");
+  if (btnExportTurnos) {
+    btnExportTurnos.addEventListener("click", handleExportPlanillaTurnos);
+  }
+
+  const btnExportReporteTurnos = document.getElementById("btnExportReporteTurnos");
+  if (btnExportReporteTurnos) {
+    btnExportReporteTurnos.addEventListener("click", handleExportReporteTurnos);
+  }
+
   const btnExportFormato = document.getElementById("btnExportFormato");
   if (btnExportFormato) {
     btnExportFormato.addEventListener("click", async () => {
@@ -7596,235 +8629,70 @@ function bindUIEvents(){
     return;
   }
 
-  const selectedDate = normalizeDateToISO((usingTargetFormato ? filterDate2?.value : document.getElementById("filterDate")?.value) || "");
-  if (!selectedDate) {
-    showToast(`Selecciona una fecha en ${usingTargetFormato ? "Turnos del dia 2" : "Turnos del dia"} para descargar el formato operativo.`, "warn");
-    return;
-  }
-
-  if (usingTargetFormato) {
-    const currentFechaKey = getFechaKeyFromArray(sourceRows);
-    const hasSelectedDate = sourceRows.some(r => getRowDateISO(r, currentFechaKey) === selectedDate);
-    if (!hasSelectedDate) {
-      try {
-        await loadTargetProgramacionByDate(selectedDate);
-      } catch (error) {
-        console.error("No se pudo cargar fecha para formato operativo:", error);
-      }
-    }
-  }
-
-  sourceRows = usingTargetFormato ? rowsTarget : sourceRows;
-  const headerSet = new Set();
-  sourceRows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
-  const headerKeys = Array.from(headerSet);
-  const findHeaderByNorm = (aliases) => headerKeys.find(k => aliases.includes(norm(k))) || null;
-  const baseKey = usingTargetFormato ? getBaseKeyFromRows(sourceRows) : getBaseKey();
-  const fechaKey = usingTargetFormato ? getFechaKeyFromArray(sourceRows) : getFechaKey();
-  const puestoKey = findHeaderByNorm(["PUESTO"]);
-  const numeroKey = findHeaderByNorm(["#"]);
-  const vehiculoKey = findHeaderByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
-  const horaFinKey = findHeaderByNorm(["HORA FIN", "HORA FINAL"]);
-  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(headerKeys);
-  const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(sourceRows);
-
-  let exportData = sourceRows.slice();
-  if (fechaKey) exportData = exportData.filter(r => getRowDateISO(r, fechaKey) === selectedDate);
-  if (!exportData.length) {
-    showToast("No hay filas para la fecha seleccionada.", "warn");
-    return;
-  }
   if (!window.ExcelJS) {
     showToast("No se pudo cargar ExcelJS para exportar con estilos.", "err");
     return;
   }
 
-  const ordered = dedupeProgramacionRows(exportData).rows;
-  const orderedEntries = buildOperationalEntries(ordered, puestoKey, numeroKey);
-  const groupedSections = groupOperationalEntriesByPuesto(orderedEntries);
-  const dateForTitle = selectedDate || (fechaKey ? normalizeDateToISO(ordered[0][fechaKey]) : "");
-  const titleDate = formatDateLongEs(dateForTitle || "");
-  const fichoAssignments = buildFichoAssignmentsByIndex(groupedSections, vehiculoKey, { baseKey, fechaKey });
+  // Rango opcional (1 hoja por dia). Vacio = solo el dia seleccionado en Turnos del dia 2.
+  const expDesde = normalizeDateToISO(document.getElementById("operativoExpDesde")?.value || "");
+  const expHasta = normalizeDateToISO(document.getElementById("operativoExpHasta")?.value || "");
+  if ((expDesde && !expHasta) || (!expDesde && expHasta)) {
+    showToast("Para el formato por rango indica Desde Y Hasta.", "warn");
+    return;
+  }
+  const usarRango = !!(expDesde && expHasta);
 
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet(`DIA_${selectedDate}`);
-  ws.columns = [
-    { width: 8 },  // A #
-    { width: 10 }, // B INICIA
-    { width: 8 },  // C VEH
-    { width: 36 }, // D CONDUCTOR 1
-    { width: 10 }, // E INICIA 2
-    { width: 36 }, // F CONDUCTOR 2
-    { width: 10 }, // G HORA FIN
-    { width: 3 },  // H separador
-    { width: 18 }, // I BASE NOVEDAD
-    { width: 34 }, // J CONDUCTOR NOVEDAD
-    { width: 16 }  // K ESTADO NOVEDAD
-  ];
-
-  const styleTitle = {
-    fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } },
-    font: { bold: true, color: { argb: "FF0F172A" }, size: 26 },
-    alignment: { horizontal: "center", vertical: "middle" }
-  };
-  const styleHeader = {
-    fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } },
-    font: { bold: true, color: { argb: "FF000000" } },
-    alignment: { horizontal: "center", vertical: "middle" }
-  };
-  const styleFichoGreen = {
-    fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF16A34A" } },
-    font: { bold: true, color: { argb: "FFFFFFFF" } }
-  };
-  const styleFichoBlue = {
-    fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF2563EB" } },
-    font: { bold: true, color: { argb: "FFFFFFFF" } }
-  };
-  const styleBorderThin = {
-    top: { style: "thin", color: { argb: "FF000000" } },
-    left: { style: "thin", color: { argb: "FF000000" } },
-    bottom: { style: "thin", color: { argb: "FF000000" } },
-    right: { style: "thin", color: { argb: "FF000000" } }
-  };
-
-  const applyRowStyle = (rowNumber, styleObj, fromCol = 1, toCol = 7) => {
-    for (let c = fromCol; c <= toCol; c++) {
-      const cell = ws.getRow(rowNumber).getCell(c);
-      cell.style = { ...(cell.style || {}), ...styleObj };
+  let opDates = [];
+  if (usarRango) {
+    if (expDesde > expHasta) { showToast("La fecha 'Desde' no puede ser mayor que 'Hasta'.", "warn"); return; }
+    const pad2 = (n) => String(n).padStart(2, "0");
+    let cur = new Date(`${expDesde}T00:00:00`);
+    const end = new Date(`${expHasta}T00:00:00`);
+    while (cur <= end) { opDates.push(`${cur.getFullYear()}-${pad2(cur.getMonth() + 1)}-${pad2(cur.getDate())}`); cur.setDate(cur.getDate() + 1); }
+    if (opDates.length > 62) { showToast("El rango es muy grande (maximo ~2 meses).", "warn"); return; }
+  } else {
+    const selectedDate = normalizeDateToISO((usingTargetFormato ? filterDate2?.value : document.getElementById("filterDate")?.value) || "");
+    if (!selectedDate) {
+      showToast(`Selecciona una fecha en ${usingTargetFormato ? "Turnos del dia 2" : "Turnos del dia"} (o un rango) para descargar el formato operativo.`, "warn");
+      return;
     }
-  };
-  const applyBorderRow = (rowNumber, fromCol = 1, toCol = 7) => {
-    for (let c = fromCol; c <= toCol; c++) {
-      ws.getRow(rowNumber).getCell(c).border = styleBorderThin;
-    }
-  };
-
-  const formatConductorForExport = (rowObj, conductorKey) => {
-    if (!conductorKey) return "";
-    const raw = String(rowObj?.[conductorKey] || "");
-    const note = getConductorNote(rowObj, conductorKey);
-    const assigned = extractConductorName(raw);
-    const isUnassigned = !raw || norm(raw) === UNASSIGNED_LABEL || !assigned;
-    if (!note) return raw;
-    if (!isUnassigned) return raw;
-    return `${UNASSIGNED_LABEL}\nNOTA: ${note}`;
-  };
-
-  let currentRow = 1;
-  const openSection = (puestoLabel) => {
-    const sectionDisplay = getOperationalSectionDisplayName(puestoLabel);
-    if (currentRow > 1) currentRow++;
-    ws.mergeCells(currentRow, 1, currentRow, 7);
-    ws.getRow(currentRow).getCell(1).value = `${String(sectionDisplay || "SIN PUESTO").toUpperCase()} ${titleDate}`;
-    applyRowStyle(currentRow, styleTitle);
-    applyBorderRow(currentRow, 1, 7);
-    currentRow++;
-    ws.getRow(currentRow).values = ["#", "INICIA", "VEH", "CONDUCTOR 1", "INICIA", "CONDUCTOR 2", "HORA FIN"];
-    applyRowStyle(currentRow, styleHeader);
-    applyBorderRow(currentRow, 1, 7);
-    currentRow++;
-  };
-
-  groupedSections.forEach(section => {
-    const sectionLabel = canonicalizePuestoLabel(section.puesto);
-    const sectionEntries = getSectionEntriesForOperationalView(sectionLabel, section.entries);
-    if (!sectionEntries.length) return;
-    openSection(sectionLabel);
-    sectionEntries.forEach(entry => {
-      const r = entry.row;
-      const isFichoMarker = entry.isFichoMarker;
-      const vehNote = getVehiculoNote(r);
-      const turnNum = getNumericTurnNumber(numeroKey ? r[numeroKey] : "");
-      let vehValue = vehiculoKey ? (r[vehiculoKey] || "") : "";
-      if (norm(sectionLabel).includes("NUTIBARA") && turnNum && turnNum >= 1 && turnNum <= 10) {
-        const rowBase = getRowCanonicalBase(r, baseKey);
-        const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
-        const groupKey = `${rowBase || ""}|${rowDate || ""}`;
-        const assigned = fichoAssignments.get(groupKey)?.get(turnNum);
-        if (assigned?.veh) vehValue = assigned.veh;
-      }
-      if (vehNote) vehValue = `${vehValue}\nCOMENTARIO: ${vehNote}`;
-
-      ws.getRow(currentRow).values = [
-        numeroKey ? r[numeroKey] : (entry.idx + 1),
-        horaInicio1Key ? excelTimeToHHMM(r[horaInicio1Key]) : "",
-        vehValue,
-        formatConductorForExport(r, conductor1Key),
-        horaInicio2Key ? excelTimeToHHMM(r[horaInicio2Key]) : "",
-        formatConductorForExport(r, conductor2Key),
-        horaFinKey ? excelTimeToHHMM(r[horaFinKey]) : ""
-      ];
-      ws.getRow(currentRow).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
-      ws.getRow(currentRow).getCell(2).alignment = { horizontal: "center", vertical: "middle" };
-      ws.getRow(currentRow).getCell(3).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      ws.getRow(currentRow).getCell(4).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      ws.getRow(currentRow).getCell(5).alignment = { horizontal: "center", vertical: "middle" };
-      ws.getRow(currentRow).getCell(6).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      ws.getRow(currentRow).getCell(7).alignment = { horizontal: "center", vertical: "middle" };
-      applyBorderRow(currentRow, 1, 7);
-
-      if (isFichoMarker) {
-        const isFichoExpos = norm(sectionLabel).includes("EXPOSICIONES");
-        applyRowStyle(currentRow, isFichoExpos ? styleFichoBlue : styleFichoGreen);
-      } else {
-        const isNutibara = norm(sectionLabel).includes("NUTIBARA");
-        let vehColor = null;
-        if (isNutibara && turnNum && turnNum >= 1 && turnNum <= 10) {
-          const rowBase = getRowCanonicalBase(r, baseKey);
-          const rowDate = getRowDateISO(r, fechaKey) || selectedDate;
-          const groupKey = `${rowBase || ""}|${rowDate || ""}`;
-          vehColor = fichoAssignments.get(groupKey)?.get(turnNum)?.color || null;
-        }
-        if (vehColor) {
-          const vehCell = ws.getRow(currentRow).getCell(3); // Columna VEH
-          vehCell.style = {
-            ...(vehCell.style || {}),
-            fill: {
-              type: "pattern",
-              pattern: "solid",
-              fgColor: { argb: vehColor === "blue" ? "FF2563EB" : "FF16A34A" }
-            },
-            font: { ...(vehCell.style?.font || {}), bold: true, color: { argb: "FFFFFFFF" } }
-          };
-        }
-      }
-      currentRow++;
-    });
-  });
-
-  let novedadesDelDia = (novedades || []).filter(n => normalizeDateToISO(n.fecha) === selectedDate);
-  ws.mergeCells(1, 9, 1, 11);
-  ws.getRow(1).getCell(9).value = "NOVEDADES DEL DIA";
-  ws.getRow(1).getCell(9).style = styleTitle;
-  ws.getRow(2).getCell(9).value = "BASE";
-  ws.getRow(2).getCell(10).value = "CONDUCTOR";
-  ws.getRow(2).getCell(11).value = "ESTADO";
-  for (let c = 9; c <= 11; c++) {
-    ws.getRow(2).getCell(c).style = styleHeader;
-    ws.getRow(2).getCell(c).alignment = { horizontal: "center", vertical: "middle" };
-    ws.getRow(2).getCell(c).border = styleBorderThin;
+    opDates = [selectedDate];
   }
 
-  let novRow = 3;
-  if (novedadesDelDia.length === 0) {
-    ws.getRow(novRow).getCell(9).value = "-";
-    ws.getRow(novRow).getCell(10).value = "Sin novedades";
-    ws.getRow(novRow).getCell(11).value = "-";
-    ws.getRow(novRow).getCell(9).alignment = { horizontal: "center", vertical: "middle" };
-    ws.getRow(novRow).getCell(10).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    ws.getRow(novRow).getCell(11).alignment = { horizontal: "center", vertical: "middle" };
-    applyBorderRow(novRow, 9, 11);
-  } else {
-    novedadesDelDia.forEach(n => {
-      ws.getRow(novRow).getCell(9).value = n.base || "-";
-      ws.getRow(novRow).getCell(10).value = n.nombre || "-";
-      ws.getRow(novRow).getCell(11).value = n.estado || "-";
-      ws.getRow(novRow).getCell(9).alignment = { horizontal: "center", vertical: "middle" };
-      ws.getRow(novRow).getCell(10).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-      ws.getRow(novRow).getCell(11).alignment = { horizontal: "center", vertical: "middle" };
-      applyBorderRow(novRow, 9, 11);
-      novRow++;
-    });
+  // Novedades: del rango (si aplica) o las ya cargadas en memoria.
+  let novedadesAll = Array.isArray(novedades) ? novedades : [];
+  if (usarRango && typeof fetchNovedadesRange === "function") {
+    try { const nr = await fetchNovedadesRange(opDates[0], opDates[opDates.length - 1]); if (Array.isArray(nr)) novedadesAll = nr; }
+    catch (e) { console.warn("novedades rango:", e?.message || e); }
+  }
+
+  const wb = new ExcelJS.Workbook();
+  let hojas = 0;
+  const sinDatos = [];
+  for (const d of opDates) {
+    let rowsForDate = [];
+    if (usarRango) {
+      rowsForDate = (typeof fetchProgramacionRowsForDate === "function") ? await fetchProgramacionRowsForDate(d) : [];
+    } else {
+      let src = usingTargetFormato ? rowsTarget : rows;
+      const fkNow = usingTargetFormato ? getFechaKeyFromArray(src) : getFechaKey();
+      const has = fkNow && src.some(r => getRowDateISO(r, fkNow) === d);
+      if (usingTargetFormato && !has) {
+        try { await loadTargetProgramacionByDate(d); } catch (e) { console.error("No se pudo cargar fecha para formato operativo:", e); }
+        src = rowsTarget;
+      }
+      const fk2 = usingTargetFormato ? getFechaKeyFromArray(src) : getFechaKey();
+      rowsForDate = fk2 ? src.filter(r => getRowDateISO(r, fk2) === d) : src.slice();
+    }
+    if (!rowsForDate.length) { sinDatos.push(d); continue; }
+    buildOperativoSheet(wb, d, rowsForDate, novedadesAll);
+    hojas++;
+  }
+
+  if (hojas === 0) {
+    showToast("No hay datos para la(s) fecha(s) seleccionada(s).", "warn");
+    return;
   }
 
   const buffer = await wb.xlsx.writeBuffer();
@@ -7834,11 +8702,13 @@ function bindUIEvents(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `formato_operativo_${selectedDate}.xlsx`;
+  a.download = usarRango ? `formato_operativo_${opDates[0]}_a_${opDates[opDates.length - 1]}.xlsx` : `formato_operativo_${opDates[0]}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+  const avisoSin = sinDatos.length ? ` | sin datos: ${sinDatos.length} dia(s)` : "";
+  showToast(`Formato operativo: ${hojas} hoja(s) generada(s)${avisoSin}.`, sinDatos.length ? "warn" : "ok");
     });
   }
 
@@ -8007,9 +8877,6 @@ function bindUIEvents(){
   if (btnDownloadLlegadas) {
     btnDownloadLlegadas.addEventListener("click", handleDownloadLlegadas);
   }
-  if (btnDownloadDespachos) {
-    btnDownloadDespachos.addEventListener("click", handleDownloadDespachos);
-  }
   if (btnRefreshLlegadasAeropuerto) {
     btnRefreshLlegadasAeropuerto.addEventListener("click", loadPlanillaAfiliadosFromSupabase);
   }
@@ -8047,6 +8914,13 @@ function bindUIEvents(){
   if (planillaFilterBase) planillaFilterBase.addEventListener("input", renderPlanillaAfiliados);
   if (planillaFilterHoraLlegada) planillaFilterHoraLlegada.addEventListener("input", renderPlanillaAfiliados);
   if (planillaFilterTipo) planillaFilterTipo.addEventListener("change", renderPlanillaAfiliados);
+  if (btnRefreshDespachos) btnRefreshDespachos.addEventListener("click", () => loadDespachosPage({ resetPage: true }));
+  if (btnDownloadDespachos) btnDownloadDespachos.addEventListener("click", handleDownloadDespachos);
+  if (despachoEstadoFilter) despachoEstadoFilter.addEventListener("change", () => loadDespachosPage({ resetPage: true }));
+  if (despachoSentidoFilter) despachoSentidoFilter.addEventListener("change", () => loadDespachosPage({ resetPage: true }));
+  if (despachoFrom) despachoFrom.addEventListener("change", () => loadDespachosPage({ resetPage: true }));
+  if (despachoTo) despachoTo.addEventListener("change", () => loadDespachosPage({ resetPage: true }));
+  if (despachoSearch) despachoSearch.addEventListener("keydown", (e) => { if (e.key === "Enter") loadDespachosPage({ resetPage: true }); });
 }
 
 // ==================== INIT ====================
@@ -8231,7 +9105,7 @@ function bindWindowEvents(){
    ===================================================================== */
 (function bootstrapAsistencias(){
   const ASIST_TABLE = "asistencias";
-  const ASIST_FETCH_LIMIT = 500;
+  const ASIST_FETCH_LIMIT = 20000;
 
   // SELECT con embed defensivo: si la FK esta definida, trae el colaborador.
   // El alias singular es estandar PostgREST.
@@ -8290,13 +9164,7 @@ function bindWindowEvents(){
   function setBaseHint(){
     const el = $("asistenciasBaseHint");
     if (!el) return;
-    const base = getActiveBase();
-    const fixed = typeof isBaseOperator === "function" && isBaseOperator();
-    if (base){
-      el.textContent = `Filtrando: BASE ${base}${fixed ? " (fijo)" : ""}`;
-    } else {
-      el.textContent = "Sin base seleccionada (mostrando todas)";
-    }
+    el.textContent = "Mostrando todas las bases";
   }
 
   const $ = (id) => document.getElementById(id);
@@ -8356,34 +9224,51 @@ function bindWindowEvents(){
       const desde = $("asistenciasFrom") && $("asistenciasFrom").value;
       const hasta = $("asistenciasTo") && $("asistenciasTo").value;
 
-      const buildQuery = (selectStr) => {
+      // PostgREST limita cada respuesta (tipicamente 1000 filas). Por eso paginamos
+      // por bloques con .range() hasta completar todo o alcanzar ASIST_FETCH_LIMIT.
+      const PAGE = 1000;
+      const buildQuery = (selectStr, from, to) => {
         let q = planillaSupabaseClient
           .from(ASIST_TABLE)
           .select(selectStr)
           .order("fecha", { ascending: false, nullsFirst: false })
           .order("hora",  { ascending: false, nullsFirst: false })
-          .limit(ASIST_FETCH_LIMIT);
+          .range(from, to);
         if (desde) q = q.gte("fecha", desde);
         if (hasta) q = q.lte("fecha", hasta);
         return q;
       };
 
-      // Intento con embed; si falla por FK ausente, reintento plano.
-      let { data, error } = await buildQuery(state.embedAvailable ? SELECT_WITH_EMBED : SELECT_PLAIN);
+      let selectStr = state.embedAvailable ? SELECT_WITH_EMBED : SELECT_PLAIN;
+      const all = [];
+      let from = 0;
+      while (from < ASIST_FETCH_LIMIT){
+        const to = Math.min(from + PAGE, ASIST_FETCH_LIMIT) - 1;
+        const expected = to - from + 1;
+        let { data, error } = await buildQuery(selectStr, from, to);
 
-      if (error && state.embedAvailable){
-        const msg = (error.message || "").toLowerCase();
-        const isEmbedErr = msg.includes("relationship") || msg.includes("could not find") || msg.includes("schema cache");
-        if (isEmbedErr){
-          state.embedAvailable = false;
-          console.warn("[asistencias] Embed no disponible, usando select plano:", error.message);
-          ({ data, error } = await buildQuery(SELECT_PLAIN));
+        // Si falla el embed por FK ausente, cambio a select plano y reintento este bloque.
+        if (error && state.embedAvailable){
+          const msg = (error.message || "").toLowerCase();
+          const isEmbedErr = msg.includes("relationship") || msg.includes("could not find") || msg.includes("schema cache");
+          if (isEmbedErr){
+            state.embedAvailable = false;
+            selectStr = SELECT_PLAIN;
+            console.warn("[asistencias] Embed no disponible, usando select plano:", error.message);
+            ({ data, error } = await buildQuery(selectStr, from, to));
+          }
         }
+
+        if (error) throw error;
+
+        const batch = Array.isArray(data) ? data : [];
+        all.push(...batch);
+        setStatus(`Cargando... ${all.length}`);
+        if (batch.length < expected) break; // bloque incompleto = no hay mas registros
+        from += PAGE;
       }
 
-      if (error) throw error;
-
-      state.rows = Array.isArray(data) ? data : [];
+      state.rows = all;
       state.loadedOnce = true;
       // Reconstruir indice base-por-nombre con el CSV actual (driversByBase puede
       // haber cambiado entre cargas).
@@ -8402,13 +9287,11 @@ function bindWindowEvents(){
   function getFilteredRows(){
     let rows = state.rows.slice();
 
-    const activeBase = getActiveBase();
-    if (activeBase){
-      rows = rows.filter(r => getBaseDesdeCsv(getColaboradorNombre(r)) === activeBase);
-    }
+    // Sin filtro por base: la vista de asistencias muestra todas las bases.
 
     const sentido = ($("asistenciasSentido") && $("asistenciasSentido").value || "").trim().toLowerCase();
-    if (sentido) rows = rows.filter(r => (r.sentido || "").toLowerCase() === sentido);
+    // En vista "entrada y salida" no aplicamos el filtro de sentido (necesitamos ambos para emparejar).
+    if (sentido && getVista() !== "pares") rows = rows.filter(r => (r.sentido || "").toLowerCase() === sentido);
 
     const term = ($("asistenciasSearch") && $("asistenciasSearch").value || "").trim().toLowerCase();
     if (term){
@@ -8419,7 +9302,6 @@ function bindWindowEvents(){
           nombre,
           baseCsv ? `BASE ${baseCsv}` : "",
           r.base_operativa,
-          r.origen,
           r.fecha,
           r.hora
         ].filter(Boolean).map(v => String(v).toLowerCase()).join(" | ");
@@ -8429,24 +9311,97 @@ function bindWindowEvents(){
     return rows;
   }
 
+  function getVista(){
+    const v = ($("asistenciasVista") && $("asistenciasVista").value) || "detalle";
+    return v === "pares" ? "pares" : "detalle";
+  }
+
+  function setHead(vista){
+    const head = $("asistenciasHead");
+    if (!head) return;
+    head.innerHTML = (vista === "pares")
+      ? "<th>Fecha</th><th>Colaborador</th><th>Base</th><th>Entrada</th><th>Salida</th><th>Horas</th>"
+      : "<th>Fecha</th><th>Hora</th><th>Jornada</th><th>Sentido</th><th>Colaborador</th><th>Base</th>";
+  }
+
+  function hhmmssToSec(h){
+    const m = String(h || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (!m) return null;
+    return (+m[1]) * 3600 + (+m[2]) * 60 + (+(m[3] || 0));
+  }
+  function secToHHMM(s){
+    if (s == null) return "";
+    if (s < 0) s += 86400; // turno que cruza medianoche
+    const h = Math.floor(s / 3600), mn = Math.floor((s % 3600) / 60);
+    return `${String(h).padStart(2, "0")}:${String(mn).padStart(2, "0")}`;
+  }
+
+  // Agrupa las marcas por colaborador + jornada -> { fecha, nombre, base, entrada, salida }.
+  function buildPares(rows){
+    const groups = new Map();
+    rows.forEach(r => {
+      const nombre = getColaboradorNombre(r);
+      const personKey = String(r.colaborador_id || nombre || "").trim();
+      const jornada = String(r.jornada || r.fecha || "").trim();
+      const key = `${personKey}|${jornada}`;
+      let g = groups.get(key);
+      if (!g){
+        const bcsv = getBaseDesdeCsv(nombre);
+        g = { fecha: r.fecha || jornada, jornada, nombre, base: bcsv ? `BASE ${bcsv}` : (r.base_operativa || ""), entrada: null, salida: null };
+        groups.set(key, g);
+      }
+      const hora = formatHora(r.hora);
+      const s = String(r.sentido || "").toLowerCase();
+      if (s === "entrada"){ if (!g.entrada || hora < g.entrada) g.entrada = hora; }
+      else if (s === "salida"){ if (!g.salida || hora > g.salida) g.salida = hora; }
+    });
+    const out = Array.from(groups.values());
+    out.sort((a, b) => String(b.jornada).localeCompare(String(a.jornada)) || String(a.nombre).localeCompare(String(b.nombre), "es"));
+    return out;
+  }
+
   function render(){
     const tbody = $("asistenciasBody");
     if (!tbody) return;
     setBaseHint();
+    const vista = getVista();
+    setHead(vista);
     const rows = getFilteredRows();
-    setCount(rows.length);
 
     if (!state.loadedOnce){
-      tbody.innerHTML = `<tr><td colspan="7" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+      setCount(rows.length);
+      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
       return;
     }
     if (!rows.length){
-      tbody.innerHTML = `<tr><td colspan="7" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
+      setCount(0);
+      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
       return;
     }
 
     const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
 
+    if (vista === "pares"){
+      const pares = buildPares(rows);
+      setCount(pares.length);
+      tbody.innerHTML = pares.map(g => {
+        const segs = (g.entrada != null && g.salida != null) ? (hhmmssToSec(g.salida) - hhmmssToSec(g.entrada)) : null;
+        const horas = (segs == null) ? "-" : secToHHMM(segs);
+        const ent = g.entrada ? `<span class="estado-tag tag-disponible" style="white-space:nowrap">${esc(g.entrada)}</span>` : '<span class="muted">-</span>';
+        const sal = g.salida ? `<span class="estado-tag tag-vacaciones" style="white-space:nowrap">${esc(g.salida)}</span>` : '<span class="muted">-</span>';
+        return `<tr>
+          <td>${esc(g.fecha || "")}</td>
+          <td>${esc(g.nombre)}</td>
+          <td style="white-space:nowrap">${esc(g.base)}</td>
+          <td style="text-align:center">${ent}</td>
+          <td style="text-align:center">${sal}</td>
+          <td style="text-align:center">${esc(horas)}</td>
+        </tr>`;
+      }).join("");
+      return;
+    }
+
+    setCount(rows.length);
     tbody.innerHTML = rows.map(r => {
       const sentidoCls = (r.sentido === "entrada") ? "tag-disponible" : (r.sentido === "salida" ? "tag-vacaciones" : "tag-pendiente");
       const nombre = getColaboradorNombre(r);
@@ -8459,7 +9414,6 @@ function bindWindowEvents(){
         <td><span class="estado-tag ${sentidoCls}" style="white-space:nowrap">${esc(r.sentido || "")}</span></td>
         <td>${esc(nombre)}</td>
         <td style="white-space:nowrap">${esc(baseLabel)}</td>
-        <td>${esc(r.origen || "")}</td>
       </tr>`;
     }).join("");
   }
@@ -8474,32 +9428,44 @@ function bindWindowEvents(){
       if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn");
       return;
     }
-    const data = rows.map(r => {
-      const nombre = getColaboradorNombre(r);
-      const baseCsv = getBaseDesdeCsv(nombre);
-      const baseLabel = baseCsv ? `BASE ${baseCsv}` : (r.base_operativa || "");
-      return {
-        Fecha: r.fecha || "",
-        Hora: formatHora(r.hora),
-        Jornada: r.jornada || "",
-        Sentido: r.sentido || "",
-        Colaborador: nombre,
-        ColaboradorId: r.colaborador_id || "",
-        Base: baseLabel,
-        Origen: r.origen || "",
-        Latitud: r.latitud == null ? "" : r.latitud,
-        Longitud: r.longitud == null ? "" : r.longitud,
-        PrecisionM: r.ubicacion_precision_m == null ? "" : r.ubicacion_precision_m,
-        CreatedAt: r.created_at || ""
-      };
-    });
+    let data;
+    if (getVista() === "pares"){
+      data = buildPares(rows).map(g => {
+        const segs = (g.entrada != null && g.salida != null) ? (hhmmssToSec(g.salida) - hhmmssToSec(g.entrada)) : null;
+        return {
+          Fecha: g.fecha || "",
+          Colaborador: g.nombre,
+          Base: g.base || "",
+          Entrada: g.entrada || "",
+          Salida: g.salida || "",
+          Horas: (segs == null) ? "" : secToHHMM(segs)
+        };
+      });
+    } else {
+      data = rows.map(r => {
+        const nombre = getColaboradorNombre(r);
+        const baseCsv = getBaseDesdeCsv(nombre);
+        const baseLabel = baseCsv ? `BASE ${baseCsv}` : (r.base_operativa || "");
+        return {
+          Fecha: r.fecha || "",
+          Hora: formatHora(r.hora),
+          Jornada: r.jornada || "",
+          Sentido: r.sentido || "",
+          Colaborador: nombre,
+          ColaboradorId: r.colaborador_id || "",
+          Base: baseLabel,
+          Latitud: r.latitud == null ? "" : r.latitud,
+          Longitud: r.longitud == null ? "" : r.longitud,
+          PrecisionM: r.ubicacion_precision_m == null ? "" : r.ubicacion_precision_m,
+          CreatedAt: r.created_at || ""
+        };
+      });
+    }
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Asistencias");
-    const activeBase = getActiveBase();
-    const baseTag = activeBase ? `_base${activeBase}` : "";
     const fname = (typeof safeFileName === "function" ? safeFileName : (s) => s)(
-      `asistencias${baseTag}_${new Date().toISOString().slice(0,10)}.xlsx`
+      `asistencias_${new Date().toISOString().slice(0,10)}.xlsx`
     );
     XLSX.writeFile(wb, fname);
   }
@@ -8509,6 +9475,7 @@ function bindWindowEvents(){
     const btnDownload = $("btnDownloadAsistencias");
     const search = $("asistenciasSearch");
     const sentido = $("asistenciasSentido");
+    const vista = $("asistenciasVista");
     const fromI = $("asistenciasFrom");
     const toI = $("asistenciasTo");
 
@@ -8516,6 +9483,7 @@ function bindWindowEvents(){
     if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
     if (search) search.addEventListener("input", render);
     if (sentido) sentido.addEventListener("change", render);
+    if (vista) vista.addEventListener("change", render);
     // Filtros de fecha re-consultan al servidor (porque limit=500).
     if (fromI) fromI.addEventListener("change", () => { if (state.loadedOnce) loadAsistencias(); });
     if (toI)   toI.addEventListener("change",   () => { if (state.loadedOnce) loadAsistencias(); });
@@ -8536,7 +9504,7 @@ function bindWindowEvents(){
       state.loadedOnce = false;
       _baseByName = null;
       const tbody = $("asistenciasBody");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+      if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
       setCount(0);
       setStatus("Sin cargar");
     });
@@ -8582,7 +9550,8 @@ function bindWindowEvents(){
     loading: false,
     loadedOnce: false,
     map: null,
-    markersLayer: null
+    markersLayer: null,
+    activeItin: ""   // "" = Todos. Sino: nombre del itinerario o ITIN_SIN_LLEGADA.
   };
 
   // Centro por defecto: aeropuerto Jose Maria Cordoba (Rionegro, Antioquia).
@@ -8597,17 +9566,26 @@ function bindWindowEvents(){
     const container = $("mapaAeropuerto");
     if (!container) return null;
 
-    // CSS para el tooltip permanente con el numero interno.
+    // CSS para el marcador compacto tipo bus con el numero interno.
     if (!document.getElementById("mapaAeropuertoStyles")){
       const style = document.createElement("style");
       style.id = "mapaAeropuertoStyles";
       style.textContent = `
-        .veh-interno-label {
-          background: #1e40af; color:#fff; font-weight:700; font-size:11px;
-          padding:2px 6px; border-radius:10px; border:none; box-shadow:0 1px 2px rgba(0,0,0,.25);
+        .bus-pin-wrap { background:transparent !important; border:none !important; }
+        .bus-pin {
+          position:absolute;
+          left:0; top:0;
+          transform: translate(-50%, -100%);
+          display:flex; align-items:center; gap:4px;
+          background: var(--pin, #1d4ed8); color:#fff;
+          padding:3px 8px 3px 6px; border-radius:999px;
+          font-weight:700; font-size:11px; line-height:1;
+          border:1.5px solid #fff;
+          box-shadow:0 1px 3px rgba(0,0,0,.45);
           white-space:nowrap;
         }
-        .veh-interno-label::before { display:none !important; }
+        .bus-pin svg { display:block; flex:0 0 auto; }
+        .bus-pin-num { font-variant-numeric: tabular-nums; letter-spacing:.2px; }
       `;
       document.head.appendChild(style);
     }
@@ -8636,16 +9614,18 @@ function bindWindowEvents(){
       const lon = Number(r.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
       if (lat === 0 && lon === 0) return; // descartar coordenadas claramente invalidas
-      const m = L.marker([lat, lon]);
       const interno = String(r.interno == null ? "" : r.interno);
-      if (interno){
-        m.bindTooltip(interno, {
-          permanent: true,
-          direction: "top",
-          offset: [0, -10],
-          className: "veh-interno-label"
-        });
-      }
+      const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
+      const listo = r.listo === true;
+      const color = listo ? "#16a34a" : "#1d4ed8"; // verde = listo, azul = en espera
+      const busSvg = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="#fff" d="M4 16c0 .88.39 1.67 1 2.22V20c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h8v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1.78c.61-.55 1-1.34 1-2.22V6c0-3.5-3.58-4-8-4S4 2.5 4 6v10zm3.5 1c-.83 0-1.5-.67-1.5-1.5S6.67 14 7.5 14s1.5.67 1.5 1.5S8.33 17 7.5 17zm9 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM18 11H6V6h12v5z"/></svg>';
+      const icon = L.divIcon({
+        className: "bus-pin-wrap",
+        html: `<div class="bus-pin" style="--pin:${color}">${busSvg}<span class="bus-pin-num">${esc(interno || "?")}</span></div>`,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0]
+      });
+      const m = L.marker([lat, lon], { icon });
       const popupHtml = [
         `<strong>Interno:</strong> ${interno || "-"}`,
         `<strong>Vehiculo:</strong> ${r.vehicle_id || "-"}`,
@@ -8687,17 +9667,32 @@ function bindWindowEvents(){
   }
 
   function splitFechaHora(iso){
-    // PostgREST timestamptz -> "2026-05-20T13:38:10.366914+00:00".
-    // No reinterpreto la zona: corto la cadena para preservar la hora
-    // tal como la guarda Supabase (asumimos que ya esta en hora local
-    // operativa). Si en algun momento se requiere conversion, se hace aqui.
+    // PostgREST timestamptz -> "2026-05-20T13:38:10.366914+00:00" (normalmente UTC).
+    // Convertimos el instante a hora local de Colombia (America/Bogota) para que
+    // la HORA mostrada coincida con la realidad y con la columna "HACE".
     if (!iso) return { fecha: "", hora: "" };
     const str = String(iso);
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+      try {
+        const fecha = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Bogota",
+          year: "numeric", month: "2-digit", day: "2-digit"
+        }).format(d); // YYYY-MM-DD
+        const hora = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "America/Bogota",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+        }).format(d); // HH:mm:ss (24h)
+        return { fecha, hora };
+      } catch (e) {
+        // Si Intl/timeZone no esta disponible, caemos al corte de cadena.
+      }
+    }
+    // Fallback: corte de cadena sin conversion (comportamiento anterior).
     const tIdx = str.indexOf("T");
     if (tIdx < 0) return { fecha: str, hora: "" };
     const fecha = str.slice(0, tIdx);
     let resto = str.slice(tIdx + 1);
-    // recortar offset y subsegundos
     const offIdx = resto.search(/[+\-Z]/);
     if (offIdx >= 0) resto = resto.slice(0, offIdx);
     const dotIdx = resto.indexOf(".");
@@ -8717,6 +9712,31 @@ function bindWindowEvents(){
     if (!fecha && !hora) return "";
     return `${fecha} ${hora}`.trim();
   }
+
+  function fmtHoraAmPm(hora){
+    if (!hora) return "";
+    const [hh, mm = "00", ss = "00"] = String(hora).split(":");
+    const h = parseInt(hh, 10);
+    if (!Number.isFinite(h)) return hora;
+    const ampm = h >= 12 ? "p. m." : "a. m.";
+    const h12 = ((h + 11) % 12) + 1;
+    return `${String(h12).padStart(2,"0")}:${mm}:${ss} ${ampm}`;
+  }
+
+  function fmtHace(iso){
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return "";
+    const diff = Math.max(0, Date.now() - t);
+    const totalMin = Math.floor(diff / 60000);
+    if (totalMin < 1) return "hace <1 min";
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if (h === 0) return `hace ${m} min`;
+    return `hace ${h} h ${m} min`;
+  }
+
+  const ITIN_SIN_LLEGADA = "__sin_llegada__";
 
   async function loadLlegadas104(){
     if (state.loading) return;
@@ -8744,6 +9764,11 @@ function bindWindowEvents(){
 
       state.rows = Array.isArray(data) ? data : [];
       state.loadedOnce = true;
+      // Si el itinerario activo ya no existe en el dataset nuevo, vuelvo a "Todos".
+      if (state.activeItin){
+        const stillExists = state.rows.some(r => itinKey(r) === state.activeItin);
+        if (!stillExists) state.activeItin = "";
+      }
       setStatus(`Cargadas ${state.rows.length} (limite ${FETCH_LIMIT}).`);
       render();
     } catch (err){
@@ -8755,45 +9780,121 @@ function bindWindowEvents(){
     }
   }
 
+  function posNum(v){
+    const n = Number(v);
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  }
+
+  function itinKey(r){
+    const v = String(r.itinerario || "").trim();
+    return v || ITIN_SIN_LLEGADA;
+  }
+
+  function itinDisplay(key){
+    return key === ITIN_SIN_LLEGADA ? "Sin llegada 104 hoy" : key;
+  }
+
+  function getFilteredRows(){
+    let rows = state.rows.slice();
+    const sel = state.activeItin; // "" = Todos, key concreto, o ITIN_SIN_LLEGADA
+    if (sel){
+      rows = rows.filter(r => itinKey(r) === sel);
+      rows.sort((a, b) => posNum(a.posicion) - posNum(b.posicion));
+    } else {
+      rows.sort((a, b) => {
+        const cmp = itinKey(a).localeCompare(itinKey(b));
+        if (cmp !== 0) return cmp;
+        return posNum(a.posicion) - posNum(b.posicion);
+      });
+    }
+    return rows;
+  }
+
+  function renderChips(){
+    const cont = $("lleg104Chips");
+    if (!cont) return;
+    const counts = state.rows.reduce((acc, r) => {
+      const k = itinKey(r);
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
+    }, {});
+    const realItins = Object.keys(counts).filter(k => k !== ITIN_SIN_LLEGADA).sort((a,b) => a.localeCompare(b));
+    const allKeys = realItins.concat(counts[ITIN_SIN_LLEGADA] ? [ITIN_SIN_LLEGADA] : []);
+    const total = state.rows.length;
+    const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
+
+    const chipHtml = (key, label, n) => {
+      const active = state.activeItin === key ? " active" : "";
+      const dataVal = (key || "").replace(/"/g, "&quot;");
+      return `<span class="lleg104-chip${active}" data-itin="${dataVal}">${esc(label)} <span class="lleg104-chip-count">${n}</span></span>`;
+    };
+
+    cont.innerHTML = chipHtml("", "Todos", total) + allKeys.map(k => chipHtml(k, itinDisplay(k), counts[k])).join("");
+  }
+
+  function renderMetrics(rows){
+    // rows = filas filtradas por el itinerario activo (o todas si "Todos").
+    const total = rows.length;
+    const listos = rows.filter(r => r.listo === true).length;
+    const espera = total - listos;
+    const t = $("lleg104MetricTotal"); if (t) t.textContent = total;
+    const l = $("lleg104MetricListos"); if (l) l.textContent = listos;
+    const e = $("lleg104MetricEspera"); if (e) e.textContent = espera;
+  }
+
   function render(){
     const tbody = $("llegadas104Body");
     if (!tbody) return;
-    const rows = state.rows;
+    renderChips();
+
+    const rows = getFilteredRows();
+    renderMetrics(rows);
     setCount(rows.length);
     syncMarkers(rows);
 
+    // Titulo de seccion + contador (refleja el itinerario activo).
+    const secName = $("lleg104SectionName");
+    const secCount = $("lleg104SectionCount");
+    if (secName) secName.textContent = state.activeItin ? itinDisplay(state.activeItin) : "Todos";
+    if (secCount) secCount.textContent = String(rows.length);
+
     if (!state.loadedOnce){
-      tbody.innerHTML = `<tr><td colspan="14" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
       return;
     }
     if (!rows.length){
-      tbody.innerHTML = `<tr><td colspan="14" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
       return;
     }
 
     const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
+    const showGroupHeaders = !state.activeItin;
+    const itinCounts = rows.reduce((acc, r) => { const k = itinKey(r); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
 
-    tbody.innerHTML = rows.map(r => {
-      const { fecha, hora } = splitFechaHora(r.hora_llegada);
-      const listoCls = r.listo === true ? "tag-disponible" : "tag-pendiente";
-      const listoTxt = r.listo === true ? "Listo" : (r.listo === false ? "Pendiente" : "");
-      return `<tr>
-        <td>${esc(fecha)}</td>
-        <td style="white-space:nowrap">${esc(hora)}</td>
-        <td>${esc(r.vehicle_id || "")}</td>
-        <td>${esc(r.interno || "")}</td>
-        <td>${esc(r.itinerario || "")}</td>
-        <td>${esc(r.posicion == null ? "" : r.posicion)}</td>
-        <td>${esc(r.base || "")}</td>
-        <td>${esc(r.driver_id || "")}</td>
-        <td>${esc(r.distancia_m == null ? "" : r.distancia_m)}</td>
-        <td>${listoTxt ? `<span class="estado-tag ${listoCls}" style="white-space:nowrap">${esc(listoTxt)}</span>` : ""}</td>
-        <td>${esc(r.ubicacion || "")}</td>
-        <td>${esc(fmtCoord(r.lat))}</td>
-        <td>${esc(fmtCoord(r.lon))}</td>
-        <td style="white-space:nowrap">${esc(fmtIsoCompacto(r.updated_at))}</td>
-      </tr>`;
-    }).join("");
+    const html = [];
+    let lastItin = null;
+    rows.forEach((r, idx) => {
+      const ik = itinKey(r);
+      if (showGroupHeaders && ik !== lastItin){
+        const n = itinCounts[ik] || 0;
+        html.push(`<tr class="itin-group-row"><td colspan="5" style="background:#0f172a;color:#fff;font-weight:700;padding:10px 14px;font-size:13px">${esc(itinDisplay(ik))} <span style="opacity:.7;font-weight:500;margin-left:8px">- ${n} bus${n === 1 ? "" : "es"}</span></td></tr>`);
+        lastItin = ik;
+      }
+      const { hora } = splitFechaHora(r.hora_llegada);
+      const horaAmPm = fmtHoraAmPm(hora);
+      const hace = fmtHace(r.hora_llegada);
+
+      const pos = r.posicion == null ? "" : r.posicion;
+      const baseLabel = r.base ? `BASE ${r.base}` : "";
+      html.push(`<tr>
+        <td><strong>${esc(pos)}</strong></td>
+        <td style="white-space:nowrap">${esc(horaAmPm)}</td>
+        <td class="muted" style="white-space:nowrap">${esc(hace)}</td>
+        <td><strong>${esc(r.interno || "")}</strong></td>
+        <td style="white-space:nowrap">${esc(baseLabel)}</td>
+      </tr>`);
+    });
+    tbody.innerHTML = html.join("");
   }
 
   function exportToExcel(){
@@ -8801,7 +9902,8 @@ function bindWindowEvents(){
       if (typeof showToast === "function") showToast("XLSX no disponible.", "err");
       return;
     }
-    const rows = state.rows;
+    // Excel respeta el filtro de itinerario y el orden por posicion.
+    const rows = getFilteredRows();
     if (!rows.length){
       if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn");
       return;
@@ -8842,12 +9944,23 @@ function bindWindowEvents(){
     const toI = $("llegadas104To");
 
     const btnRefreshMapa = $("btnRefreshMapaAeropuerto");
+    const chipsCont = $("lleg104Chips");
 
     if (btnRefresh) btnRefresh.addEventListener("click", loadLlegadas104);
     if (btnRefreshMapa) btnRefreshMapa.addEventListener("click", loadLlegadas104);
     if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
     if (fromI) fromI.addEventListener("change", () => { if (state.loadedOnce) loadLlegadas104(); });
     if (toI)   toI.addEventListener("change",   () => { if (state.loadedOnce) loadLlegadas104(); });
+
+    // Click en un chip -> cambia el itinerario activo (sin re-consultar Supabase).
+    if (chipsCont){
+      chipsCont.addEventListener("click", (ev) => {
+        const chip = ev.target.closest(".lleg104-chip");
+        if (!chip) return;
+        state.activeItin = chip.getAttribute("data-itin") || "";
+        render();
+      });
+    }
 
     // Lazy load comun para las dos pestanas (planilla y mapa) — comparten
     // `state.rows`. El mapa ademas necesita invalidateSize al hacerse visible
@@ -8869,17 +9982,551 @@ function bindWindowEvents(){
     document.querySelectorAll('.tab[data-tab="llegadas-104"]').forEach(tab => tab.addEventListener("click", onPlanillaClick));
     document.querySelectorAll('.tab[data-tab="mapa-aeropuerto"]').forEach(tab => tab.addEventListener("click", onMapaClick));
 
+    // Recarga expuesta para el modulo de Realtime (suscripcion a llegadas_104).
+    window.__reloadLlegadas104 = function(){ if (!state.loading) loadLlegadas104(); };
+
+    // Respaldo del Realtime: refresco automatico cada 15s mientras se ve la
+    // Planilla de enturnamiento o el Mapa (por si Supabase Realtime no entrega
+    // eventos de la tabla llegadas_104). Solo si la pestana esta activa y visible.
+    if (!window.__llegadas104PollTimer){
+      window.__llegadas104PollTimer = setInterval(() => {
+        if (document.hidden) return;
+        if (state.loading || !state.loadedOnce) return;
+        const viendo = (typeof isTabActive === "function") &&
+          (isTabActive("llegadas-104") || isTabActive("mapa-aeropuerto"));
+        if (viendo) loadLlegadas104();
+      }, 15000);
+    }
+
     // Limpiar estado al cerrar sesion.
     const btnLogoutEl = document.getElementById("btnLogout");
     if (btnLogoutEl) btnLogoutEl.addEventListener("click", () => {
       state.rows = [];
       state.loadedOnce = false;
+      state.activeItin = "";
       if (state.markersLayer) state.markersLayer.clearLayers();
       const tbody = $("llegadas104Body");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="14" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+      if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+      const chipsCont = $("lleg104Chips");
+      if (chipsCont) chipsCont.innerHTML = "";
+      renderMetrics([]);
       setCount(0);
       setStatus("Sin cargar");
     });
+  }
+
+  if (document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", bind);
+  } else {
+    bind();
+  }
+})();
+
+
+/* =====================================================================
+   MODULO: Parque automotor (tabla `parque_automotor` + `parque_documentos`)
+   Muestra vehiculos VINCULADOS, por base, con el vencimiento de SOAT,
+   Tecnomecanica y Tarjeta de operacion. Las bases pueden EDITAR las fechas
+   y subir una foto de cada documento (se guarda en `parque_documentos`,
+   tabla aparte que no se pisa al reimportar el CSV).
+   La base se deduce del interno con VEHICLE_TO_BASE_MAP (igual que despachos).
+   ===================================================================== */
+(function bootstrapParqueAutomotor(){
+  const TABLE = "parque_automotor";
+  const DOCS_TABLE = "parque_documentos";
+  const BUCKET = "parque-docs";
+  // tipo -> { csv: columna del CSV, venc: campo fecha en docs, foto: campo foto en docs }
+  const DOCS = {
+    soat:  { csv: "Fecha Vencimiento Soat",          venc: "venc_soat",          foto: "foto_soat" },
+    tecno: { csv: "Fecha Vencimiento Tecnomecanica",  venc: "venc_tecnomecanica", foto: "foto_tecnomecanica" },
+    oper:  { csv: "Fecha Vencimiento Operacion",      venc: "venc_operacion",     foto: "foto_operacion" }
+  };
+  const state = { rows: [], docs: new Map(), loading: false, loadedOnce: false, editInterno: null };
+  const $ = (id) => document.getElementById(id);
+  const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
+
+  function val(r, key){ return (r && r[key] != null) ? String(r[key]) : ""; }
+  // Nombre de la ruta: usa "Nombre Ruta"; si no, el codigo "Ruta".
+  function rutaLabel(r){
+    const nombre = val(r, "Nombre Ruta").trim();
+    if (nombre) return nombre;
+    return val(r, "Ruta").trim();
+  }
+  function isVinculado(r){
+    // Quita todo lo que no sea letra (espacios, NBSP del CSV, tabs, etc.) antes de comparar.
+    const s = val(r, "Estado").replace(/[^A-Za-z]/g, "").toUpperCase();
+    return s === "VINCULADO"; // excluye DESVINCULADO, NULL y vacios
+  }
+
+  function baseLabelOf(r){
+    if (typeof resolveVehiculoBase === "function"){
+      const b = resolveVehiculoBase({ interno: val(r, "Interno") });
+      return (b && b !== "-") ? b : "";
+    }
+    return "";
+  }
+  function baseCanonOf(r){
+    const lbl = baseLabelOf(r);
+    if (!lbl) return "";
+    return (typeof getBaseCanonical === "function") ? getBaseCanonical(lbl) : lbl;
+  }
+  function isAdmin(){ return typeof isSuperAdmin === "function" ? isSuperAdmin() : false; }
+  function isOperator(){ return typeof isBaseOperator === "function" && isBaseOperator(); }
+  function userBase(){ return (typeof currentUserBase !== "undefined" && currentUserBase) ? String(currentUserBase) : ""; }
+  function canEdit(r){ return isAdmin() || (isOperator() && baseCanonOf(r) === userBase()); }
+  function getRow(interno){ return state.rows.find(r => val(r, "Interno") === String(interno)); }
+
+  function setStatus(msg, isErr){
+    const el = $("parqueStatus"); if (!el) return;
+    el.textContent = msg; el.style.color = isErr ? "var(--color-danger,#b91c1c)" : "";
+  }
+  function setCount(n){ const el = $("parqueCount"); if (el) el.textContent = String(n); }
+
+  // --- Fechas: acepta dd/mm/yyyy (CSV) y yyyy-mm-dd (editado) ---
+  function parseFecha(s){
+    const str = String(s || "").trim();
+    let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m){ const dt = new Date(+m[1], +m[2] - 1, +m[3]); return isNaN(dt.getTime()) ? null : dt; }
+    m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (m){ const d = +m[1], mo = +m[2], y = +m[3]; if (!d || !mo || !y || mo > 12 || d > 31) return null; const dt = new Date(y, mo - 1, d); return isNaN(dt.getTime()) ? null : dt; }
+    return null;
+  }
+  function fmtDMY(dt){ return `${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()}`; }
+  function toInputDate(raw){ const dt = parseFecha(raw); if (!dt) return ""; return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`; }
+
+  // Valor efectivo: si hay edicion en docs manda esa; si no, la del CSV.
+  function effVenc(r, tipo){
+    const d = state.docs.get(val(r, "Interno"));
+    const edited = d && d[DOCS[tipo].venc];
+    if (edited) return String(edited);
+    return val(r, DOCS[tipo].csv);
+  }
+  function fotoUrl(r, tipo){
+    const d = state.docs.get(val(r, "Interno"));
+    return (d && d[DOCS[tipo].foto]) ? String(d[DOCS[tipo].foto]) : "";
+  }
+
+  function docCell(r, tipo){
+    const raw = String(effVenc(r, tipo) || "").trim();
+    const foto = fotoUrl(r, tipo);
+    const link = foto ? ` <a class="parque-foto-link" href="${esc(foto)}" target="_blank" rel="noopener" title="Ver foto">[foto]</a>` : "";
+    if (!raw) return `<span class="muted">-</span>${link}`;
+    const dt = parseFecha(raw);
+    if (!dt) return `<span class="muted">${esc(raw)}</span>${link}`;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
+    let style, title;
+    if (days < 0){ style = "background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"; title = "vencido"; }
+    else if (days <= 30){ style = "background:#fffbeb;color:#b45309;border:1px solid #fde68a;"; title = `vence en ${days} dias`; }
+    else { style = "background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;"; title = "vigente"; }
+    return `<span title="${esc(title)}" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;${style}">${esc(fmtDMY(dt))}</span>${link}`;
+  }
+
+  function populateBaseOptions(){
+    const sel = $("parqueBaseFilter");
+    const hint = $("parqueBaseHint");
+    if (isOperator()){
+      if (sel) sel.style.display = "none";
+      if (hint) hint.textContent = `Base ${userBase() || "-"}`;
+      return;
+    }
+    if (hint) hint.textContent = "";
+    if (!sel) return;
+    sel.style.display = "";
+    const bases = Array.from(new Set(state.rows.map(baseCanonOf).filter(Boolean)))
+      .sort((a, b) => (parseInt(a, 10) || 999) - (parseInt(b, 10) || 999));
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Base: todas</option>' + bases.map(b => `<option value="${esc(b)}">Base ${esc(b)}</option>`).join("");
+    if (cur) sel.value = cur;
+  }
+
+  // Llena el desplegable de rutas con las rutas visibles para el usuario
+  // (operador: solo su base; admin: respeta la base seleccionada arriba).
+  function populateRutaOptions(){
+    const sel = $("parqueRutaFilter");
+    if (!sel) return;
+    let base = state.rows.slice();
+    if (isOperator()){
+      const ub = userBase();
+      base = base.filter(r => baseCanonOf(r) === ub);
+    } else {
+      const selBase = (($("parqueBaseFilter") || {}).value || "").trim();
+      if (selBase) base = base.filter(r => baseCanonOf(r) === selBase);
+    }
+    const rutas = Array.from(new Set(base.map(rutaLabel).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }));
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Ruta: todas</option>' + rutas.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+    // Conserva la seleccion si la ruta sigue disponible; si no, vuelve a "todas".
+    sel.value = (cur && rutas.indexOf(cur) >= 0) ? cur : "";
+  }
+
+  async function loadDocs(){
+    state.docs = new Map();
+    try {
+      const { data, error } = await planillaSupabaseClient.from(DOCS_TABLE).select("*").limit(5000);
+      if (error) throw error;
+      (Array.isArray(data) ? data : []).forEach(d => { if (d && d.interno != null) state.docs.set(String(d.interno), d); });
+    } catch (e){
+      // Si la tabla aun no existe, seguimos solo con el CSV (sin romper la vista).
+      console.warn("[parque_documentos] no disponible:", e && e.message ? e.message : e);
+    }
+  }
+
+  async function load(){
+    if (state.loading) return;
+    if (typeof planillaSupabaseClient === "undefined" || !planillaSupabaseClient){ setStatus("Cliente Supabase no inicializado.", true); return; }
+    state.loading = true; setStatus("Cargando...");
+    try {
+      const { data, error } = await planillaSupabaseClient.from(TABLE).select("*").limit(5000);
+      if (error) throw error;
+      state.rows = (Array.isArray(data) ? data : []).filter(isVinculado);
+      await loadDocs();
+      state.loadedOnce = true;
+      populateBaseOptions();
+      populateRutaOptions();
+      setStatus(`Cargados ${state.rows.length} vehiculos vinculados.`);
+      render();
+    } catch (err){
+      console.error("[parque_automotor] error de carga:", err);
+      setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
+      if (typeof showToast === "function") showToast("No se pudo cargar el parque automotor. Verifica que la tabla 'parque_automotor' exista en Supabase.", "err");
+    } finally { state.loading = false; }
+  }
+
+  function internoNum(r){ const n = parseInt(String(val(r, "Interno")).replace(/\D/g, ""), 10); return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY; }
+
+  function getFilteredRows(){
+    let rows = state.rows.slice();
+    if (isOperator()){
+      const ub = userBase();
+      rows = rows.filter(r => baseCanonOf(r) === ub);
+    } else {
+      const selBase = (($("parqueBaseFilter") || {}).value || "").trim();
+      if (selBase) rows = rows.filter(r => baseCanonOf(r) === selBase);
+    }
+    const selRuta = (($("parqueRutaFilter") || {}).value || "").trim();
+    if (selRuta) rows = rows.filter(r => rutaLabel(r) === selRuta);
+    const term = (($("parqueSearch") || {}).value || "").trim().toLowerCase();
+    if (term){
+      rows = rows.filter(r => ["Interno", "Placa", "Marca", "Modelo", "Clase", "Nombres Propietarios", "Ruta", "Nombre Ruta"]
+        .map(k => val(r, k)).join(" | ").toLowerCase().includes(term));
+    }
+    rows.sort((a, b) => internoNum(a) - internoNum(b));
+    return rows;
+  }
+
+  function render(){
+    const tbody = $("parqueBody"); if (!tbody) return;
+    const rows = getFilteredRows();
+    setCount(rows.length);
+    if (!state.loadedOnce){ tbody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>'; return; }
+    if (!rows.length){ tbody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin vehiculos para mostrar.</td></tr>'; return; }
+    tbody.innerHTML = rows.map(r => {
+      const base = baseCanonOf(r);
+      const interno = val(r, "Interno");
+      // Edicion deshabilitada temporalmente: se muestra "Proximamente".
+      const acciones = `<span title="La edicion de documentos se habilitara proximamente" style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;white-space:nowrap">Proximamente</span>`;
+      return `<tr>
+        <td><strong>${esc(interno)}</strong></td>
+        <td>${esc(val(r, "Placa"))}</td>
+        <td>${esc(val(r, "Marca"))}</td>
+        <td>${esc(val(r, "Modelo"))}</td>
+        <td>${base ? "BASE " + esc(base) : '<span class="muted">-</span>'}</td>
+        <td>${rutaLabel(r) ? esc(rutaLabel(r)) : '<span class="muted">-</span>'}</td>
+        <td>${docCell(r, "soat")}</td>
+        <td>${docCell(r, "tecno")}</td>
+        <td>${docCell(r, "oper")}</td>
+        <td>${acciones}</td>
+      </tr>`;
+    }).join("");
+    renderVenc();
+  }
+
+  // ---------------- Vista: Por renovar / Vencidos ----------------
+  const DOC_META = [
+    { tipo: "soat",  label: "SOAT",                  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>' },
+    { tipo: "tecno", label: "Tecnomecanica",         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>' },
+    { tipo: "oper",  label: "Tarjeta de operacion",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 14h6"/><path d="M16 14h2"/></svg>' }
+  ];
+
+  function vencThreshold(){
+    const sel = $("parqueVencDias");
+    const n = sel ? parseInt(sel.value, 10) : 30;
+    return Number.isFinite(n) && n > 0 ? n : 30;
+  }
+
+  // Devuelve {vencidos:[], proximos:[]} para un documento, ordenados por urgencia.
+  function buildVencList(rows, tipo, limite){
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const vencidos = [], proximos = [];
+    rows.forEach(r => {
+      const dt = parseFecha(String(effVenc(r, tipo) || "").trim());
+      if (!dt) return; // sin fecha registrada -> no entra al tablero
+      const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
+      const item = { interno: val(r, "Interno"), placa: val(r, "Placa"), base: baseCanonOf(r), ruta: rutaLabel(r), dt, days };
+      if (days < 0) vencidos.push(item);
+      else if (days <= limite) proximos.push(item);
+    });
+    vencidos.sort((a, b) => a.days - b.days); // mas vencido primero
+    proximos.sort((a, b) => a.days - b.days); // mas proximo primero
+    return { vencidos, proximos };
+  }
+
+  function pvRow(it, cls){
+    const fecha = fmtDMY(it.dt);
+    const dias = cls === "bad"
+      ? `vencido hace ${Math.abs(it.days)} d`
+      : (it.days === 0 ? "vence hoy" : `en ${it.days} d`);
+    const baseTxt = it.base ? `BASE ${esc(it.base)}` : "";
+    const ruta = it.ruta ? esc(it.ruta) : "-";
+    return `<div class="pv-row ${cls}">
+      <span class="pv-interno">${esc(it.interno)}</span>
+      <span class="pv-placa">${esc(it.placa || "-")}</span>
+      <span class="pv-ruta" title="${ruta}">${ruta}</span>
+      <span class="pv-base">${baseTxt}</span>
+      <span class="pv-fecha ${cls}">${esc(fecha)}<span class="pv-dias">${esc(dias)}</span></span>
+    </div>`;
+  }
+
+  function renderVenc(){
+    const cont = $("parqueVencBody"); if (!cont) return;
+    if (!state.loadedOnce){ cont.innerHTML = '<div class="pv-empty">Sin datos. Pulsa "Actualizar" para cargar.</div>'; return; }
+    const rows = getFilteredRows();
+    const limite = vencThreshold();
+    let totalVenc = 0, totalProx = 0;
+
+    cont.innerHTML = DOC_META.map(meta => {
+      const { vencidos, proximos } = buildVencList(rows, meta.tipo, limite);
+      totalVenc += vencidos.length; totalProx += proximos.length;
+
+      const venSect = vencidos.length
+        ? `<div class="pv-sect-title bad">Vencidos · se deben renovar (${vencidos.length})</div>${vencidos.map(it => pvRow(it, "bad")).join("")}`
+        : `<div class="pv-sect-title bad">Vencidos (0)</div><div class="pv-empty">Ninguno vencido.</div>`;
+      const proxSect = proximos.length
+        ? `<div class="pv-sect-title warn">Proximos a renovar · ${limite} dias (${proximos.length})</div>${proximos.map(it => pvRow(it, "warn")).join("")}`
+        : `<div class="pv-sect-title warn">Proximos a renovar (0)</div><div class="pv-empty">Ninguno por vencer.</div>`;
+
+      return `<div class="pv-card">
+        <div class="pv-head">
+          <span class="pv-ico">${meta.icon}</span>
+          <span class="pv-title">${esc(meta.label)}</span>
+          <span class="pv-counts">
+            <span class="pv-pill bad">${vencidos.length} venc.</span>
+            <span class="pv-pill warn">${proximos.length} prox.</span>
+          </span>
+        </div>
+        <div class="pv-sect">${venSect}${proxSect}</div>
+      </div>`;
+    }).join("");
+
+    const resumen = $("parqueVencResumen");
+    if (resumen){
+      resumen.textContent = totalVenc === 0 && totalProx === 0
+        ? "Todo al dia ✓"
+        : `${totalVenc} vencidos · ${totalProx} por vencer (en ${limite} dias)`;
+    }
+  }
+
+  function setParqueView(view){
+    const listBtn = $("parqueViewListBtn"), vencBtn = $("parqueViewVencBtn");
+    const listWrap = $("parqueListWrap"), vencWrap = $("parqueVencWrap");
+    const isVenc = view === "venc";
+    if (listWrap) listWrap.classList.toggle("hidden", isVenc);
+    if (vencWrap) vencWrap.classList.toggle("hidden", !isVenc);
+    if (listBtn) listBtn.classList.toggle("active", !isVenc);
+    if (vencBtn) vencBtn.classList.toggle("active", isVenc);
+    if (isVenc) renderVenc();
+  }
+
+  function exportToExcel(){
+    if (typeof XLSX === "undefined"){ if (typeof showToast === "function") showToast("XLSX no disponible.", "err"); return; }
+    const rows = getFilteredRows();
+    if (!rows.length){ if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn"); return; }
+    const data = rows.map(r => ({
+      Interno: val(r, "Interno"), Placa: val(r, "Placa"), Marca: val(r, "Marca"), Modelo: val(r, "Modelo"),
+      Base: baseCanonOf(r) ? "BASE " + baseCanonOf(r) : "",
+      Ruta: rutaLabel(r),
+      "Vence SOAT": effVenc(r, "soat"),
+      "Vence Tecnomecanica": effVenc(r, "tecno"),
+      "Vence T. Operacion": effVenc(r, "oper"),
+      "Foto SOAT": fotoUrl(r, "soat"),
+      "Foto Tecnomecanica": fotoUrl(r, "tecno"),
+      "Foto T. Operacion": fotoUrl(r, "oper")
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Parque automotor");
+    const fname = (typeof safeFileName === "function" ? safeFileName : (s) => s)(`parque_automotor_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(wb, fname);
+  }
+
+  // ---------------- Edicion (modal) ----------------
+  function setDocStatus(msg, isErr){ const el = $("parqueDocStatus"); if (!el) return; el.textContent = msg || ""; el.style.color = isErr ? "var(--color-danger,#b91c1c)" : ""; }
+
+  // Estado de vigencia a partir de un valor de fecha (dd/mm/yyyy o yyyy-mm-dd).
+  function vencInfo(raw){
+    const dt = parseFecha(String(raw || "").trim());
+    if (!dt) return { cls: "is-none", label: "sin fecha" };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
+    if (days < 0) return { cls: "is-bad", label: `vencido hace ${Math.abs(days)} dias` };
+    if (days === 0) return { cls: "is-bad", label: "vence hoy" };
+    if (days <= 30) return { cls: "is-warn", label: `vence en ${days} dias` };
+    return { cls: "is-ok", label: "vigente" };
+  }
+
+  function applyDocBadge(cardId, badgeId, raw){
+    const card = $(cardId), badge = $(badgeId);
+    const info = vencInfo(raw);
+    if (card){ card.classList.remove("is-ok", "is-warn", "is-bad", "is-none"); card.classList.add(info.cls); }
+    if (badge){ badge.classList.remove("is-ok", "is-warn", "is-bad", "is-none"); badge.classList.add(info.cls); badge.textContent = info.label; }
+  }
+
+  function setThumb(linkId, thumbId, url){
+    const link = $(linkId), thumb = $(thumbId);
+    if (thumb) thumb.src = url || "";
+    if (link){
+      if (url){ link.href = url; link.classList.add("show"); }
+      else { link.href = "#"; link.classList.remove("show"); }
+    }
+  }
+
+  function openModal(interno){
+    const r = getRow(interno);
+    if (!r) return;
+    if (!canEdit(r)){ if (typeof showToast === "function") showToast("No tienes permiso para editar este vehiculo.", "warn"); return; }
+    state.editInterno = interno;
+    const sub = $("parqueDocSub");
+    if (sub){
+      const baseTxt = baseCanonOf(r) ? "BASE " + baseCanonOf(r) : "sin base";
+      sub.innerHTML =
+        `<span class="pdoc-chip">Interno <strong>${esc(String(interno))}</strong></span>` +
+        `<span class="pdoc-chip">Placa <strong>${esc(val(r, "Placa") || "-")}</strong></span>` +
+        `<span class="pdoc-chip">${esc(baseTxt)}</span>`;
+    }
+    // [tipo, inputFecha, inputFile, link, thumb, card, badge]
+    const map = [
+      ["soat",  "docSoatFecha",  "docSoatFoto",  "docSoatLink",  "docSoatThumb",  "pdocSoat",  "docSoatBadge"],
+      ["tecno", "docTecnoFecha", "docTecnoFoto", "docTecnoLink", "docTecnoThumb", "pdocTecno", "docTecnoBadge"],
+      ["oper",  "docOperFecha",  "docOperFoto",  "docOperLink",  "docOperThumb",  "pdocOper",  "docOperBadge"]
+    ];
+    map.forEach(([tipo, fId, fileId, linkId, thumbId, cardId, badgeId]) => {
+      const raw = effVenc(r, tipo);
+      const f = $(fId); if (f) f.value = toInputDate(raw);
+      const file = $(fileId); if (file) file.value = "";
+      setThumb(linkId, thumbId, fotoUrl(r, tipo));
+      applyDocBadge(cardId, badgeId, raw);
+    });
+    setDocStatus("");
+    const modal = $("parqueDocModal"); if (modal) modal.classList.remove("hidden");
+  }
+  function closeModal(){ const modal = $("parqueDocModal"); if (modal) modal.classList.add("hidden"); state.editInterno = null; }
+
+  async function uploadFoto(interno, tipo, file){
+    const extRaw = (file.name && file.name.indexOf(".") >= 0) ? file.name.split(".").pop() : "jpg";
+    const ext = String(extRaw || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+    const path = `${interno}/${tipo}-${Date.now()}.${ext}`;
+    const { error } = await planillaSupabaseClient.storage.from(BUCKET).upload(path, file, { upsert: true, contentType: file.type || undefined });
+    if (error) throw error;
+    const { data } = planillaSupabaseClient.storage.from(BUCKET).getPublicUrl(path);
+    return (data && data.publicUrl) ? data.publicUrl : "";
+  }
+
+  async function saveModal(){
+    const interno = state.editInterno;
+    const r = getRow(interno);
+    if (!r) return;
+    const btn = $("parqueDocSave");
+    if (btn) btn.disabled = true;
+    setDocStatus("Guardando...");
+    try {
+      const prev = state.docs.get(String(interno)) || {};
+      const rec = {
+        interno: String(interno),
+        base: baseCanonOf(r),
+        venc_soat: ($("docSoatFecha") && $("docSoatFecha").value) || null,
+        venc_tecnomecanica: ($("docTecnoFecha") && $("docTecnoFecha").value) || null,
+        venc_operacion: ($("docOperFecha") && $("docOperFecha").value) || null,
+        foto_soat: prev.foto_soat || null,
+        foto_tecnomecanica: prev.foto_tecnomecanica || null,
+        foto_operacion: prev.foto_operacion || null,
+        actualizado_por: (typeof currentUserEmail !== "undefined" && currentUserEmail) ? currentUserEmail : "",
+        actualizado_en: new Date().toISOString()
+      };
+      // Subir fotos seleccionadas (si hay).
+      const uploads = [["soat", "docSoatFoto", "foto_soat"], ["tecno", "docTecnoFoto", "foto_tecnomecanica"], ["oper", "docOperFoto", "foto_operacion"]];
+      for (const [tipo, fileId, field] of uploads){
+        const fileEl = $(fileId);
+        const file = fileEl && fileEl.files && fileEl.files[0];
+        if (file){ setDocStatus(`Subiendo foto ${tipo}...`); rec[field] = await uploadFoto(interno, tipo, file); }
+      }
+      const { error } = await planillaSupabaseClient.from(DOCS_TABLE).upsert(rec, { onConflict: "interno" });
+      if (error) throw error;
+      state.docs.set(String(interno), rec);
+      if (typeof showToast === "function") showToast("Documentos actualizados.", "ok");
+      closeModal();
+      render();
+    } catch (err){
+      console.error("[parque_documentos] error al guardar:", err);
+      setDocStatus("Error al guardar: " + (err && err.message ? err.message : "desconocido"), true);
+      if (typeof showToast === "function") showToast("No se pudo guardar. Revisa que exista la tabla 'parque_documentos' y el bucket 'parque-docs'.", "err");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function bind(){
+    const btnRefresh = $("btnRefreshParque");
+    const btnDownload = $("btnDownloadParque");
+    const search = $("parqueSearch");
+    const baseSel = $("parqueBaseFilter");
+    const rutaSel = $("parqueRutaFilter");
+    if (btnRefresh) btnRefresh.addEventListener("click", load);
+    if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
+    if (search) search.addEventListener("input", () => { if (state.loadedOnce) render(); });
+    // Al cambiar la base se recalculan las rutas disponibles y luego se renderiza.
+    if (baseSel) baseSel.addEventListener("change", () => { if (state.loadedOnce){ populateRutaOptions(); render(); } });
+    if (rutaSel) rutaSel.addEventListener("change", () => { if (state.loadedOnce) render(); });
+
+    const body = $("parqueBody");
+    if (body) body.addEventListener("click", (ev) => {
+      const btn = ev.target.closest && ev.target.closest(".parque-edit-btn");
+      if (btn) openModal(btn.getAttribute("data-interno"));
+    });
+    const cancel = $("parqueDocCancel"); if (cancel) cancel.addEventListener("click", closeModal);
+    const save = $("parqueDocSave"); if (save) save.addEventListener("click", saveModal);
+    const modal = $("parqueDocModal"); if (modal) modal.addEventListener("click", (ev) => { if (ev.target === modal) closeModal(); });
+
+    // Badge en vivo al cambiar la fecha + vista previa al elegir foto.
+    const live = [
+      ["docSoatFecha",  "docSoatFoto",  "docSoatLink",  "docSoatThumb",  "pdocSoat",  "docSoatBadge"],
+      ["docTecnoFecha", "docTecnoFoto", "docTecnoLink", "docTecnoThumb", "pdocTecno", "docTecnoBadge"],
+      ["docOperFecha",  "docOperFoto",  "docOperLink",  "docOperThumb",  "pdocOper",  "docOperBadge"]
+    ];
+    live.forEach(([fId, fileId, linkId, thumbId, cardId, badgeId]) => {
+      const f = $(fId);
+      if (f) f.addEventListener("input", () => applyDocBadge(cardId, badgeId, f.value));
+      const file = $(fileId);
+      if (file) file.addEventListener("change", () => {
+        const sel = file.files && file.files[0];
+        if (!sel){ return; }
+        const reader = new FileReader();
+        reader.onload = (e) => setThumb(linkId, thumbId, e.target.result);
+        reader.readAsDataURL(sel);
+      });
+    });
+
+    // Selector de vista Listado / Por renovar.
+    const listBtn = $("parqueViewListBtn"), vencBtn = $("parqueViewVencBtn");
+    if (listBtn) listBtn.addEventListener("click", () => setParqueView("list"));
+    if (vencBtn) vencBtn.addEventListener("click", () => setParqueView("venc"));
+    const vencDias = $("parqueVencDias");
+    if (vencDias) vencDias.addEventListener("change", () => { if (state.loadedOnce) renderVenc(); });
+
+    document.querySelectorAll('.tab[data-tab="parque-automotor"]').forEach(tab => tab.addEventListener("click", () => {
+      if (!state.loadedOnce && !state.loading) load();
+    }));
   }
 
   if (document.readyState === "loading"){

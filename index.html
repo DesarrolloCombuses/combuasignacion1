@@ -15,7 +15,119 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=1.5.2">
+<link rel="stylesheet" href="css/styles.css?v=2.6.0">
+<style>
+  .parque-foto-link { font-size:12px; }
+
+  /* ===== Modal Documentos del vehiculo (rediseno) ===== */
+  #parqueDocModal .modal-card { max-width:560px; }
+  .pdoc-headchips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
+  .pdoc-chip {
+    display:inline-flex; align-items:center; gap:5px; padding:3px 10px;
+    border-radius:999px; background:#f1f5f9; color:#334155;
+    font-size:12px; font-weight:600; border:1px solid #e2e8f0;
+  }
+  .pdoc-chip strong { color:#0f172a; font-weight:700; }
+
+  .parque-doc-grid { display:grid; gap:14px; margin-top:14px; }
+  .pdoc {
+    position:relative; border:1px solid #e5e7eb; border-radius:14px;
+    padding:14px 16px; background:#fff; box-shadow:0 1px 2px rgba(16,24,40,.04);
+    border-left:4px solid #cbd5e1; transition:box-shadow .15s, border-color .15s;
+  }
+  .pdoc:hover { box-shadow:0 6px 18px rgba(16,24,40,.08); }
+  .pdoc.is-ok   { border-left-color:#16a34a; }
+  .pdoc.is-warn { border-left-color:#d97706; }
+  .pdoc.is-bad  { border-left-color:#dc2626; }
+  .pdoc.is-none { border-left-color:#cbd5e1; }
+
+  .pdoc-top { display:flex; align-items:center; gap:11px; margin-bottom:13px; }
+  .pdoc-ico {
+    width:40px; height:40px; flex:0 0 40px; border-radius:11px;
+    display:grid; place-items:center; background:#eff6ff; color:#1d4ed8;
+  }
+  .pdoc-ico svg { width:21px; height:21px; }
+  .pdoc-titles { flex:1; min-width:0; }
+  .pdoc-name { font-weight:700; font-size:14.5px; color:#0f172a; line-height:1.15; }
+  .pdoc-badge {
+    display:inline-flex; align-items:center; gap:5px; margin-top:5px;
+    padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700;
+    background:#f1f5f9; color:#64748b;
+  }
+  .pdoc-badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pdoc-badge.is-ok   { background:#f0fdf4; color:#15803d; }
+  .pdoc-badge.is-warn { background:#fffbeb; color:#b45309; }
+  .pdoc-badge.is-bad  { background:#fef2f2; color:#b91c1c; }
+  .pdoc-badge.is-none { background:#f1f5f9; color:#64748b; }
+
+  .pdoc-fields { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:end; }
+  .pdoc-flabel {
+    display:block; font-size:11px; font-weight:600; color:#64748b;
+    text-transform:uppercase; letter-spacing:.03em; margin-bottom:5px;
+  }
+  .pdoc input[type="date"] {
+    width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:10px;
+    font-size:14px; color:#0f172a; background:#fff; box-sizing:border-box;
+  }
+  .pdoc input[type="date"]:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
+
+  .pdoc-photo { display:flex; align-items:center; gap:9px; }
+  .pdoc-thumb-link { display:none; }
+  .pdoc-thumb-link.show { display:inline-block; }
+  .pdoc-thumb { width:46px; height:46px; border-radius:10px; object-fit:cover; border:1px solid #e5e7eb; background:#f8fafc; display:block; }
+  .pdoc-upload {
+    display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+    padding:9px 13px; border-radius:10px; border:1px dashed #cbd5e1;
+    background:#f8fafc; color:#334155; font-size:13px; font-weight:600;
+    white-space:nowrap; transition:background .15s, border-color .15s, color .15s;
+  }
+  .pdoc-upload:hover { background:#eef2ff; border-color:#93c5fd; color:#1d4ed8; }
+  .pdoc-upload svg { width:16px; height:16px; }
+  .pdoc-upload input[type="file"] { display:none; }
+
+  /* ===== Parque automotor: selector de vista y tablero de vencimientos ===== */
+  .parque-seg { display:inline-flex; gap:0; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:10px; padding:3px; }
+  .parque-seg-btn {
+    border:0; background:transparent; cursor:pointer; padding:7px 16px;
+    border-radius:8px; font-size:13.5px; font-weight:600; color:#475569; transition:all .15s;
+  }
+  .parque-seg-btn:hover { color:#1d4ed8; }
+  .parque-seg-btn.active { background:#fff; color:#0f172a; box-shadow:0 1px 3px rgba(16,24,40,.12); }
+
+  .parque-venc-ctrl { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .parque-venc-ctrl select { padding:7px 10px; border:1px solid #d1d5db; border-radius:9px; font-size:13.5px; }
+
+  .parque-venc-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+  .pv-card { border:1px solid #e5e7eb; border-radius:14px; background:#fff; box-shadow:0 1px 2px rgba(16,24,40,.04); overflow:hidden; }
+  .pv-head { display:flex; align-items:center; gap:10px; padding:13px 15px; border-bottom:1px solid #f1f5f9; }
+  .pv-ico { width:36px; height:36px; flex:0 0 36px; border-radius:10px; display:grid; place-items:center; background:#eff6ff; color:#1d4ed8; }
+  .pv-ico svg { width:19px; height:19px; }
+  .pv-title { font-weight:700; font-size:15px; color:#0f172a; flex:1; }
+  .pv-counts { display:flex; gap:6px; }
+  .pv-pill { display:inline-flex; align-items:center; gap:4px; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:700; }
+  .pv-pill.bad  { background:#fef2f2; color:#b91c1c; }
+  .pv-pill.warn { background:#fffbeb; color:#b45309; }
+
+  .pv-sect { padding:8px 15px 14px; }
+  .pv-sect-title { display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin:8px 0 8px; }
+  .pv-sect-title.bad  { color:#b91c1c; }
+  .pv-sect-title.warn { color:#b45309; }
+  .pv-sect-title::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
+
+  .pv-row { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:9px; margin-bottom:5px; }
+  .pv-row.bad  { background:#fef2f2; }
+  .pv-row.warn { background:#fffbeb; }
+  .pv-interno { font-weight:800; font-size:13.5px; color:#0f172a; min-width:42px; flex:0 0 auto; }
+  .pv-placa { font-size:12px; color:#64748b; min-width:60px; flex:0 0 auto; }
+  .pv-ruta { font-size:12px; color:#334155; font-weight:600; flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pv-base { font-size:10.5px; color:#94a3b8; flex:0 0 auto; }
+  .pv-fecha { margin-left:6px; font-size:12px; font-weight:600; flex:0 0 auto; }
+  .pv-fecha.bad  { color:#b91c1c; }
+  .pv-fecha.warn { color:#b45309; }
+  .pv-dias { font-size:10.5px; color:#94a3b8; display:block; font-weight:500; text-align:right; }
+  .pv-empty { font-size:12.5px; color:#94a3b8; padding:6px 2px; }
+  .pv-allok { padding:18px 15px; text-align:center; color:#15803d; font-weight:600; font-size:13px; }
+</style>
 </head>
 <body>
 
@@ -87,7 +199,24 @@
         <div style="margin-top:10px" class="row">
           <button class="btn btn-success" id="btnExport" disabled>Descargar Excel</button>
           <button class="btn btn-success" id="btnExportFormato" disabled>Descargar Formato Operativo</button>
+          <button class="btn btn-success" id="btnExportTurnos" disabled>Descargar Planilla de Turnos (cedulas)</button>
           <button class="btn btn-danger" id="clearProg">Limpiar</button>
+        </div>
+        <div style="margin-top:10px" class="row">
+          <span class="muted" style="font-weight:600">Formato operativo por rango (1 hoja por dia):</span>
+          <label class="muted" for="operativoExpDesde">Desde</label>
+          <input id="operativoExpDesde" type="date" />
+          <label class="muted" for="operativoExpHasta">Hasta</label>
+          <input id="operativoExpHasta" type="date" />
+          <span class="muted" style="font-size:12px">Si lo dejas vacio, descarga solo el dia seleccionado en "Turnos del dia 2".</span>
+        </div>
+        <div style="margin-top:10px" class="row">
+          <span class="muted" style="font-weight:600">Reporte de turnos (matriz por dias):</span>
+          <label class="muted" for="reporteTurnosDesde">Desde</label>
+          <input id="reporteTurnosDesde" type="date" />
+          <label class="muted" for="reporteTurnosHasta">Hasta</label>
+          <input id="reporteTurnosHasta" type="date" />
+          <button class="btn btn-success" id="btnExportReporteTurnos" disabled>Descargar Reporte de Turnos</button>
         </div>
       </div>
       <div class="card">
@@ -167,14 +296,15 @@
           <div class="tab hidden" data-tab="novedades">Estados del personal</div>
           <div class="tab active" data-tab="programacion2">Turnos del dia</div>
           <div class="tab" data-tab="novedades2">Estados del personal</div>
-          <div class="tab" data-tab="planilla-afiliados">PLANILLA DE DESPACHOS</div>
-          <div class="tab" data-tab="llegadas-aeropuerto">Llegadas Aeropuerto</div>
-          <div class="tab" data-tab="llegadas-san-diego">Llegadas San Diego</div>
-          <div class="tab" data-tab="llegadas-nutibara">Llegadas Nutibara</div>
+          <div class="tab hidden" data-tab="llegadas-aeropuerto">Llegadas Aeropuerto</div>
+          <div class="tab hidden" data-tab="llegadas-san-diego">Llegadas San Diego</div>
+          <div class="tab hidden" data-tab="llegadas-nutibara">Llegadas Nutibara</div>
           <div class="tab" data-tab="llegadas-104">Planilla de enturnamiento aeropuerto</div>
           <div class="tab" data-tab="mapa-aeropuerto">Mapa enturnamiento aeropuerto</div>
-          <div class="tab" data-tab="llegadas-novedades">Novedades Llegadas</div>
+          <div class="tab hidden" data-tab="llegadas-novedades">Novedades Llegadas</div>
+          <div class="tab" data-tab="despachos-realizados">Despachos en vivo</div>
           <div class="tab" data-tab="asistencias">Asistencias</div>
+          <div class="tab" data-tab="parque-automotor">Parque automotor y documentacion de vehiculos</div>
           <div class="tab" data-tab="consulta">Consulta por fechas</div>
           <div class="tab" data-tab="visor">Visor Excel en linea</div>
           <div class="tab" data-tab="audit">Auditoria</div>
@@ -265,34 +395,6 @@
               </thead>
               <tbody id="novedadesBody2">
                 <tr><td colspan="4" style="text-align:center;padding:20px" class="muted">Selecciona una fecha para comenzar.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Contenido Planilla Afiliados -->
-        <div id="tab-planilla-afiliados" class="tab-content">
-          <div class="row planilla-toolbar" style="margin-bottom:10px">
-            <input id="planillaFilterInterno" type="text" placeholder="Filtrar interno..." />
-            <input id="planillaFilterBase" type="text" placeholder="Filtrar base..." />
-            <select id="planillaFilterTipo">
-              <option value="">Todos los tipos</option>
-              <option value="Llegada Aeropuerto">Llegada Aeropuerto</option>
-              <option value="Llegada San Diego">Llegada San Diego</option>
-              <option value="Llegada Nutibara">Llegada Nutibara</option>
-            </select>
-            <input id="planillaFilterHoraLlegada" type="text" placeholder="Filtrar hora llegada..." />
-            <button class="btn btn-ghost" id="btnRefreshPlanilla">Actualizar planilla</button>
-            <button class="btn btn-success" id="btnDownloadLlegadas">Descargar llegadas</button>
-            <button class="btn btn-success" id="btnDownloadDespachos">Descargar despachos</button>
-            <span class="muted">Registros: <strong id="planillaCount">0</strong></span>
-            <span class="muted" id="planillaStatus">Sin cargar</span>
-          </div>
-          <div class="planilla-wrap" style="overflow:auto;max-height:60vh">
-            <table id="planillaTable">
-              <thead id="planillaHead"></thead>
-              <tbody id="planillaBody">
-                <tr><td class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
               </tbody>
             </table>
           </div>
@@ -432,44 +534,57 @@
 
         <!-- Contenido Planilla de enturnamiento aeropuerto -->
         <div id="tab-llegadas-104" class="tab-content">
-          <div class="row" style="margin-bottom:10px">
-            <h3 style="margin:0">Planilla de enturnamiento aeropuerto</h3>
-            <button class="btn btn-ghost" id="btnRefreshLlegadas104">Actualizar</button>
-            <label class="consulta-mini" for="llegadas104From">Desde</label>
-            <input id="llegadas104From" type="date" />
-            <label class="consulta-mini" for="llegadas104To">Hasta</label>
-            <input id="llegadas104To" type="date" />
-            <button class="btn btn-success" id="btnDownloadLlegadas104">Descargar Excel</button>
-            <span class="muted">Registros: <strong id="llegadas104Count">0</strong></span>
-            <span class="muted" id="llegadas104Status">Sin cargar</span>
+          <div class="lleg104-toolbar">
+            <div class="lleg104-toolbar-left">
+              <span class="muted" style="font-weight:600">Actualizacion automatica en vivo (cada 15s)</span>
+            </div>
+            <div class="lleg104-toolbar-right">
+              <span class="muted" id="llegadas104Status">Sin cargar</span>
+              <button class="btn btn-ghost lleg104-toolbar-btn" id="btnDownloadLlegadas104">Descargar Excel</button>
+            </div>
           </div>
-          <div class="muted" style="margin:0 0 10px 0">
-            Lectura de la tabla `llegadas_104`. Solo lectura.
+
+          <!-- Metricas: Total / Listos / Espera -->
+          <div class="lleg104-metrics">
+            <div class="lleg104-metric-card">
+              <div class="lleg104-metric-val" id="lleg104MetricTotal">0</div>
+              <div class="lleg104-metric-label">Total</div>
+            </div>
+            <div class="lleg104-metric-card lleg104-metric-listos">
+              <div class="lleg104-metric-val" id="lleg104MetricListos">0</div>
+              <div class="lleg104-metric-label">Listos</div>
+            </div>
+            <div class="lleg104-metric-card lleg104-metric-espera">
+              <div class="lleg104-metric-val" id="lleg104MetricEspera">0</div>
+              <div class="lleg104-metric-label">Espera</div>
+            </div>
           </div>
-          <div style="overflow:auto;max-height:60vh">
-            <table id="llegadas104Table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th>Hora llegada</th>
-                  <th>Vehiculo</th>
-                  <th>Interno</th>
-                  <th>Itinerario</th>
-                  <th>Posicion</th>
-                  <th>Base</th>
-                  <th>Conductor</th>
-                  <th>Distancia (m)</th>
-                  <th>Listo</th>
-                  <th>Ubicacion</th>
-                  <th>Lat</th>
-                  <th>Lon</th>
-                  <th>Actualizado</th>
-                </tr>
-              </thead>
-              <tbody id="llegadas104Body">
-                <tr><td colspan="14" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
-              </tbody>
-            </table>
+
+          <!-- Chips de itinerarios (se rellenan en JS) -->
+          <div class="lleg104-chips" id="lleg104Chips"></div>
+
+          <!-- Seccion: nombre del itinerario activo -->
+          <div class="lleg104-section">
+            <div class="lleg104-section-title">
+              <span id="lleg104SectionName">Todos</span>
+              <span class="lleg104-section-count" id="lleg104SectionCount">0</span>
+            </div>
+            <div style="overflow:auto;max-height:60vh">
+              <table id="llegadas104Table">
+                <thead>
+                  <tr>
+                    <th style="width:60px">Pos</th>
+                    <th>Hora</th>
+                    <th>Hace</th>
+                    <th>Bus</th>
+                    <th>Base</th>
+                  </tr>
+                </thead>
+                <tbody id="llegadas104Body">
+                  <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -520,6 +635,53 @@
           </div>
         </div>
 
+        <!-- Contenido Despachos realizados -->
+        <div id="tab-despachos-realizados" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 id="despachoTitle" style="margin:0">Despachos en vivo</h3>
+            <button class="btn btn-ghost" id="btnRefreshDespachos">Actualizar</button>
+            <input id="despachoSearch" type="text" placeholder="Buscar interno, placa, itinerario... (Enter)" />
+            <select id="despachoEstadoFilter">
+              <option value="">Estado: todos</option>
+              <option value="ACTIVO">Activos</option>
+              <option value="CANCELADO">Cancelados</option>
+            </select>
+            <select id="despachoSentidoFilter">
+              <option value="">Sentido: todos</option>
+              <option value="BAJADA">Bajada del aeropuerto</option>
+              <option value="SUBIDA">Subida al aeropuerto</option>
+            </select>
+            <label class="consulta-mini" for="despachoFrom">Desde</label>
+            <input id="despachoFrom" type="date" />
+            <label class="consulta-mini" for="despachoTo">Hasta</label>
+            <input id="despachoTo" type="date" />
+            <button class="btn btn-success" id="btnDownloadDespachos">Descargar pagina</button>
+            <span class="muted">Registros: <strong id="despachoCount">0</strong></span>
+            <span class="muted" id="despachoStatus">Sin cargar</span>
+          </div>
+          <div id="despachoPager" class="row" style="margin-bottom:10px;gap:6px;flex-wrap:wrap;align-items:center"></div>
+          <div style="overflow:auto;max-height:60vh">
+            <table id="despachoTable">
+              <thead>
+                <tr>
+                  <th>Fecha / hora</th>
+                  <th>Interno</th>
+                  <th>Base</th>
+                  <th>Itinerario</th>
+                  <th>Sentido</th>
+                  <th>Pasajeros</th>
+                  <th>Estado</th>
+                  <th>Cancelado</th>
+                  <th>Observaciones</th>
+                </tr>
+              </thead>
+              <tbody id="despachoBody">
+                <tr><td colspan="9" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Contenido Asistencias -->
         <div id="tab-asistencias" class="tab-content">
           <div class="row" style="margin-bottom:10px">
@@ -529,12 +691,16 @@
             <input id="asistenciasFrom" type="date" />
             <label class="consulta-mini" for="asistenciasTo">Hasta</label>
             <input id="asistenciasTo" type="date" />
-            <input id="asistenciasSearch" type="text" placeholder="Buscar colaborador, base, origen..." />
+            <input id="asistenciasSearch" type="text" placeholder="Buscar colaborador, base..." />
             <span class="muted" id="asistenciasBaseHint" style="font-weight:600"></span>
             <select id="asistenciasSentido">
               <option value="">Sentido: todos</option>
               <option value="entrada">Entradas</option>
               <option value="salida">Salidas</option>
+            </select>
+            <select id="asistenciasVista" title="Forma de ver las marcas">
+              <option value="pares" selected>Vista: entrada y salida</option>
+              <option value="detalle">Vista: detalle</option>
             </select>
             <button class="btn btn-success" id="btnDownloadAsistencias">Descargar Excel</button>
             <span class="muted">Registros: <strong id="asistenciasCount">0</strong></span>
@@ -546,20 +712,91 @@
           <div style="overflow:auto;max-height:60vh">
             <table id="asistenciasTable">
               <thead>
-                <tr>
+                <tr id="asistenciasHead">
                   <th>Fecha</th>
-                  <th>Hora</th>
-                  <th>Jornada</th>
-                  <th>Sentido</th>
                   <th>Colaborador</th>
                   <th>Base</th>
-                  <th>Origen</th>
+                  <th>Entrada</th>
+                  <th>Salida</th>
+                  <th>Horas</th>
                 </tr>
               </thead>
               <tbody id="asistenciasBody">
-                <tr><td colspan="7" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
+                <tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Contenido Parque automotor -->
+        <div id="tab-parque-automotor" class="tab-content">
+          <div class="row" style="margin-bottom:10px">
+            <h3 style="margin:0">Parque automotor y documentacion de vehiculos</h3>
+            <button class="btn btn-ghost" id="btnRefreshParque">Actualizar</button>
+            <input id="parqueSearch" type="text" placeholder="Buscar placa, interno, marca..." style="min-width:240px" />
+            <select id="parqueBaseFilter">
+              <option value="">Base: todas</option>
+            </select>
+            <select id="parqueRutaFilter" style="min-width:200px">
+              <option value="">Ruta: todas</option>
+            </select>
+            <span class="muted" id="parqueBaseHint" style="font-weight:600"></span>
+            <button class="btn btn-success" id="btnDownloadParque">Descargar Excel</button>
+            <span class="muted">Vehiculos: <strong id="parqueCount">0</strong></span>
+            <span class="muted" id="parqueStatus">Sin cargar</span>
+          </div>
+          <div class="muted" style="margin:0 0 10px 0">
+            Vehiculos vinculados y el vencimiento de sus documentos (SOAT, Tecnomecanica y Tarjeta de operacion).
+            <span style="margin-left:8px">Estado del documento:
+              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;">vigente</span>
+              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#fffbeb;color:#b45309;border:1px solid #fde68a;">por vencer (&le;30d)</span>
+              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;">vencido</span>
+            </span>
+          </div>
+
+          <!-- Selector de vista: Listado / Por renovar -->
+          <div class="parque-seg" role="tablist" style="margin:0 0 12px 0">
+            <button type="button" class="parque-seg-btn active" id="parqueViewListBtn" data-view="list">Listado</button>
+            <button type="button" class="parque-seg-btn" id="parqueViewVencBtn" data-view="venc">Por renovar / Vencidos</button>
+          </div>
+
+          <!-- VISTA: Listado -->
+          <div id="parqueListWrap" style="overflow:auto;max-height:62vh">
+            <table id="parqueTable">
+              <thead>
+                <tr>
+                  <th>Interno</th>
+                  <th>Placa</th>
+                  <th>Marca</th>
+                  <th>Modelo</th>
+                  <th>Base</th>
+                  <th>Ruta</th>
+                  <th>SOAT</th>
+                  <th>Tecnomecanica</th>
+                  <th>T. Operacion</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="parqueBody">
+                <tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- VISTA: Por renovar / Vencidos -->
+          <div id="parqueVencWrap" class="hidden">
+            <div class="parque-venc-ctrl">
+              <label class="pdoc-flabel" for="parqueVencDias" style="margin:0">Avisar proximos a vencer dentro de</label>
+              <select id="parqueVencDias">
+                <option value="15">15 dias</option>
+                <option value="30" selected>30 dias</option>
+                <option value="45">45 dias</option>
+                <option value="60">60 dias</option>
+                <option value="90">90 dias</option>
+              </select>
+              <span class="muted" id="parqueVencResumen" style="margin-left:auto"></span>
+            </div>
+            <div class="parque-venc-grid" id="parqueVencBody"></div>
           </div>
         </div>
 
@@ -741,11 +978,102 @@
   </div>
 </div>
 
+<!-- Modal: editar documentos del parque automotor -->
+<div id="parqueDocModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="parqueDocTitle">
+  <div class="modal-card">
+    <h3 id="parqueDocTitle" class="modal-title">Documentos del vehiculo</h3>
+    <div class="pdoc-headchips" id="parqueDocSub"></div>
+
+    <div class="parque-doc-grid">
+      <!-- SOAT -->
+      <div class="pdoc is-none" id="pdocSoat">
+        <div class="pdoc-top">
+          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+          <div class="pdoc-titles">
+            <div class="pdoc-name">SOAT</div>
+            <span class="pdoc-badge is-none" id="docSoatBadge">sin fecha</span>
+          </div>
+        </div>
+        <div class="pdoc-fields">
+          <div>
+            <label class="pdoc-flabel" for="docSoatFecha">Fecha de vencimiento</label>
+            <input type="date" id="docSoatFecha" />
+          </div>
+          <div class="pdoc-photo">
+            <a id="docSoatLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docSoatThumb" class="pdoc-thumb" alt="Foto SOAT" /></a>
+            <label class="pdoc-upload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <span>Foto</span>
+              <input type="file" id="docSoatFoto" accept="image/*" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tecnomecanica -->
+      <div class="pdoc is-none" id="pdocTecno">
+        <div class="pdoc-top">
+          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+          <div class="pdoc-titles">
+            <div class="pdoc-name">Tecnomecanica</div>
+            <span class="pdoc-badge is-none" id="docTecnoBadge">sin fecha</span>
+          </div>
+        </div>
+        <div class="pdoc-fields">
+          <div>
+            <label class="pdoc-flabel" for="docTecnoFecha">Fecha de vencimiento</label>
+            <input type="date" id="docTecnoFecha" />
+          </div>
+          <div class="pdoc-photo">
+            <a id="docTecnoLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docTecnoThumb" class="pdoc-thumb" alt="Foto Tecnomecanica" /></a>
+            <label class="pdoc-upload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <span>Foto</span>
+              <input type="file" id="docTecnoFoto" accept="image/*" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tarjeta de operacion -->
+      <div class="pdoc is-none" id="pdocOper">
+        <div class="pdoc-top">
+          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 14h6"/><path d="M16 14h2"/></svg></span>
+          <div class="pdoc-titles">
+            <div class="pdoc-name">Tarjeta de operacion</div>
+            <span class="pdoc-badge is-none" id="docOperBadge">sin fecha</span>
+          </div>
+        </div>
+        <div class="pdoc-fields">
+          <div>
+            <label class="pdoc-flabel" for="docOperFecha">Fecha de vencimiento</label>
+            <input type="date" id="docOperFecha" />
+          </div>
+          <div class="pdoc-photo">
+            <a id="docOperLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docOperThumb" class="pdoc-thumb" alt="Foto Tarjeta de operacion" /></a>
+            <label class="pdoc-upload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <span>Foto</span>
+              <input type="file" id="docOperFoto" accept="image/*" />
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="muted" id="parqueDocStatus" style="margin-top:10px"></div>
+    <div class="modal-actions" style="margin-top:12px">
+      <button class="btn btn-ghost" id="parqueDocCancel">Cancelar</button>
+      <button class="btn btn-primary" id="parqueDocSave">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Banner de actualizacion de PWA -->
 <div id="pwaUpdateBanner" class="pwa-update-banner hidden" role="status" aria-live="polite" aria-hidden="true">
   <div class="pwa-update-text">
-    <strong>Nueva version disponible</strong>
-    <span>Recarga para aplicar los ultimos cambios.</span>
+    <strong id="pwaUpdateTitle">Nueva version disponible</strong>
+    <span id="pwaUpdateMsg">Recarga para trabajar con la ultima version.</span>
   </div>
   <div class="pwa-update-actions">
     <button class="btn btn-ghost" id="pwaUpdateLater" type="button">Mas tarde</button>
@@ -753,9 +1081,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=1.5.2"></script>
+<script src="js/functions.js?v=2.6.0"></script>
 <script src="js/main.js?v=20260512-novedades-refresh"></script>
-<script src="js/pwa.js"></script>
+<script src="js/pwa.js?v=2.6.0"></script>
 </body>
 </html>
 

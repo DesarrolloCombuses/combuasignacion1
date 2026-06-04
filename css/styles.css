@@ -1309,3 +1309,183 @@ td, th{ overflow-wrap:anywhere; }
   background:var(--color-text-mut);
   background-clip:content-box;
 }
+
+/* ===================================================================== */
+/* Planilla de enturnamiento aeropuerto - rediseño v1.6                  */
+/* ===================================================================== */
+.lleg104-metrics{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+  margin:0 0 12px 0;
+}
+.lleg104-metric-card{
+  background:var(--color-surface,#fff);
+  border:1px solid var(--color-border,#e2e8f0);
+  border-radius:10px;
+  padding:18px 20px;
+  text-align:center;
+}
+.lleg104-metric-val{
+  font-size:30px;
+  font-weight:800;
+  line-height:1;
+  margin-bottom:6px;
+  color:var(--color-text,#0f172a);
+}
+.lleg104-metric-label{
+  font-size:11px;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:1.2px;
+  color:var(--color-text-mut,#64748b);
+}
+.lleg104-metric-listos .lleg104-metric-val{color:#16a34a}
+.lleg104-metric-espera .lleg104-metric-val{color:#ea580c}
+
+.lleg104-chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:0 0 12px 0;
+  padding:10px;
+  background:var(--color-surface-sub,#f1f5f9);
+  border-radius:10px;
+}
+.lleg104-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 14px;
+  background:var(--color-surface,#fff);
+  border:1px solid var(--color-border,#e2e8f0);
+  border-radius:999px;
+  font-size:13px;
+  font-weight:500;
+  cursor:pointer;
+  user-select:none;
+  transition:background .15s ease,color .15s ease,border-color .15s ease;
+  color:var(--color-text,#0f172a);
+}
+.lleg104-chip:hover{background:#f8fafc}
+.lleg104-chip.active{
+  background:#0f172a;
+  color:#fff;
+  border-color:#0f172a;
+}
+.lleg104-chip-count{
+  background:rgba(15,23,42,.08);
+  border-radius:999px;
+  padding:1px 8px;
+  font-size:11px;
+  font-weight:700;
+  min-width:18px;
+  text-align:center;
+}
+.lleg104-chip.active .lleg104-chip-count{
+  background:rgba(255,255,255,.22);
+  color:#fff;
+}
+
+.lleg104-section{
+  background:var(--color-surface,#fff);
+  border:1px solid var(--color-border,#e2e8f0);
+  border-radius:10px;
+  overflow:hidden;
+}
+.lleg104-section-title{
+  font-size:15px;
+  font-weight:700;
+  padding:14px 16px;
+  border-bottom:1px solid var(--color-border,#e2e8f0);
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  color:var(--color-text,#0f172a);
+}
+.lleg104-section-count{
+  background:var(--color-surface-sub,#f1f5f9);
+  border-radius:999px;
+  padding:3px 12px;
+  font-size:12px;
+  font-weight:600;
+  color:var(--color-text-mut,#64748b);
+}
+
+.estado-tag.tag-espera{
+  background:#fff7ed;
+  color:#c2410c;
+  border-color:#fed7aa;
+}
+.estado-tag.tag-listo{
+  background:#ecfdf5;
+  color:#047857;
+  border-color:#a7f3d0;
+}
+
+.btn-asignar{
+  background:var(--color-surface,#fff);
+  border:1px solid var(--color-border,#cbd5e1);
+  border-radius:6px;
+  padding:5px 12px;
+  font-size:12px;
+  font-weight:600;
+  cursor:pointer;
+  color:var(--color-primary,#1e40af);
+  transition:background .12s ease;
+}
+.btn-asignar:hover{background:#eff6ff}
+.btn-asignar:disabled{opacity:.5;cursor:wait}
+.btn-asignar-done{
+  color:#047857;
+  border-color:#a7f3d0;
+  background:#ecfdf5;
+}
+
+/* Toolbar superior de la planilla (rediseñada v1.6.3) */
+.lleg104-toolbar{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  padding:10px 14px;
+  background:var(--color-surface,#fff);
+  border:1px solid var(--color-border,#e2e8f0);
+  border-radius:10px;
+  margin:0 0 12px 0;
+  flex-wrap:wrap;
+}
+.lleg104-toolbar-left,
+.lleg104-toolbar-right{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.lleg104-date-group{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:13px;
+  color:var(--color-text-mut,#64748b);
+}
+.lleg104-date-group label{
+  font-weight:600;
+  letter-spacing:.3px;
+  text-transform:uppercase;
+  font-size:11px;
+}
+.lleg104-date-group input[type=date]{
+  padding:6px 10px;
+  border:1px solid var(--color-border,#e2e8f0);
+  border-radius:8px;
+  font-size:13px;
+  background:var(--color-surface,#fff);
+  color:var(--color-text,#0f172a);
+}
+.lleg104-toolbar-btn{
+  padding:7px 14px;
+  font-size:13px;
+  font-weight:600;
+  line-height:1.2;
+}

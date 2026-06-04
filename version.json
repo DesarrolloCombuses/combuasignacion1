@@ -1,6 +1,6 @@
 {
-  "version": "1.5.2",
-  "buildDate": "2026-05-20",
+  "version": "2.6.0",
+  "buildDate": "2026-06-04",
   "channel": "stable",
-  "notes": "Cache-busting: se actualizan los query-strings de functions.js y styles.css para forzar a los navegadores a descargar la version mas reciente tras el rebuild."
+  "notes": "Aviso de nueva version en vivo: estando dentro de la app, cada 2 minutos (y al volver el foco a la pestana) se revisa version.json y, si hay una version mas nueva publicada, aparece el banner 'Nueva version disponible' con el numero de version y el boton 'Recargar ahora', sin necesidad de recargar manualmente. Asi todos trabajan siempre con la ultima version."
 }

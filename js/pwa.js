@@ -16,6 +16,9 @@
 
   let refreshing = false;
   let registration = null;
+  let currentVersion = null;      // version con la que se cargo la pagina
+  let newVersionDetected = null;  // version remota detectada como mas nueva
+  const VERSION_POLL_MS = 2 * 60 * 1000; // revisar version.json cada 2 min
 
   async function loadVersion() {
     try {
@@ -38,11 +41,33 @@
     }
   }
 
-  function showUpdateBanner() {
+  function showUpdateBanner(newVersion) {
     const banner = document.getElementById('pwaUpdateBanner');
     if (!banner) return;
+    // Si conocemos la version nueva, la mostramos en el mensaje.
+    const msg = document.getElementById('pwaUpdateMsg');
+    if (msg && newVersion) {
+      const from = currentVersion ? 'v' + currentVersion + ' → ' : '';
+      msg.textContent = 'Actualiza ' + from + 'v' + newVersion + ' para trabajar con la ultima version.';
+    }
     banner.classList.remove('hidden');
     banner.setAttribute('aria-hidden', 'false');
+  }
+
+  // Compara version.json (siempre fresco) contra la version cargada.
+  // Si difiere, muestra el banner aunque el usuario no haya recargado.
+  // Tambien pide al SW que revise para tener lista la nueva copia.
+  async function checkForNewVersion() {
+    if (document.hidden) return;
+    try {
+      const info = await loadVersion();
+      const remote = info && info.version;
+      if (remote && currentVersion && remote !== currentVersion) {
+        newVersionDetected = remote;
+        showUpdateBanner(remote);
+      }
+    } catch (_) { /* sin red: se reintenta en el proximo ciclo */ }
+    if (registration) registration.update().catch(() => {});
   }
 
   function hideUpdateBanner() {
@@ -102,10 +127,9 @@
         window.location.reload();
       });
 
-      // Revisar updates periodicamente mientras la pestana esta abierta.
-      setInterval(() => {
-        registration && registration.update().catch(() => {});
-      }, 60 * 60 * 1000); // cada hora
+      // Revisar la version periodicamente mientras la pestana esta abierta,
+      // para avisar de una nueva version sin que el usuario tenga que recargar.
+      setInterval(checkForNewVersion, VERSION_POLL_MS);
     } catch (err) {
       console.warn('[pwa] Fallo el registro del Service Worker:', err);
     }
@@ -114,7 +138,12 @@
   document.addEventListener('DOMContentLoaded', async () => {
     bindBannerButtons();
     const info = await loadVersion();
+    currentVersion = info.version || 'dev';
     paintVersion(info);
-    register(info.version || 'dev');
+    register(currentVersion);
+    // Al volver el foco a la pestana, revisar enseguida si hay version nueva.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkForNewVersion();
+    });
   });
 })();
