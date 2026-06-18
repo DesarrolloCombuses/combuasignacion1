@@ -18,6 +18,13 @@ Convencion de version:
 
 ---
 
+## [2.7.1] - 2026-06-18
+
+### Anadido
+- **Actualizacion automatica (sin clic)**: cuando se publica una version nueva (cambia `version.json`), la app la detecta (cada 2 min o al volver el foco) y **recarga sola** para dejar a todos en la ultima version, mostrando un breve aviso "Actualizando...". Ya no es necesario pulsar "Recargar ahora". Si el usuario esta escribiendo en ese momento, la recarga se **difiere** unos segundos (y se ofrece el banner manual) para no perder lo que esta tecleando. *(Aplica a partir de esta version en adelante.)*
+
+---
+
 ## [2.7.0] - 2026-06-18
 
 ### Corregido

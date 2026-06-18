@@ -1,6 +1,6 @@
 {
-  "version": "2.7.0",
+  "version": "2.7.1",
   "buildDate": "2026-06-18",
   "channel": "stable",
-  "notes": "Guardado de turnos mas confiable: al asignar un conductor (arrastrando o escribiendo) la casilla se actualiza al instante y aparece un aviso 'GUARDADO Y CONFIRMADO' que solo se muestra cuando el dato realmente quedo verificado en la base de datos. Ademas se corrigio una perdida de asignaciones al cambiar de pestana, de fecha o de base: ahora se confirma el guardado antes de recargar, asi nunca se pisan las asignaciones recien hechas."
+  "notes": "Actualizacion automatica: cuando se publica una version nueva, la app ahora recarga sola para dejar a todos en la ultima version, sin que el usuario tenga que pulsar 'Recargar' (se difiere unos segundos si esta escribiendo para no perder lo que teclea). Incluye los arreglos de 2.7.0: guardado de turnos confiable, casilla que se refresca al instante y aviso 'GUARDADO Y CONFIRMADO' verificado en la base de datos."
 }

@@ -18,7 +18,10 @@
   let registration = null;
   let currentVersion = null;      // version con la que se cargo la pagina
   let newVersionDetected = null;  // version remota detectada como mas nueva
+  let updating = false;           // ya se inicio el proceso de auto-actualizacion
+  let updateDeferredTimer = null; // reintento cuando el usuario esta escribiendo
   const VERSION_POLL_MS = 2 * 60 * 1000; // revisar version.json cada 2 min
+  const AUTO_RELOAD = true;       // recargar solo (sin clic) al detectar version nueva
 
   async function loadVersion() {
     try {
@@ -64,10 +67,59 @@
       const remote = info && info.version;
       if (remote && currentVersion && remote !== currentVersion) {
         newVersionDetected = remote;
-        showUpdateBanner(remote);
+        applyUpdateAndReload(remote);
       }
     } catch (_) { /* sin red: se reintenta en el proximo ciclo */ }
     if (registration) registration.update().catch(() => {});
+  }
+
+  // No interrumpir a un usuario que esta escribiendo/seleccionando (evita perder
+  // lo que esta tecleando). En ese caso se difiere la recarga unos segundos.
+  function isUserBusyTyping() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function showUpdatingOverlay(toVersion) {
+    if (document.getElementById('pwaUpdatingOverlay')) return;
+    const ov = document.createElement('div');
+    ov.id = 'pwaUpdatingOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.55)';
+    ov.innerHTML =
+      '<div style="background:#fff;color:#0f172a;border-radius:14px;padding:22px 28px;text-align:center;' +
+      'box-shadow:0 20px 50px rgba(0,0,0,.3);border-top:6px solid #2563eb;font-family:system-ui,Segoe UI,sans-serif">' +
+      '<div style="font-size:32px;line-height:1">&#8635;</div>' +
+      '<div style="font-weight:800;margin:8px 0 4px">Actualizando&hellip;</div>' +
+      '<div style="font-size:13px;color:#334155">Cargando la ultima version' +
+      (toVersion ? ' v' + toVersion : '') + '</div></div>';
+    document.body.appendChild(ov);
+  }
+
+  // Activa el Service Worker nuevo (si lo hay) y recarga la pagina sola.
+  function applyUpdateAndReload(toVersion) {
+    if (!AUTO_RELOAD) { showUpdateBanner(toVersion); return; }
+    if (updating) return;
+    if (isUserBusyTyping()) {
+      // Mostrar el banner por si quiere actualizar ya, y reintentar luego.
+      showUpdateBanner(toVersion);
+      if (updateDeferredTimer) clearTimeout(updateDeferredTimer);
+      updateDeferredTimer = setTimeout(() => applyUpdateAndReload(toVersion), 15000);
+      return;
+    }
+    updating = true;
+    showUpdatingOverlay(toVersion);
+    // Si hay un SW nuevo esperando, activarlo: dispara controllerchange -> reload.
+    if (registration && registration.waiting) {
+      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    }
+    // Respaldo: si en 3.5s no hubo controllerchange, recargar de todos modos.
+    setTimeout(() => {
+      if (!refreshing) { refreshing = true; window.location.reload(); }
+    }, 3500);
   }
 
   function hideUpdateBanner() {
@@ -80,14 +132,14 @@
   function watchWaitingWorker(reg) {
     if (!reg) return;
     if (reg.waiting && navigator.serviceWorker.controller) {
-      showUpdateBanner();
+      applyUpdateAndReload(newVersionDetected);
     }
     reg.addEventListener('updatefound', () => {
       const sw = reg.installing;
       if (!sw) return;
       sw.addEventListener('statechange', () => {
         if (sw.state === 'installed' && navigator.serviceWorker.controller) {
-          showUpdateBanner();
+          applyUpdateAndReload(newVersionDetected);
         }
       });
     });
