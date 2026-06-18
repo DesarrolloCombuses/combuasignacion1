@@ -18,6 +18,17 @@ Convencion de version:
 
 ---
 
+## [2.7.0] - 2026-06-18
+
+### Corregido
+- **Perdida de asignaciones al cambiar de pestana/fecha/base (DB nueva)**: al asignar conductores en "Turnos del dia" y cambiar rapido a "Estados del personal" (u otra pestana), una recarga asincrona podia leer los datos viejos de la base y **pisar las asignaciones recien hechas** antes de que terminaran de guardarse. Ahora, antes de cualquier recarga (cambio de pestana, cambio de fecha, boton "Actualizar DB nueva" y cambio de base) se **confirma primero el guardado pendiente** (`flushPendingTargetSave`), de modo que la recarga siempre trae lo ya guardado y nunca se pierden asignaciones.
+- **Casilla no se refrescaba tras asignar (falso "SIN CONDUCTOR PROGRAMADO")**: al escribir o arrastrar un conductor, el dato se guardaba pero la etiqueta de la casilla seguia mostrando "SIN CONDUCTOR PROGRAMADO", lo que hacia creer que no se habia guardado. Ahora la casilla se actualiza al instante al asignar, quitar o arrastrar (`renderLabel`).
+
+### Anadido
+- **Aviso "GUARDADO Y CONFIRMADO"**: cada vez que se asigna un conductor aparece un modal verde con el nombre, el vehiculo y la casilla, que se cierra solo (~1.6s). **Solo se muestra cuando el dato quedo verificado en la base de datos**, para que el aviso sea siempre veraz y el usuario quede tranquilo.
+
+---
+
 ## [2.6.0] - 2026-06-04
 
 ### Anadido

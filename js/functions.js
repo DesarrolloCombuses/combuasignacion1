@@ -148,6 +148,11 @@ let autoRefreshTimer = null;
 const SYNC_RETRY_DELAY_MS = 8000;
 const AUTO_REFRESH_DELAY_MS = 120000;
 const ENABLE_PROGRAMACION_AUTO_REFRESH = false;
+// Asignaciones pendientes de confirmar visualmente (se muestran en modal SOLO
+// cuando la base de datos confirma el guardado, para que el aviso sea veraz).
+let pendingAssignmentConfirmations = [];
+let assignmentConfirmModalEl = null;
+let assignmentConfirmModalTimer = null;
 
 function getPendingRowsStorageKey(){
   return `pending_programacion_rows_${currentUserId || "anon"}`;
@@ -283,6 +288,31 @@ function scheduleTargetEditSave(reason = "Cambios guardados en DB nueva."){
   targetEditSaveTimer = setTimeout(runDeferredSave, 1200);
 }
 
+// Fuerza que termine cualquier guardado pendiente/diferido de la DB nueva ANTES
+// de recargar desde la base. Evita que una recarga (cambio de pestana, cambio de
+// base) pise asignaciones que aun no se habian confirmado en Supabase.
+async function flushPendingTargetSave(){
+  const hadPending = !!targetEditSaveTimer;
+  if (targetEditSaveTimer) {
+    clearTimeout(targetEditSaveTimer);
+    targetEditSaveTimer = null;
+  }
+  // Esperar a que termine un guardado en curso (si lo hay).
+  let guard = 0;
+  while (syncRowsInProgressTarget && guard < 200) {
+    await new Promise(res => setTimeout(res, 50));
+    guard++;
+  }
+  // Si habia cambios sin confirmar, guardarlos ahora y esperar la confirmacion.
+  if (hadPending && currentUserId && currentProgramacionIdTarget && Array.isArray(rowsTarget) && rowsTarget.length) {
+    try {
+      await syncProgramacionRowsToTargetSupabase("Guardando cambios pendientes antes de recargar.", { skipQueueSave: true });
+    } catch (error) {
+      console.warn("No se pudo confirmar guardado pendiente antes de recargar:", error);
+    }
+  }
+}
+
 function isTargetTableEditing(){
   const activeEl = document.activeElement;
   return Date.now() < targetEditingUntil
@@ -336,6 +366,47 @@ function showToast(msg, type = "ok"){
 function setSyncStatus(type, msg){
   lblSync.textContent = msg;
   lblSync.className = `pill pill-${type}`;
+}
+
+// Modal verde de confirmacion que se cierra solo (~1.6s). Se invoca unicamente
+// cuando el guardado quedo CONFIRMADO en la base de datos.
+function showAssignmentConfirmedModal(items){
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (list.length === 0) return;
+  if (!assignmentConfirmModalEl) {
+    assignmentConfirmModalEl = document.createElement("div");
+    assignmentConfirmModalEl.id = "assignmentConfirmModal";
+    assignmentConfirmModalEl.style.cssText = [
+      "position:fixed", "inset:0", "z-index:99999",
+      "display:flex", "align-items:center", "justify-content:center",
+      "background:rgba(15,23,42,.45)",
+      "opacity:0", "transition:opacity .15s ease", "pointer-events:none"
+    ].join(";");
+    document.body.appendChild(assignmentConfirmModalEl);
+  }
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const detalle = list.length === 1
+    ? `<div style="font-size:18px;font-weight:700;color:#0f172a;margin-bottom:4px">${esc(list[0].conductor)}</div>
+       <div style="font-size:14px;color:#334155">Vehiculo ${esc(list[0].vehiculo || "-")} &middot; ${esc(list[0].slot)}</div>`
+    : `<div style="font-size:18px;font-weight:700;color:#0f172a;margin-bottom:4px">${list.length} conductores</div>
+       <div style="font-size:14px;color:#334155">guardados y confirmados</div>`;
+  assignmentConfirmModalEl.innerHTML = `
+    <div style="background:#fff;border-radius:16px;padding:26px 30px;max-width:340px;width:86%;
+                box-shadow:0 20px 50px rgba(0,0,0,.3);text-align:center;border-top:6px solid #16a34a">
+      <div style="font-size:44px;line-height:1;margin-bottom:10px">&#9989;</div>
+      <div style="font-size:15px;font-weight:800;color:#16a34a;letter-spacing:.5px;margin-bottom:10px">
+        GUARDADO Y CONFIRMADO
+      </div>
+      ${detalle}
+    </div>`;
+  requestAnimationFrame(() => {
+    if (assignmentConfirmModalEl) assignmentConfirmModalEl.style.opacity = "1";
+  });
+  if (assignmentConfirmModalTimer) clearTimeout(assignmentConfirmModalTimer);
+  assignmentConfirmModalTimer = setTimeout(() => {
+    if (assignmentConfirmModalEl) assignmentConfirmModalEl.style.opacity = "0";
+  }, 1600);
 }
 
 function canViewAllRowsByRole(){
@@ -2541,8 +2612,14 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
     clearPendingTargetRowsLocal();
     setSyncStatus("ok", "Confirmado DB nueva");
     showToast(`${reason} (confirmado)`, "ok");
+    // Aviso visible y veraz: el dato ya quedo verificado en la base de datos.
+    if (pendingAssignmentConfirmations.length > 0) {
+      showAssignmentConfirmedModal(pendingAssignmentConfirmations.slice());
+      pendingAssignmentConfirmations = [];
+    }
     return true;
   } catch (error) {
+    console.error("No se pudo guardar en DB nueva:", error?.message || error, error?.code || "");
     savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsToPersist, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
     setSyncStatus("warn", "Pendiente DB nueva");
     showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn");
@@ -2735,20 +2812,53 @@ function renderTable2(){
         const rowLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
         const rowBaseCanonical = getRowCanonicalBase(r, baseKey) || getBaseCanonical(currentBase);
         const rowBaseLabel = formatBaseLabel(rowBaseCanonical || currentBase || "");
-        if (assigned) {
-          td.classList.add("filled");
-          td.innerHTML = `
-            <div>${v || ""}</div>
-            <span class="base-badge">${rowBaseLabel}</span>
-          `;
-        } else {
-          td.innerHTML = `
-            <span class="muted">${UNASSIGNED_LABEL}</span>
-            <span class="slot-hint">Copia una nota o asigna conductor</span>
-            ${noteText ? `<div class="cell-note">${noteText}</div>` : ""}
-            <button class="btn-note" type="button">${noteText ? "Editar nota" : "Agregar nota"}</button>
-          `;
-        }
+        // Etiqueta de la celda en su propio contenedor para poder refrescarla
+        // sin destruir el input que el usuario esta editando.
+        const labelWrap = document.createElement("div");
+        labelWrap.className = "driver-cell-label";
+
+        const wireNoteButton = () => {
+          const noteBtn = labelWrap.querySelector(".btn-note");
+          if (!noteBtn) return;
+          noteBtn.addEventListener("click", async (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const result = await openConductorNoteModal({
+              note: getConductorNote(r, k),
+              label: `${rowLabel} - ${k}`
+            });
+            if (!result || result.action === "cancel") return;
+            if (result.action === "clear") setConductorNote(r, k, "");
+            else if (result.action === "save") setConductorNote(r, k, result.text);
+            renderLabel();
+            renderDrivers();
+            await syncProgramacionRowsToTargetSupabase("Nota de casilla guardada en DB nueva.");
+          });
+        };
+
+        const renderLabel = () => {
+          const assignedNow = extractConductorName(r[k] || "");
+          const noteNow = getConductorNote(r, k);
+          if (assignedNow) {
+            td.classList.add("filled");
+            labelWrap.innerHTML = `
+              <div>${r[k] || ""}</div>
+              <span class="base-badge">${rowBaseLabel}</span>
+            `;
+          } else {
+            td.classList.remove("filled");
+            labelWrap.innerHTML = `
+              <span class="muted">${UNASSIGNED_LABEL}</span>
+              <span class="slot-hint">Copia una nota o asigna conductor</span>
+              ${noteNow ? `<div class="cell-note">${noteNow}</div>` : ""}
+              <button class="btn-note" type="button">${noteNow ? "Editar nota" : "Agregar nota"}</button>
+            `;
+            wireNoteButton();
+          }
+        };
+
+        renderLabel();
+        td.appendChild(labelWrap);
 
         const editorWrap = document.createElement("div");
         editorWrap.style.marginTop = "6px";
@@ -2777,6 +2887,8 @@ function renderTable2(){
             if (!typed) {
               if (!previousName) return;
               r[k] = UNASSIGNED_LABEL;
+              input.value = "";
+              renderLabel();
               scheduleTargetEditSave(`Remocion guardada en DB nueva (${k}).`);
               rebuildAssigned();
               renderDrivers();
@@ -2807,7 +2919,12 @@ function renderTable2(){
             r[k] = matched;
             setConductorNote(r, k, "");
             input.value = matched;
-            td.classList.add("filled");
+            renderLabel();
+            pendingAssignmentConfirmations.push({
+              conductor: matched,
+              vehiculo: String(r[getVehiculoKey(r)] || "").trim(),
+              slot: k
+            });
             scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
             rebuildAssigned();
             renderDrivers();
@@ -2839,26 +2956,6 @@ function renderTable2(){
           await commitTypedDriver();
         });
 
-        if (!assigned) {
-          const noteBtn = td.querySelector(".btn-note");
-          if (noteBtn) {
-            noteBtn.addEventListener("click", async (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
-              const result = await openConductorNoteModal({
-                note: getConductorNote(r, k),
-                label: `${rowLabel} - ${k}`
-              });
-              if (!result || result.action === "cancel") return;
-              if (result.action === "clear") setConductorNote(r, k, "");
-              else if (result.action === "save") setConductorNote(r, k, result.text);
-              renderTable2();
-              renderDrivers();
-              await syncProgramacionRowsToTargetSupabase("Nota de casilla guardada en DB nueva.");
-            });
-          }
-        }
-
         td.ondragover = ev => {
           ev.preventDefault();
           autoScrollDuringDrag(ev.clientY);
@@ -2873,6 +2970,13 @@ function renderTable2(){
             if (data.tipo !== "conductor") return;
             r[k] = data.nombre;
             setConductorNote(r, k, "");
+            input.value = extractConductorName(r[k] || "");
+            renderLabel();
+            pendingAssignmentConfirmations.push({
+              conductor: extractConductorName(r[k] || "") || String(data.nombre || ""),
+              vehiculo: String(r[getVehiculoKey(r)] || "").trim(),
+              slot: k
+            });
             scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
             renderDrivers();
           } catch (e) {
@@ -2886,6 +2990,8 @@ function renderTable2(){
           const ok = confirm(`Quitar a ${existingName} de ${k} en DB nueva?`);
           if (!ok) return;
           r[k] = UNASSIGNED_LABEL;
+          input.value = "";
+          renderLabel();
           scheduleTargetEditSave(`Remocion guardada en DB nueva (${k}).`);
           renderDrivers();
         };
@@ -8016,15 +8122,19 @@ function stopRealtimeSubscriptions(){
 
 /* ===================== PESTANAS ===================== */
 document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
+  tab.addEventListener('click', async () => {
     // Desactivar todas las pestanas
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    
+
     // Activar la pestana seleccionada
     tab.classList.add('active');
     const tabId = tab.getAttribute('data-tab');
     document.getElementById(`tab-${tabId}`).classList.add('active');
+
+    // CLAVE: confirmar cualquier asignacion pendiente ANTES de recargar datos,
+    // para que ninguna recarga pise asignaciones recien hechas (DB nueva).
+    await flushPendingTargetSave();
 
     // Si es la pestana de novedades, renderizar
     if (tabId === 'novedades') {
@@ -8277,7 +8387,8 @@ function enterBase(base){
   if (usingTargetView) {
     const selectedDate2 = normalizeDateToISO(filterDate2?.value || "");
     if (selectedDate2) {
-      loadTargetProgramacionByDate(selectedDate2)
+      flushPendingTargetSave()
+        .then(() => loadTargetProgramacionByDate(selectedDate2))
         .catch((e) => console.error("No se pudo cargar Programacion 2 por fecha al cambiar base:", e))
         .finally(() => {
           renderTable2();
@@ -8825,6 +8936,7 @@ function bindUIEvents(){
   }
   if (filterDate2) {
     filterDate2.addEventListener("change", async () => {
+      await flushPendingTargetSave();
       try {
         const selected = normalizeDateToISO(filterDate2.value || "");
         if (selected) {
@@ -8856,6 +8968,7 @@ function bindUIEvents(){
   if (btnRefreshProgramacion2) {
     btnRefreshProgramacion2.addEventListener("click", async () => {
       try {
+        await flushPendingTargetSave();
         await loadLatestProgramacionFromTargetSupabase();
         const selected = normalizeDateToISO(filterDate2?.value || "");
         if (selected) {
