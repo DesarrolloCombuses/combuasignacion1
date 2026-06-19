@@ -18,6 +18,16 @@ Convencion de version:
 
 ---
 
+## [2.8.0] - 2026-06-18
+
+### Anadido
+- **Subida de varias programaciones a la vez (DB nueva)**: el boton "Cargar Excel Programacion (DB nueva)" ahora permite **seleccionar multiples archivos** en una sola accion. Se suben **uno tras otro** (en secuencia, para no provocar carreras al guardar), con aviso de progreso ("Subiendo 2 de 5...") y un **resumen final** con cuantos se cargaron; si alguno falla, se informa cual sin detener los demas. Al terminar se refresca el selector de fechas con los dias cargados.
+
+### Corregido
+- **"Eliminar dia" no eliminaba**: la accion operaba sobre la base de datos anterior (`rows` + sync viejo) en lugar de la base en uso, por lo que el dia seguia apareciendo. Ahora **borra las filas de ese dia directamente en `programacion_filas` (por `fecha`) de la base activa**, pide **confirmacion** antes de borrar (accion irreversible), refresca la tabla, la lista de conductores, las novedades y el **selector de fechas**, y muestra cuantas filas se eliminaron. Disponible solo para el super administrador.
+
+---
+
 ## [2.7.1] - 2026-06-18
 
 ### Anadido

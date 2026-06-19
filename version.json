@@ -1,6 +1,6 @@
 {
-  "version": "2.7.1",
+  "version": "2.8.0",
   "buildDate": "2026-06-18",
   "channel": "stable",
-  "notes": "Actualizacion automatica: cuando se publica una version nueva, la app ahora recarga sola para dejar a todos en la ultima version, sin que el usuario tenga que pulsar 'Recargar' (se difiere unos segundos si esta escribiendo para no perder lo que teclea). Incluye los arreglos de 2.7.0: guardado de turnos confiable, casilla que se refresca al instante y aviso 'GUARDADO Y CONFIRMADO' verificado en la base de datos."
+  "notes": "Nuevo: puedes seleccionar y subir VARIAS programaciones a la vez en 'Cargar Excel Programacion (DB nueva)'; se cargan una tras otra con aviso de progreso y resumen final. Correccion: 'Eliminar dia' ahora borra de verdad la programacion del dia seleccionado en la base en uso (programacion_filas por fecha), con confirmacion y refresco de la vista. Incluye la actualizacion automatica (2.7.1) y los arreglos de guardado (2.7.0)."
 }

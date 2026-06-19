@@ -8533,11 +8533,44 @@ async function handleProgramacionFileChange(e){
 }
 
 async function handleProgramacionFileChangeNewDb(e){
-  const f = e.target.files[0];
-  if(!f) return;
+  const files = Array.from(e?.target?.files || []);
+  if (files.length === 0) return;
   try {
-    setSyncStatus("warn", "Subiendo archivo a DB nueva...");
-    await readFile(f, { mode: "target" });
+    if (files.length === 1) {
+      setSyncStatus("warn", "Subiendo archivo a DB nueva...");
+      await readFile(files[0], { mode: "target" });
+    } else {
+      // Subida multiple: se procesan en secuencia (uno tras otro) para no
+      // pisar el estado ni provocar carreras al guardar en Supabase.
+      let ok = 0;
+      const errores = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        setSyncStatus("warn", `Subiendo ${i + 1} de ${files.length} a DB nueva...`);
+        showToast(`Subiendo archivo ${i + 1} de ${files.length}: ${f.name}`, "warn");
+        try {
+          await readFile(f, { mode: "target" });
+          ok++;
+        } catch (err) {
+          console.error(`Error subiendo ${f.name} a DB nueva:`, err);
+          errores.push(`${f.name}: ${err?.message || "error desconocido"}`);
+        }
+      }
+      // Refrescar el catalogo de fechas para que aparezcan los dias cargados.
+      try {
+        await loadTargetDateCatalogFromSupabase(true);
+        refreshFilterDateOptions2();
+      } catch (refreshErr) {
+        console.warn("No se pudo refrescar el catalogo de fechas tras la subida multiple:", refreshErr);
+      }
+      if (errores.length === 0) {
+        setSyncStatus("ok", "Archivos cargados");
+        showToast(`${ok} archivos cargados en la base nueva.`, "ok");
+      } else {
+        setSyncStatus("warn", `Cargados ${ok}/${files.length}`);
+        alert(`Se cargaron ${ok} de ${files.length} archivos en la base nueva.\n\nFallaron:\n- ${errores.join("\n- ")}`);
+      }
+    }
   } catch (error) {
     console.error("Error procesando archivo para DB nueva:", error);
     setSyncStatus("err", "Archivo invalido (DB nueva)");
@@ -8587,40 +8620,87 @@ async function handleDeleteDayClick(){
     showToast("Selecciona un dia valido para eliminar.", "warn");
     return;
   }
-  if (!AppState.hasRows) {
-    showToast("No hay programacion cargada.", "warn");
-    return;
+  const legible = excelDateToReadable(dayIso);
+  const confirmar = confirm(
+    `Vas a ELIMINAR toda la programacion del dia ${legible} en la base de datos (incluidas las asignaciones de conductores).\n\n` +
+    `Esta accion no se puede deshacer. Deseas continuar?`
+  );
+  if (!confirmar) return;
+
+  setSyncStatus("warn", "Eliminando dia...");
+  const btnDeleteDay = document.getElementById("btnDeleteDay");
+  if (btnDeleteDay) btnDeleteDay.disabled = true;
+
+  try {
+    // Bajo USE_ONLY_NEW_DB la programacion vive en programacion_filas (DB nueva),
+    // donde cada fila tiene su columna 'fecha'. Borrar el dia = borrar esas filas.
+    await ensureTargetMigrationSession();
+    let totalEliminadas = 0;
+    while (true) {
+      const { data, error } = await programacionesTargetClient
+        .from("programacion_filas")
+        .delete()
+        .eq("fecha", dayIso)
+        .select("id");
+      if (error) throw error;
+      const n = Array.isArray(data) ? data.length : 0;
+      totalEliminadas += n;
+      if (n === 0) break;
+    }
+
+    if (totalEliminadas === 0) {
+      setSyncStatus("ok", "Sin cambios");
+      showToast(`No habia programacion guardada para ${legible}.`, "warn");
+      return;
+    }
+
+    // Quitar la fecha de los arreglos locales (vista nueva y vieja).
+    const fechaKeyTgt = getFechaKeyFromArray(rowsTarget);
+    if (Array.isArray(rowsTarget) && rowsTarget.length) {
+      rowsTarget = partitionRowsByDate(rowsTarget, dayIso, fechaKeyTgt).rest;
+    }
+    if (AppState.hasRows) {
+      const fechaKeySrc = getFechaKeyFromArray(rows);
+      AppState.replaceRows(partitionRowsByDate(rows, dayIso, fechaKeySrc).rest);
+      updateExportAccess();
+      fillStartBases();
+      if (currentBase) refreshFilterDateOptions();
+    }
+
+    // Refrescar el catalogo de fechas y el selector de la DB nueva.
+    await loadTargetDateCatalogFromSupabase(true);
+    refreshFilterDateOptions2();
+
+    // Si se estaba viendo justo ese dia, limpiar la vista.
+    if (normalizeDateToISO(filterDate2?.value || "") === dayIso) {
+      if (filterDate2) filterDate2.value = "";
+      rowsTarget = [];
+      currentProgramacionIdTarget = null;
+    }
+    const filterDate = document.getElementById("filterDate");
+    if (filterDate && filterDate.value === dayIso) {
+      filterDate.value = "";
+      filterDate.dataset.prevValue = "";
+      const clearBtn = document.getElementById("clearFilter");
+      if (clearBtn) clearBtn.disabled = true;
+    }
+
+    updateWorkflowGuide();
+    renderTable2();
+    renderTable();
+    renderDrivers();
+    renderNovedades2();
+    renderNovedades();
+
+    setSyncStatus("ok", "Dia eliminado");
+    showToast(`Dia ${legible} eliminado (${totalEliminadas} filas) de la base de datos.`, "ok");
+  } catch (error) {
+    console.error("No se pudo eliminar el dia en la DB nueva:", error);
+    setSyncStatus("err", "Error al eliminar");
+    showToast(`No se pudo eliminar el dia ${legible}: ${error?.message || "sin detalle"}`, "err");
+  } finally {
+    if (btnDeleteDay) btnDeleteDay.disabled = !AppState.hasRows;
   }
-
-  const fechaKey = getFechaKeyFromArray(rows);
-  const { selected, rest } = partitionRowsByDate(rows, dayIso, fechaKey);
-  if (selected.length === 0) {
-    showToast(`No hay filas para ${excelDateToReadable(dayIso)}.`, "warn");
-    return;
-  }
-
-  AppState.replaceRows(rest);
-  updateExportAccess();
-  fillStartBases();
-  if (currentBase) refreshFilterDateOptions();
-
-  const filterDate = document.getElementById("filterDate");
-  if (filterDate && filterDate.value === dayIso) {
-    filterDate.value = "";
-    filterDate.dataset.prevValue = "";
-    const clearBtn = document.getElementById("clearFilter");
-    if (clearBtn) clearBtn.disabled = true;
-  }
-
-  updateWorkflowGuide();
-  renderTable();
-  renderDrivers();
-  renderNovedades();
-  lblGlobal.textContent = currentProgramacionFileName
-    ? `Programacion en linea: ${currentProgramacionFileName} | Filas: ${rows.length}`
-    : `Programacion en linea | Filas: ${rows.length}`;
-
-  await syncProgramacionRowsToSupabase(`Dia ${excelDateToReadable(dayIso)} eliminado (${selected.length} filas).`);
 }
 
 async function handleLoadHistoryProgramacionClick(){
