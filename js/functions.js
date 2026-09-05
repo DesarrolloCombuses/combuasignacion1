@@ -49,6 +49,19 @@ const WAITING_NOVEDAD_THRESHOLD_MINUTES = 180;
 const MAX_COHERENT_DISPATCH_MINUTES = 360;
 const STORE_ROWS_DATA_INLINE = false;
 const SUPER_ADMIN_EMAIL = "administrador@combuses.com.co";
+// Bases habilitadas para intercambiar la posicion de los vehiculos y sus fichos
+// (ademas del super administrador). Para habilitar otra base, agrega su numero.
+const VEHICLE_SWAP_BASES = ["3", "4"];
+// Bases cuyos conductores tambien quedan disponibles en otra base.
+// Clave: base en la que se trabaja. Valor: bases de las que se suman conductores.
+// BASE 3 ve ademas los conductores de BASE 5 (vehiculos trasladados de esa base).
+const EXTRA_DRIVER_BASES = { "3": ["5"] };
+
+// Bases a las que se avisa, al iniciar sesion, de que ya pueden cambiar los
+// carros de posicion. El aviso se muestra una sola vez por usuario y version:
+// para volver a mostrarlo, sube SWAP_NOTICE_VERSION.
+const SWAP_NOTICE_BASES = ["4"];
+const SWAP_NOTICE_VERSION = "2.9.0";
 const BASE_USER_EMAIL_RE = /^base\s*([0-9]+)@combuses\.com\.co$/i;
 const ALLOW_PUBLIC_SIGNUP = false;
 function getProjectRefFromUrl(url){
@@ -409,6 +422,81 @@ function showAssignmentConfirmedModal(items){
   }, 1600);
 }
 
+function getSwapNoticeStorageKey(){
+  const who = currentUserId || currentUserEmail || "anon";
+  return `combuses-swap-notice-${SWAP_NOTICE_VERSION}-${who}`;
+}
+
+// Solo para operadores de una base listada en SWAP_NOTICE_BASES que ademas
+// tenga el permiso real de mover vehiculos, y que no lo hayan visto ya.
+function shouldShowSwapEnabledNotice(){
+  if (!isBaseOperator()) return false;
+  const base = getBaseCanonical(currentUserBase);
+  if (!base) return false;
+  if (!SWAP_NOTICE_BASES.includes(base)) return false;
+  if (!VEHICLE_SWAP_BASES.includes(base)) return false;
+  try {
+    return localStorage.getItem(getSwapNoticeStorageKey()) !== "1";
+  } catch (e) {
+    return true;  // sin localStorage se muestra igual: mejor avisar de mas
+  }
+}
+
+function closeSwapEnabledNotice(){
+  const ov = document.getElementById("swapEnabledNotice");
+  if (ov) ov.remove();
+  try { localStorage.setItem(getSwapNoticeStorageKey(), "1"); } catch (e) {}
+}
+
+// Aviso de que la base ya puede intercambiar la posicion de los vehiculos.
+function showSwapEnabledModal(){
+  if (document.getElementById("swapEnabledNotice")) return;
+  const ov = document.createElement("div");
+  ov.id = "swapEnabledNotice";
+  ov.style.cssText = [
+    "position:fixed", "inset:0", "z-index:99998",
+    "display:flex", "align-items:center", "justify-content:center",
+    "background:rgba(15,23,42,.45)", "padding:16px"
+  ].join(";");
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:16px;padding:26px 28px;max-width:430px;width:100%;
+                box-shadow:0 20px 50px rgba(0,0,0,.3);border-top:6px solid #1e40af;
+                font-family:system-ui,Segoe UI,sans-serif;text-align:center">
+      <div style="font-size:42px;line-height:1;margin-bottom:8px">&#128666;</div>
+      <div style="font-size:13px;font-weight:800;color:#1d4ed8;letter-spacing:.5px;margin-bottom:8px">
+        NUEVA FUNCION PARA ${escapeHtml(formatBaseLabel(currentUserBase))}
+      </div>
+      <div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:10px">
+        Ya puedes cambiar los carros de posicion
+      </div>
+      <div style="font-size:14px;color:#334155;line-height:1.5;text-align:left">
+        En <strong>Turnos del dia</strong>, arrastra un vehiculo sobre otro para
+        intercambiar su posicion. Se te pedira confirmacion antes de aplicar el cambio.
+        <ul style="margin:10px 0 0;padding-left:18px">
+          <li>El <strong>conductor viaja con el carro</strong> al cambiarlo de puesto.</li>
+          <li>Si el origen o el destino es un <strong>FICHO</strong>, el carro se mueve
+              pero el ficho queda <strong>sin conductor</strong>.</li>
+        </ul>
+      </div>
+      <button type="button" id="swapNoticeOk"
+              style="margin-top:18px;width:100%;padding:11px 16px;border:0;border-radius:10px;
+                     background:#1e40af;color:#fff;font-size:14px;font-weight:700;cursor:pointer">
+        Entendido
+      </button>
+    </div>`;
+  document.body.appendChild(ov);
+  const ok = document.getElementById("swapNoticeOk");
+  if (ok) ok.onclick = closeSwapEnabledNotice;
+  ov.addEventListener("click", (ev) => {
+    if (ev.target === ov) closeSwapEnabledNotice();
+  });
+  document.addEventListener("keydown", function onEsc(ev){
+    if (ev.key !== "Escape") return;
+    document.removeEventListener("keydown", onEsc);
+    closeSwapEnabledNotice();
+  });
+}
+
 function canViewAllRowsByRole(){
   return !!currentUserId;
 }
@@ -419,6 +507,10 @@ function isSuperAdmin(){
 
 function canExportXlsx(){
   return isSuperAdmin();
+}
+
+function canSwapVehiclePositions(){
+  return isSuperAdmin() || VEHICLE_SWAP_BASES.includes(getBaseCanonical(currentBase));
 }
 
 function updateExportAccess(){
@@ -918,6 +1010,10 @@ function applyAuthState(session){
     setAuthStatus("Sesion iniciada.", "ok");
     updateExportAccess();
     startRealtimeSubscriptions();
+    // Aviso de "ya puedes mover los carros" para las bases recien habilitadas.
+    if (shouldShowSwapEnabledNotice()) {
+      setTimeout(() => { if (currentUserId) showSwapEnabledModal(); }, 700);
+    }
     if(!appInitialized){
       setSyncStatus("warn", "Validando datos...");
       appInitialized = true;
@@ -2363,9 +2459,9 @@ async function renderSupabaseDebug(){
   debugOutput.textContent = lines.join("\n");
 }
 
-function refreshFilterDateOptions2(){
-  if (!filterDate2) return;
-  const prev = filterDate2.value || "";
+// Dias que ya tienen programacion en la DB nueva: catalogo de Supabase mas las
+// filas cargadas en memoria. Lo comparten el <select> y el calendario.
+function getProgramacionDaySet2(){
   const daySet = new Set();
   (Array.isArray(targetDbDateCatalog) ? targetDbDateCatalog : []).forEach(d => {
     const iso = normalizeDateToISO(d);
@@ -2376,7 +2472,13 @@ function refreshFilterDateOptions2(){
     const iso = getRowDateISO(r, fechaKey);
     if (iso) daySet.add(iso);
   });
-  const dates = Array.from(daySet).sort((a, b) => a.localeCompare(b));
+  return daySet;
+}
+
+function refreshFilterDateOptions2(){
+  if (!filterDate2) return;
+  const prev = filterDate2.value || "";
+  const dates = Array.from(getProgramacionDaySet2()).sort((a, b) => a.localeCompare(b));
   filterDate2.innerHTML = `<option value="">Selecciona fecha...</option>`;
   dates.forEach(iso => {
     const op = document.createElement("option");
@@ -2385,6 +2487,175 @@ function refreshFilterDateOptions2(){
     filterDate2.appendChild(op);
   });
   if (prev && dates.includes(prev)) filterDate2.value = prev;
+  renderDateCalendar2();
+}
+
+/* ---------- Calendario de fecha (DB nueva) ----------
+   Reemplaza visualmente al <select id="filterDate2">, que sigue oculto en el
+   DOM como fuente de verdad: al pulsar un dia se escribe su valor y se dispara
+   "change", de modo que todo el flujo existente sigue funcionando igual.
+   Arranca en el mes en curso y pinta los dias que ya tienen programacion. */
+let calendarCursor2 = null;    // primer dia del mes visible
+let calendarLastSeen2 = null;  // ultima fecha seleccionada que se dibujo
+let calendarGlobalBound2 = false;
+
+function isoFromParts2(year, monthIdx, day){
+  return `${year}-${String(monthIdx + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function setCalendarCursorFromIso2(iso){
+  const [y, m] = String(iso || "").split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return;
+  calendarCursor2 = new Date(y, m - 1, 1);
+}
+
+function renderDateCalendar2(){
+  const grid = document.getElementById("cal2Grid");
+  const title = document.getElementById("cal2Title");
+  if (!grid || !title) return;
+
+  const daySet = getProgramacionDaySet2();
+  const selected = normalizeDateToISO(filterDate2?.value || "");
+  const todayIso = getLocalIsoDate(new Date());
+
+  // Mes visible: el de la fecha elegida y, si no hay ninguna, el mes en curso.
+  if (!calendarCursor2) setCalendarCursorFromIso2(selected || todayIso);
+  // Si la fecha cambio desde fuera del calendario, saltar a su mes.
+  if (selected && selected !== calendarLastSeen2) setCalendarCursorFromIso2(selected);
+  calendarLastSeen2 = selected;
+
+  const year = calendarCursor2.getFullYear();
+  const month = calendarCursor2.getMonth();
+
+  const monthLabel = new Date(year, month, 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+  title.textContent = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+
+  // getDay() devuelve 0=domingo; lo giramos para que la semana empiece en lunes.
+  const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  grid.innerHTML = "";
+  for (let i = 0; i < firstWeekday; i++) {
+    const filler = document.createElement("span");
+    filler.className = "cal2-day is-empty";
+    grid.appendChild(filler);
+  }
+
+  let conProgramacion = 0;
+  let ultimoDiaConProgramacion = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const iso = isoFromParts2(year, month, day);
+    const tieneProgramacion = daySet.has(iso);
+    if (tieneProgramacion) {
+      conProgramacion++;
+      ultimoDiaConProgramacion = day;
+    }
+
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = `cal2-day ${tieneProgramacion ? "is-on" : "is-off"}`;
+    if (iso === todayIso) cell.classList.add("is-today");
+    if (iso && iso === selected) cell.classList.add("is-selected");
+    cell.textContent = String(day);
+    cell.disabled = !tieneProgramacion;
+    cell.title = tieneProgramacion
+      ? `Ver programacion del ${excelDateToReadable(iso)}`
+      : `Sin programacion cargada el ${excelDateToReadable(iso)}`;
+    if (tieneProgramacion) {
+      cell.onclick = () => {
+        if (!filterDate2) return;
+        // El <select> solo acepta un valor que exista como <option>. Normalmente
+        // ya esta (ambos salen del mismo catalogo), pero si faltara se agrega
+        // para que el clic nunca quede sin efecto.
+        if (!Array.from(filterDate2.options).some(op => op.value === iso)) {
+          const op = document.createElement("option");
+          op.value = iso;
+          op.textContent = excelDateToReadable(iso);
+          filterDate2.appendChild(op);
+        }
+        filterDate2.value = iso;
+        setCalendarCursorFromIso2(iso);
+        setCalendar2Open(false);   // elegir un dia cierra el calendario
+        filterDate2.dispatchEvent(new Event("change"));
+        renderDateCalendar2();
+      };
+    }
+    grid.appendChild(cell);
+  }
+
+  // Texto del boton: la fecha elegida se ve sin abrir el calendario.
+  const triggerText = document.getElementById("cal2TriggerText");
+  if (triggerText) {
+    triggerText.textContent = selected ? excelDateToReadable(selected) : "Selecciona fecha...";
+  }
+
+  const ultimoIso = ultimoDiaConProgramacion
+    ? excelDateToReadable(isoFromParts2(year, month, ultimoDiaConProgramacion))
+    : "";
+  const hint = document.getElementById("cal2Hint");
+  if (hint) {
+    hint.textContent = conProgramacion === 0
+      ? "Sin programacion este mes."
+      : `Programacion hasta el ${ultimoIso}.`;
+  }
+  const status = document.getElementById("cal2Status");
+  if (status) {
+    status.textContent = conProgramacion === 0
+      ? "Sin programacion en este mes."
+      : `${conProgramacion} dia(s) cargado(s).`;
+  }
+
+  // onclick (no addEventListener) para no acumular handlers en cada repintado.
+  const btnPrev = document.getElementById("cal2Prev");
+  const btnNext = document.getElementById("cal2Next");
+  const btnToday = document.getElementById("cal2Today");
+  const trigger = document.getElementById("cal2Trigger");
+  if (btnPrev) btnPrev.onclick = () => {
+    calendarCursor2 = new Date(year, month - 1, 1);
+    renderDateCalendar2();
+  };
+  if (btnNext) btnNext.onclick = () => {
+    calendarCursor2 = new Date(year, month + 1, 1);
+    renderDateCalendar2();
+  };
+  if (btnToday) btnToday.onclick = () => {
+    setCalendarCursorFromIso2(getLocalIsoDate(new Date()));
+    renderDateCalendar2();
+  };
+  if (trigger) trigger.onclick = (ev) => {
+    ev.stopPropagation();
+    setCalendar2Open(!isCalendar2Open());
+  };
+  bindCalendar2GlobalEvents();
+}
+
+function isCalendar2Open(){
+  const pop = document.getElementById("cal2Pop");
+  return !!(pop && !pop.hidden);
+}
+
+function setCalendar2Open(open){
+  const pop = document.getElementById("cal2Pop");
+  const wrap = document.getElementById("dateCalendar2");
+  const trigger = document.getElementById("cal2Trigger");
+  if (!pop || !wrap) return;
+  pop.hidden = !open;
+  wrap.classList.toggle("is-open", !!open);
+  if (trigger) trigger.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+// Cerrar al pulsar fuera del calendario o con Escape. Se registra una sola vez.
+function bindCalendar2GlobalEvents(){
+  if (calendarGlobalBound2) return;
+  calendarGlobalBound2 = true;
+  document.addEventListener("click", (ev) => {
+    if (!isCalendar2Open()) return;
+    const wrap = document.getElementById("dateCalendar2");
+    if (wrap && !wrap.contains(ev.target)) setCalendar2Open(false);
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && isCalendar2Open()) setCalendar2Open(false);
+  });
 }
 
 async function loadTargetDateCatalogFromSupabase(force = false){
@@ -2704,7 +2975,7 @@ function renderTable2(){
     const t = normCompact(h).replace(/[^A-Z0-9]/g, "");
     return t === "INICIA" || t === "INICIO" || t === "HORAINICIO1" || t === "HORAINICIO";
   }) || null;
-  const vehiculoSwapEnabled = isSuperAdmin() || getBaseCanonical(currentBase) === "3";
+  const vehiculoSwapEnabled = canSwapVehiclePositions();
   const { key1: conductor1Key, key2: conductor2Key } = getConductorKeysFromArray(rowsTarget);
   const token = (h) => normCompact(h).replace(/[^A-Z0-9]/g, "");
   const resolvedConductor1Key = conductor1Key || headers.find(h => {
@@ -2896,7 +3167,7 @@ function renderTable2(){
             }
 
             const baseCanonical = getBaseCanonical(rowBaseCanonical || currentBase);
-            const pool = driversByBase[baseCanonical] || driversByBase[formatBaseLabel(baseCanonical)] || [];
+            const pool = getDriverPoolForBase(baseCanonical);
             const matched = pool.find(name => norm(name) === norm(typed));
             if (!matched) {
               showToast(`"${typed}" no existe en ${formatBaseLabel(baseCanonical || currentBase || "")}.`, "warn");
@@ -4666,16 +4937,16 @@ async function loadAuditLogFromSupabase(options = {}){
 }
 
 const VEHICLE_TO_BASE_MAP = {
-  "703":"BASE 4","705":"BASE 4","707":"BASE 4","708":"BASE 5","709":"BASE 3",
+  "703":"BASE 4","705":"BASE 4","707":"BASE 4","708":"BASE 3","709":"BASE 3",
   "714":"BASE 3","715":"BASE 4","710":"BASE 3","717":"BASE 4","718":"BASE 3",
   "719":"BASE 2","720":"BASE 3","721":"BASE 4","722":"BASE 3","723":"BASE 3",
   "724":"BASE 3","725":"BASE 4","726":"BASE 3","727":"BASE 3","728":"BASE 4",
-  "729":"BASE 1","730":"BASE 1","731":"BASE 4","732":"BASE 1","733":"BASE 5",
+  "729":"BASE 1","730":"BASE 1","731":"BASE 4","732":"BASE 1","733":"BASE 3",
   "734":"BASE 3","735":"BASE 4","736":"BASE 8","737":"BASE 3","738":"BASE 3",
   "739":"BASE 3","740":"BASE 3","741":"BASE 3","742":"BASE 3","743":"BASE 3",
-  "744":"BASE 3","745":"BASE 3","746":"BASE 4","747":"BASE 5","748":"BASE 2",
+  "744":"BASE 3","745":"BASE 3","746":"BASE 4","747":"BASE 8","748":"BASE 2",
   "749":"BASE 2","750":"BASE 3","751":"BASE 3","752":"BASE 3","753":"BASE 3",
-  "754":"BASE 3","755":"BASE 3","756":"BASE 8","757":"BASE 5","758":"BASE 3",
+  "754":"BASE 3","755":"BASE 3","756":"BASE 8","757":"BASE 3","758":"BASE 3",
 "759":"BASE 3","15":"BASE 5","17":"BASE 3","59":"BASE 5","64":"BASE 5",
   "89":"BASE 5","100":"BASE 5","157":"BASE 5","163":"BASE 5","211":"BASE 5",
   "232":"BASE 5","507":"BASE 3","510":"BASE 3"
@@ -4943,7 +5214,7 @@ function resolveDriverNameForCurrentBase(rawName){
   const base = getBaseCanonical(currentBase);
   const typed = String(rawName || "").trim();
   if (!base || !typed) return "";
-  const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
+  const pool = getDriverPoolForBase(base);
   const found = pool.find(n => norm(n) === norm(typed));
   return found || typed;
 }
@@ -4998,7 +5269,7 @@ function getRemainingDriversCountForDate(dateIso, baseValue = currentBase, sourc
   const canonicalBase = getBaseCanonical(baseValue);
   if (!canonicalBase) return 0;
 
-  const pool = driversByBase[canonicalBase] || driversByBase[formatBaseLabel(canonicalBase)] || [];
+  const pool = getDriverPoolForBase(canonicalBase);
   if (!pool.length) return 0;
 
   const fechaKey = sourceRows === rows ? getFechaKey() : getFechaKeyFromArray(rowsList);
@@ -6154,7 +6425,7 @@ function fillStartBases(){
   Array.from(allBases.keys()).sort((a,b)=>String(a).localeCompare(String(b), undefined, {numeric: true})).forEach(canonical=>{
     const op = document.createElement("option");
     op.value = canonical;
-    const count = (driversByBase[canonical] || driversByBase[formatBaseLabel(canonical)] || []).length || 0;
+    const count = getDriverPoolForBase(canonical).length || 0;
     op.textContent = `${allBases.get(canonical)} (${count} conductores)`;
     startBaseSelect.appendChild(op);
   });
@@ -6185,20 +6456,53 @@ function rebuildAssigned(){
   });
 }
 
+// Bases de las que se toman conductores al trabajar en `base`: la propia mas
+// las configuradas en EXTRA_DRIVER_BASES.
+function getDriverBasesForBase(base){
+  const canonical = getBaseCanonical(base);
+  if (!canonical) return [];
+  return [canonical, ...(EXTRA_DRIVER_BASES[canonical] || [])];
+}
+
+// Lista de conductores de una base, incluidos los de sus bases adicionales.
+// Sustituye al patron driversByBase[base] || driversByBase[formatBaseLabel(base)].
+function getDriverPoolForBase(base){
+  const pool = [];
+  const seen = new Set();
+  getDriverBasesForBase(base).forEach(b => {
+    const list = driversByBase[b] || driversByBase[formatBaseLabel(b)] || [];
+    list.forEach(nombre => {
+      const key = norm(nombre);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      pool.push(nombre);
+    });
+  });
+  return pool;
+}
+
 function getAvailableDriversForBase(base){
   base = getBaseCanonical(base);
   if(!base) return [];
-  const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
-  const used = assignedByBase[base] || assignedByBase[formatBaseLabel(base)] || new Set();
+  const relatedBases = getDriverBasesForBase(base);
+  const pool = getDriverPoolForBase(base);
+
+  // Ya asignados: se revisan todas las bases del pool para no ofrecer dos veces
+  // a un conductor que ya esta puesto en un carro de su base de origen.
+  const used = new Set();
+  relatedBases.forEach(b => {
+    const set = assignedByBase[b] || assignedByBase[formatBaseLabel(b)] || null;
+    if (set) set.forEach(nombre => used.add(nombre));
+  });
   const selectedDate = getActiveSelectedDateISO();
-  
-  // Excluir conductores en novedades de la misma base y misma fecha operativa.
+
+  // Excluir conductores en novedades de esas bases y misma fecha operativa.
   const enNovedades = new Set(
     novedades
-      .filter(n => sameBase(n.base, base) && (!selectedDate || normalizeDateToISO(n.fecha) === selectedDate))
+      .filter(n => relatedBases.some(b => sameBase(n.base, b)) && (!selectedDate || normalizeDateToISO(n.fecha) === selectedDate))
       .map(n => norm(n.nombre))
   );
-  
+
   return pool.filter(d => !used.has(norm(d)) && !enNovedades.has(norm(d)));
 }
 
@@ -6233,7 +6537,7 @@ async function addNovedadByName(rawName){
     return false;
   }
 
-  const pool = driversByBase[base] || driversByBase[formatBaseLabel(base)] || [];
+  const pool = getDriverPoolForBase(base);
   const matched = pool.find(name => norm(name) === norm(typed));
   if (!matched) {
     showToast(`El conductor "${typed}" no existe en ${formatBaseLabel(base)}.`, "warn");
@@ -6806,7 +7110,7 @@ function renderTable(){
     const n = norm(h);
     return n === "VEH" || n === "VEHICULO" || n === "VEHÍCULO" || n === "MOVIL" || n === "MÓVIL";
   }) || null;
-  const vehiculoSwapEnabled = isSuperAdmin() || getBaseCanonical(currentBase) === "3";
+  const vehiculoSwapEnabled = canSwapVehiclePositions();
   const puestoKey = headers.find(h => norm(h) === "PUESTO") || null;
   const numeroKey = headers.find(h => norm(h) === "#") || null;
   const iniciaKey = headers.find(h => {

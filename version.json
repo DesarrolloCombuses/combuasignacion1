@@ -1,6 +1,6 @@
 {
-  "version": "2.8.0",
-  "buildDate": "2026-06-18",
+  "version": "2.9.0",
+  "buildDate": "2026-09-05",
   "channel": "stable",
-  "notes": "Nuevo: puedes seleccionar y subir VARIAS programaciones a la vez en 'Cargar Excel Programacion (DB nueva)'; se cargan una tras otra con aviso de progreso y resumen final. Correccion: 'Eliminar dia' ahora borra de verdad la programacion del dia seleccionado en la base en uso (programacion_filas por fecha), con confirmacion y refresco de la vista. Incluye la actualizacion automatica (2.7.1) y los arreglos de guardado (2.7.0)."
+  "notes": "Nuevo: la fecha de 'Turnos del dia' se elige en un calendario desplegable que muestra el mes en curso y pinta los dias que ya tienen programacion cargada; se cierra solo al elegir el dia y esta adaptado a celular. Cambios de flota: los vehiculos 708, 733 y 757 pasan a BASE 3 y el 747 pasa a BASE 8 (sus fichos y turnos los siguen). BASE 4 ya puede mover la posicion de los vehiculos y sus fichos, igual que BASE 3, y al entrar recibe un aviso que se lo explica. BASE 3 ve ahora tambien los conductores de BASE 5 para poder asignarlos a los carros trasladados."
 }

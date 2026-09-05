@@ -18,6 +18,22 @@ Convencion de version:
 
 ---
 
+## [2.9.0] - 2026-09-05
+
+### Anadido
+- **Calendario para elegir la fecha en "Turnos del dia"**: el desplegable con la lista larga de fechas se reemplaza por un **calendario desplegable**. Abre en el **mes en curso**, **pinta en azul los dias que ya tienen programacion cargada** en la base y deja apagados (no clicables) los que no la tienen, de modo que se ve de un vistazo **hasta que dia esta cargado el mes**. Se **cierra solo al elegir el dia** (tambien al pulsar fuera o con Escape), permite navegar entre meses y volver al mes actual, y junto al boton se lee "Programacion hasta el DD/MM/AAAA" sin necesidad de abrirlo. Esta **adaptado a celular**: ocupa el ancho de la pantalla y agranda los dias para el dedo. El `<select>` original se conserva oculto como fuente de datos, por lo que el resto del flujo (guardado, filtros, exportaciones) no cambia.
+- **BASE 4 puede mover la posicion de los vehiculos y sus fichos**: hasta ahora solo BASE 3 (y el super administrador) podian arrastrar un vehiculo sobre otro para intercambiar su posicion. Ahora BASE 4 tiene exactamente la misma funcion. Las bases habilitadas quedan en una sola lista (`VEHICLE_SWAP_BASES`), de forma que habilitar otra base en el futuro es un unico cambio. Ademas, al iniciar sesion **BASE 4 ve un aviso** que le explica que ya puede arrastrar un vehiculo sobre otro, que el conductor viaja con el carro y que en los FICHO el carro se mueve pero el ficho queda sin conductor. El aviso aparece **una sola vez por usuario** (se recuerda en el navegador); para volver a mostrarlo basta con subir `SWAP_NOTICE_VERSION`.
+- **BASE 3 ve tambien los conductores de BASE 5**: al haber pasado varios vehiculos de BASE 5 a BASE 3, sus conductores siguen registrados en BASE 5 (la base de un conductor se toma de su correo en el Google Sheets). Para que se puedan asignar sin esperar ese cambio, **BASE 3 muestra ahora su lista de conductores mas la de BASE 5**, sin duplicados. Se respetan las mismas reglas: un conductor ya asignado en un carro de **cualquiera** de las dos bases deja de ofrecerse, y quien tenga novedad ese dia (incapacidad, permiso, descanso...) tampoco aparece. BASE 5 sigue viendo unicamente los suyos. La relacion queda en una sola lista (`EXTRA_DRIVER_BASES`), facil de ampliar o revertir.
+
+### Cambiado
+- **Reasignacion de vehiculos entre bases**: los internos **708, 733 y 757 pasan de BASE 5 a BASE 3**, y el **747 pasa de BASE 5 a BASE 8**. Sus **fichos, turnos y despachos los siguen automaticamente**, porque la base de cada fila se deduce del vehiculo. BASE 5 queda solo con los internos cortos (15, 59, 64, 89, 100, 157, 163, 211, 232).
+
+### Notas
+- El cambio de base de un vehiculo aplica a las **programaciones que se importen a partir de ahora**; los dias ya guardados conservan la base con la que se cargaron. Si se necesita que un dia antiguo refleje el cambio, hay que volver a subir ese Excel.
+- El **traslado de los conductores** entre bases no se hace en la aplicacion: la base de cada conductor se toma de su correo en la hoja de Google Sheets (`BASE n`), por lo que debe actualizarse alli.
+
+---
+
 ## [2.8.0] - 2026-06-18
 
 ### Anadido

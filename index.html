@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=2.8.0">
+<link rel="stylesheet" href="css/styles.css?v=2.9.0">
 <style>
   .parque-foto-link { font-size:12px; }
 
@@ -360,12 +360,38 @@
             <span class="workflow-note" id="workflowNote2">Vista independiente de programacion desde la base nueva.</span>
           </div>
           <div class="row" style="margin-bottom:10px">
-            <select id="filterDate2">
+            <select id="filterDate2" class="cal2-native" aria-hidden="true" tabindex="-1">
               <option value="">Selecciona fecha...</option>
             </select>
             <button class="btn btn-ghost" id="clearFilter2">Limpiar filtro</button>
             <button class="btn btn-ghost" id="btnRefreshProgramacion2">Actualizar DB nueva</button>
             <span class="muted">Fuente: proyecto nuevo de Supabase.</span>
+          </div>
+          <div class="cal2-wrap" id="dateCalendar2">
+            <button type="button" class="cal2-trigger" id="cal2Trigger" aria-haspopup="dialog" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>
+              </svg>
+              <span id="cal2TriggerText">Selecciona fecha...</span>
+              <span class="cal2-caret" aria-hidden="true">&#9662;</span>
+            </button>
+            <span class="cal2-hint" id="cal2Hint"></span>
+            <div class="cal2-pop" id="cal2Pop" role="dialog" aria-label="Selecciona una fecha" hidden>
+              <div class="cal2-head">
+                <button type="button" class="cal2-nav" id="cal2Prev" aria-label="Mes anterior">&lsaquo;</button>
+                <div class="cal2-title" id="cal2Title">-</div>
+                <button type="button" class="cal2-nav" id="cal2Next" aria-label="Mes siguiente">&rsaquo;</button>
+                <button type="button" class="cal2-today" id="cal2Today">Hoy</button>
+              </div>
+              <div class="cal2-dows" aria-hidden="true">
+                <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
+              </div>
+              <div class="cal2-grid" id="cal2Grid"></div>
+              <div class="cal2-foot">
+                <span class="cal2-legend"><i class="cal2-dot is-on"></i>Con programacion</span>
+                <span class="cal2-status" id="cal2Status"></span>
+              </div>
+            </div>
           </div>
           <div id="gridViewport2" style="overflow:auto;max-height:60vh">
             <table id="grid2"><thead></thead><tbody></tbody></table>
@@ -1081,9 +1107,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=2.8.0"></script>
+<script src="js/functions.js?v=2.9.0"></script>
 <script src="js/main.js?v=20260512-novedades-refresh"></script>
-<script src="js/pwa.js?v=2.8.0"></script>
+<script src="js/pwa.js?v=2.9.0"></script>
 </body>
 </html>
 

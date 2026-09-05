@@ -1489,3 +1489,143 @@ td, th{ overflow-wrap:anywhere; }
   font-weight:600;
   line-height:1.2;
 }
+/* ---------- Calendario de fecha (Turnos del dia / DB nueva) ----------
+   Desplegable compacto que sustituye al <select id="filterDate2">, el cual
+   queda oculto como fuente de verdad. Se abre al pulsar el boton y se cierra
+   al elegir un dia. Los dias con programacion en la base se pintan y son
+   clicables; los que no tienen quedan apagados y deshabilitados. */
+.cal2-native{
+  position:absolute;
+  width:1px; height:1px;
+  padding:0; margin:-1px; border:0;
+  overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%);
+  white-space:nowrap;
+}
+
+.cal2-wrap{
+  position:relative;
+  display:inline-flex; align-items:center; flex-wrap:wrap; gap:9px;
+}
+
+/* ---- Boton que abre el calendario ---- */
+.cal2-trigger{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 12px;
+  border:1px solid var(--color-border-strong); border-radius:10px;
+  background:var(--color-surface); color:var(--color-text);
+  font-size:13.5px; font-weight:600; line-height:1.2;
+  cursor:pointer;
+  transition:border-color .15s, box-shadow .15s, background .15s;
+}
+.cal2-trigger:hover{ border-color:var(--color-border-focus); }
+.cal2-trigger:focus-visible{
+  outline:none;
+  border-color:var(--color-primary-600);
+  box-shadow:0 0 0 3px rgba(37,99,235,.15);
+}
+.cal2-trigger svg{ width:16px; height:16px; flex:0 0 16px; color:var(--color-primary-600); }
+.cal2-caret{ font-size:10px; color:var(--color-text-mut); margin-left:2px; }
+.cal2-wrap.is-open .cal2-trigger{
+  border-color:var(--color-primary-600);
+  box-shadow:0 0 0 3px rgba(37,99,235,.15);
+}
+.cal2-hint{ font-size:12px; color:var(--color-text-mut); }
+
+/* ---- Panel flotante ---- */
+.cal2-pop{
+  position:absolute; top:calc(100% + 6px); left:0; z-index:60;
+  background:var(--color-surface);
+  border:1px solid var(--color-border); border-radius:12px;
+  padding:10px 11px 8px;
+  box-shadow:0 12px 32px rgba(15,23,42,.16);
+}
+
+.cal2-head{ display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.cal2-title{
+  flex:1; min-width:135px;
+  font-weight:700; font-size:13.5px; color:var(--color-text); text-align:center;
+}
+.cal2-nav{
+  width:26px; height:26px; flex:0 0 26px;
+  display:grid; place-items:center;
+  border:1px solid var(--color-border); border-radius:8px;
+  background:var(--color-surface); color:var(--color-text-2);
+  font-size:16px; line-height:1; cursor:pointer;
+  transition:background .15s, border-color .15s, color .15s;
+}
+.cal2-today{
+  border:1px solid var(--color-border); border-radius:8px;
+  background:var(--color-surface); color:var(--color-text-2);
+  font-size:11.5px; font-weight:600; padding:5px 9px; cursor:pointer;
+  transition:background .15s, border-color .15s, color .15s;
+}
+.cal2-nav:hover, .cal2-today:hover{
+  background:var(--color-primary-50);
+  border-color:var(--color-border-focus);
+  color:var(--color-primary-600);
+}
+
+.cal2-dows, .cal2-grid{ display:grid; grid-template-columns:repeat(7, 32px); gap:3px; }
+.cal2-dows{ margin-bottom:3px; }
+.cal2-dows span{
+  text-align:center; font-size:10px; font-weight:700;
+  color:var(--color-text-mut); text-transform:uppercase; letter-spacing:.03em;
+}
+
+.cal2-day{
+  height:29px;
+  display:grid; place-items:center;
+  border:1px solid transparent; border-radius:8px;
+  background:var(--color-surface-2); color:var(--color-text-mut);
+  font-size:12.5px; font-weight:600;
+  padding:0; cursor:default;
+  transition:background .15s, color .15s, border-color .15s;
+}
+.cal2-day.is-empty{ background:transparent; }
+/* Dia SIN programacion cargada. */
+.cal2-day.is-off{ color:var(--color-border-strong); cursor:not-allowed; }
+/* Dia CON programacion en la base: clicable. */
+.cal2-day.is-on{
+  background:var(--color-primary-50);
+  border-color:var(--color-primary-200);
+  color:var(--color-primary-700);
+  cursor:pointer;
+}
+.cal2-day.is-on:hover{ background:var(--color-primary-100); border-color:var(--color-primary-600); }
+.cal2-day.is-today{ box-shadow:inset 0 0 0 2px var(--color-border-strong); }
+.cal2-day.is-selected{
+  background:var(--color-primary);
+  border-color:var(--color-primary-700);
+  color:var(--color-text-inv);
+}
+.cal2-day.is-selected:hover{ background:var(--color-primary-700); color:var(--color-text-inv); }
+
+.cal2-foot{
+  display:flex; align-items:center; flex-wrap:wrap; gap:9px;
+  margin-top:8px; padding-top:7px;
+  border-top:1px solid var(--color-border);
+  font-size:11px; color:var(--color-text-mut);
+  max-width:238px;
+}
+.cal2-legend{ display:inline-flex; align-items:center; gap:5px; }
+.cal2-dot{
+  width:9px; height:9px; border-radius:3px;
+  border:1px solid var(--color-primary-200); background:var(--color-primary-50);
+}
+.cal2-status{ font-weight:600; color:var(--color-text-2); }
+
+/* ---- Movil: celdas mas grandes para el dedo y panel que no se sale ---- */
+@media (max-width: 640px){
+  .cal2-wrap{ width:100%; }
+  .cal2-trigger{ flex:1 1 auto; justify-content:space-between; padding:10px 12px; font-size:14px; }
+  .cal2-hint{ flex:1 1 100%; }
+  .cal2-pop{
+    left:0; right:0;
+    max-width:calc(100vw - 24px);
+    padding:12px;
+  }
+  .cal2-dows, .cal2-grid{ grid-template-columns:repeat(7, 1fr); gap:4px; }
+  .cal2-day{ height:38px; font-size:13.5px; }
+  .cal2-nav{ width:32px; height:32px; flex:0 0 32px; }
+  .cal2-foot{ max-width:none; }
+}
