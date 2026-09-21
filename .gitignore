@@ -22,3 +22,8 @@ node_modules/
 .env
 .env.local
 *.local
+
+# Supabase CLI: estado local, no va al repo
+supabase/.temp/
+supabase/.branches/
+.env.local
