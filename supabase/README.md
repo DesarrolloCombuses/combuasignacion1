@@ -16,6 +16,7 @@ Sistema del cliente ──[X-API-Key]──> Edge Function ──[service_role]�
                                           ├── valida la credencial (SHA-256)
                                           ├── impone la base autorizada
                                           ├── aplica el límite por hora
+                                          ├── frena a quien insiste sin credencial
                                           ├── limpia los datos sensibles
                                           └── registra el acceso
 ```
@@ -58,6 +59,36 @@ estado nuevo que se invente mañana, cae automáticamente en `AUSENCIA`.
 > `row_data` en crudo filtraría el dato sin necesidad de tocar la tabla de
 > novedades. De eso se encarga `nombreConductor()` en `index.ts`; si se
 > modifica el mapeo de campos, hay que mantener esa limpieza.
+
+---
+
+## El freno por IP
+
+El límite por hora se cuenta **por cliente**, así que no cubre a quien no tiene
+credencial: cualquiera puede lanzar peticiones con keys inventadas y, aunque no
+vea nada, cada intento consulta la base y escribe en `api_accesos`. No expone
+datos, pero engorda la tabla y gasta invocaciones.
+
+Pasados **20 intentos fallidos en 10 minutos** desde la misma IP se responde
+`429` y **se deja de registrar** — dejar de escribir es justo el objetivo.
+
+Dos detalles de diseño que conviene no deshacer:
+
+- **El conteo se consulta solo cuando la credencial ya falló.** Una petición
+  legítima no paga esa consulta.
+- **Una credencial válida nunca llega a esa comprobación.** Aunque alguien esté
+  aporreando la API desde la misma IP (una oficina compartida, por ejemplo), el
+  cliente entra igual. El freno castiga el fallo, no la procedencia.
+
+> **Por qué no va en memoria.** El primer intento llevó el contador en un `Map`
+> del proceso y **no frenó absolutamente nada**: 25 intentos seguidos y ni un
+> solo `429`. Cada petición cae en una instancia nueva de la función, así que el
+> contador nacía vacío siempre. En un entorno efímero el único estado
+> compartido es la base de datos.
+
+El índice que lo hace barato está en
+[`migrations/20260921b_freno_por_ip.sql`](migrations/20260921b_freno_por_ip.sql).
+Es parcial (`where status >= 400`), así que solo indexa los fallos.
 
 ---
 

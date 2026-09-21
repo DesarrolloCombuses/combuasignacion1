@@ -211,6 +211,48 @@ function hoyIso(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Freno para las peticiones SIN credencial valida
+//
+// El limite por hora normal se cuenta por cliente, asi que no cubre a quien no
+// tiene credencial: cualquiera puede lanzar peticiones con keys inventadas y,
+// aunque no vea nada, cada intento consulta la base y escribe una fila en
+// api_accesos. No expone datos, pero engorda la tabla y gasta invocaciones.
+//
+// La cuenta va contra api_accesos y NO en memoria. Un primer intento lo hizo
+// con un Map del proceso y no freno absolutamente nada: cada peticion cae en
+// una instancia nueva de la funcion, asi que el contador nacia vacio siempre.
+// En un entorno efimero, el unico estado compartido es la base.
+//
+// El coste esta puesto donde toca: la consulta solo se hace cuando la
+// credencial ya fallo. Una peticion legitima no la paga nunca.
+// ---------------------------------------------------------------------------
+const FALLOS_MAX_IP = 20;                      // intentos fallidos permitidos
+const VENTANA_FALLOS_MS = 10 * 60 * 1000;      // dentro de esta ventana
+
+function ipDe(req: Request): string {
+  return (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || "desconocida";
+}
+
+/** Cuantos intentos fallidos lleva esta IP en la ventana reciente. */
+async function fallosRecientes(db: ReturnType<typeof createClient>, ip: string): Promise<number> {
+  if (ip === "desconocida") return 0;
+  const desde = new Date(Date.now() - VENTANA_FALLOS_MS).toISOString();
+  const { count, error: errCount } = await db
+    .from("api_accesos")
+    .select("id", { count: "exact", head: true })
+    .eq("ip", ip)
+    .gte("status", 400)
+    .gte("creado_en", desde);
+  if (errCount) {
+    // Si no se puede contar, no se frena: preferible dejar pasar que tumbar
+    // el servicio por un fallo del contador.
+    console.error("[api-externa] no se pudo contar intentos fallidos:", errCount.message);
+    return 0;
+  }
+  return count ?? 0;
+}
+
+// ---------------------------------------------------------------------------
 // Autenticacion y control de uso
 // ---------------------------------------------------------------------------
 interface Cliente {
@@ -374,6 +416,35 @@ async function leerTurnos(
   return turnos;
 }
 
+/**
+ * Cuenta cuanto falta por asignar. Es lo que permite al cliente distinguir una
+ * programacion a medio hacer de una terminada: sin esto, un turno sin conductor
+ * a media manana parece un turno que va a quedar descubierto, cuando lo normal
+ * es que todavia no lo hayan asignado.
+ *
+ * Un puesto tiene una o dos jornadas segun si trae segunda hora de inicio, asi
+ * que se cuenta por jornada y no por puesto.
+ */
+function resumirAsignacion(turnos: Turno[]) {
+  let totales = 0;
+  let asignados = 0;
+  for (const t of turnos) {
+    totales += 1;
+    if (t.conductor) asignados += 1;
+    if (t.inicia_2) {
+      totales += 1;
+      if (t.conductor_2) asignados += 1;
+    }
+  }
+  const faltan = totales - asignados;
+  return {
+    turnos_totales: totales,
+    turnos_asignados: asignados,
+    turnos_sin_asignar: faltan,
+    completa: totales > 0 && faltan === 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Enrutado
 // ---------------------------------------------------------------------------
@@ -393,11 +464,22 @@ Deno.serve(async (req: Request) => {
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
 
+  const ip = ipDe(req);
   const auth = await autenticar(req, db);
   if (auth.fallo) {
+    // La credencial ya fallo: ahora si vale la pena mirar cuantos intentos
+    // lleva esta IP.
+    const fallos = await fallosRecientes(db, ip);
+    if (fallos >= FALLOS_MAX_IP) {
+      // No se registra este intento: dejar de escribir es el objetivo.
+      return error(429, "demasiados_intentos",
+        "Demasiados intentos fallidos. Espera unos minutos.",
+        { "Retry-After": "600" });
+    }
     await registrarAcceso(db, null, req, endpoint, auth.fallo.status, null, null);
     return auth.fallo;
   }
+
   const cliente = auth.cliente!;
   const bases = cliente.bases;
 
@@ -408,12 +490,15 @@ Deno.serve(async (req: Request) => {
       const fecha = fechaValida(url.searchParams.get("fecha")) ?? hoyIso();
       const turnos = await leerTurnos(db, bases, fecha);
       const huella = await sha256(JSON.stringify(turnos));
+      const resumen = resumirAsignacion(turnos);
       const cuerpo = {
         version: VERSION,
         bases,
         fecha,
         hay_programacion: turnos.length > 0,
         total_turnos: turnos.length,
+        // Para saber si la programacion esta terminada sin pedirla entera.
+        ...resumen,
         huella,                       // cambia si cambio cualquier turno
         consultado_en: new Date().toISOString(),
       };
@@ -453,9 +538,11 @@ Deno.serve(async (req: Request) => {
         bases,
         fecha,
         // La programacion se sigue editando durante el dia: lo que se entrega
-        // es el estado actual, no una version cerrada.
+        // es el estado actual, no una version cerrada. El resumen dice cuanto
+        // falta, que es lo que permite interpretarla bien.
         provisional: true,
         total: turnos.length,
+        resumen: resumirAsignacion(turnos),
         turnos,
         consultado_en: new Date().toISOString(),
       };
@@ -493,6 +580,7 @@ Deno.serve(async (req: Request) => {
         bases,
         fecha,
         provisional: true,
+        resumen: resumirAsignacion(turnos),
         total_puestos: detalle.length,
         puestos_cubiertos: detalle.filter((d) => d.cubierto).length,
         puestos_sin_cubrir: detalle.filter((d) => !d.cubierto).length,

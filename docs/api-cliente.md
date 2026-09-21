@@ -67,7 +67,11 @@ Metadatos baratos. Sirve para saber si vale la pena pedir el resto.
   "bases": ["BASE 3"],
   "fecha": "2026-09-21",
   "hay_programacion": true,
-  "total_turnos": 34,
+  "total_turnos": 38,
+  "turnos_totales": 69,
+  "turnos_asignados": 60,
+  "turnos_sin_asignar": 9,
+  "completa": false,
   "huella": "9f2a1c...",
   "consultado_en": "2026-09-21T14:32:11.000Z"
 }
@@ -89,7 +93,13 @@ Turnos del día.
   "bases": ["BASE 3"],
   "fecha": "2026-09-21",
   "provisional": true,
-  "total": 34,
+  "total": 38,
+  "resumen": {
+    "turnos_totales": 69,
+    "turnos_asignados": 60,
+    "turnos_sin_asignar": 9,
+    "completa": false
+  },
   "turnos": [
     {
       "puesto": 1,
@@ -105,11 +115,22 @@ Turnos del día.
 }
 ```
 
-**`provisional: true` importa.** La programación se sigue editando durante el
-día: lo que reciben es el estado en ese momento, no una versión cerrada. Un
-turno sin conductor puede significar que todavía no lo han asignado, no que
-vaya a quedar sin cubrir. Consúltenlo de nuevo antes de tomar decisiones sobre
-la operación del día.
+**Miren siempre el `resumen` antes de interpretar los turnos.** La programación
+se sigue editando durante el día, así que un turno sin conductor casi nunca
+significa "va a quedar descubierto": lo normal es que todavía no lo hayan
+asignado. El resumen es lo que permite distinguirlo:
+
+| Campo | Qué dice |
+|-------|----------|
+| `turnos_totales` | Jornadas del día (un puesto con dos turnos cuenta dos) |
+| `turnos_asignados` | Las que ya tienen conductor |
+| `turnos_sin_asignar` | Las que faltan por asignar |
+| `completa` | `true` solo cuando no falta ninguna |
+
+Con `completa: false` la programación está a medio hacer: conviene volver a
+consultar más tarde antes de tomar decisiones sobre la operación del día.
+`/estado` trae estos mismos campos, así que pueden saber si ya está terminada
+sin descargar la programación entera.
 
 `conductor` y `conductor_2` vienen en `null` cuando el turno aún no tiene a
 nadie asignado. `inicia_2` y `conductor_2` van en `null` si ese puesto solo
@@ -211,6 +232,7 @@ Todos llegan con esta forma:
 | 403 | `sin_alcance` | La credencial no tiene base asignada. Contactar. |
 | 405 | `metodo_no_permitido` | Solo se admite `GET`. |
 | 429 | `limite_alcanzado` | Esperar lo que indique `Retry-After` y espaciar las consultas. |
+| 429 | `demasiados_intentos` | Se acumularon intentos con credencial inválida desde su IP. Revisar que la credencial esté bien configurada y esperar unos minutos. |
 | 500 | `error_interno` | Fallo del lado nuestro. Reintentar con espera progresiva. |
 
 **Reintentos:** ante un `429` o `500`, esperar y reintentar de forma
