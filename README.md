@@ -45,8 +45,49 @@ El cliente sigue este flujo cada vez que abre la app:
 7. Al hacer click, el cliente envia `SKIP_WAITING` al SW y la pagina se recarga
    con la nueva version activa.
 
-Es decir: **el unico archivo que necesitas editar al publicar es `version.json`**
-(y opcionalmente `CHANGELOG.md`).
+### El numero de version vive en CUATRO sitios
+
+No basta con `version.json`. Si uno de estos se queda atras, los usuarios
+**siguen ejecutando el codigo viejo** aunque la pildora anuncie la version nueva:
+
+| Archivo | Que contiene | Por que importa |
+|---------|--------------|-----------------|
+| `version.json` | `version` y `minVersion` | Lo que la app anuncia y revisa cada 2 min |
+| `index.html` | los `?v=` de css/js | **Son los que rompen el cache del navegador** |
+| `js/main.js` | `APP_CODE_VERSION` | La version del codigo que se esta ejecutando DE VERDAD |
+| `CHANGELOG.md` | la entrada `## [x.y.z]` | Historico |
+
+> El caso peligroso: `version.json` dice `2.9.1` pero `index.html` sigue pidiendo
+> `js/functions.js?v=2.9.0`. Esa URL ya esta en cache, el Service Worker la sirve
+> tal cual (`stale-while-revalidate`) y el usuario **trabaja con el codigo viejo
+> mientras la pildora dice que esta actualizado**. Por eso `APP_CODE_VERSION`
+> viaja dentro del propio codigo: `pwa.js` la compara con `version.json` y, si no
+> coinciden, borra caches, da de baja el Service Worker y recarga limpio.
+
+Para no depender de acordarse, **usa el script**:
+
+```bash
+python bump.py 2.9.2                # actualiza los tres archivos de codigo
+python bump.py 2.9.2 --obligatoria   # ademas sube minVersion: nadie se queda atras
+python bump.py --check               # verifica que los cuatro coincidan
+```
+
+### Actualizacion obligatoria
+
+`minVersion` en `version.json` marca el piso: cualquier pestana abierta con una
+version **inferior** recibe una actualizacion que **no se puede aplazar** (no
+muestra "Mas tarde" y no espera a que el usuario deje de escribir).
+
+Usala cuando la version anterior pueda **hacer dano** — por ejemplo, corromper o
+borrar datos —, no para cambios cosmeticos:
+
+```json
+{ "version": "2.9.2", "minVersion": "2.9.2" }
+```
+
+Si solo es una mejora, deja `minVersion` en la ultima version que si era segura;
+la actualizacion seguira siendo automatica, pero cedera el paso a quien este
+escribiendo (hasta 60 segundos).
 
 ---
 
@@ -62,16 +103,15 @@ Cada vez que hagas cambios y quieras que los usuarios los reciban:
 | Nueva funcionalidad sin romper flujos existentes             | **MINOR** |
 | Cambios que rompen flujos o requieren migracion de datos     | **MAJOR** |
 
-### 2. Edita `version.json`
+### 2. Sube la version
 
-```json
-{
-  "version": "1.1.0",
-  "buildDate": "2026-06-03",
-  "channel": "stable",
-  "notes": "Resumen muy corto de la version."
-}
+```bash
+python bump.py 1.1.0                # o --obligatoria si la anterior hace dano
 ```
+
+Actualiza `version.json`, los `?v=` de `index.html` y `APP_CODE_VERSION` de
+`js/main.js` de una sola vez. Luego edita a mano el campo `notes` de
+`version.json` con un resumen corto, que es lo que leen los usuarios.
 
 ### 3. Anade una entrada al `CHANGELOG.md`
 
@@ -97,6 +137,7 @@ const SHELL_ASSETS = [
 ### 5. Sube los cambios a GitHub
 
 ```bash
+python bump.py --check              # que los cuatro archivos coincidan
 git add .
 git commit -m "v1.1.0 - resumen breve"
 git tag v1.1.0

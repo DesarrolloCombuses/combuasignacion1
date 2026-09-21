@@ -396,6 +396,13 @@ function showAssignmentConfirmedModal(items){
       "opacity:0", "transition:opacity .15s ease", "pointer-events:none"
     ].join(";");
     document.body.appendChild(assignmentConfirmModalEl);
+    // Red de seguridad, por si algun camino lo dejara encendido: al volver a la
+    // pantalla, si ya no hay temporizador de cierre pendiente, se apaga.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !assignmentConfirmModalTimer) {
+        hideAssignmentConfirmedModal();
+      }
+    });
   }
   const esc = (s) => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -413,13 +420,37 @@ function showAssignmentConfirmedModal(items){
       </div>
       ${detalle}
     </div>`;
-  requestAnimationFrame(() => {
-    if (assignmentConfirmModalEl) assignmentConfirmModalEl.style.opacity = "1";
-  });
+  // Se muestra forzando un reflow, NO con requestAnimationFrame: si la pestana
+  // esta en segundo plano el navegador congela los rAF, pero no los setTimeout.
+  // Antes eso invertia el orden (primero corria el cierre de 1600 ms y despues,
+  // al volver a la pestana, el rAF lo volvia a encender) y el velo se quedaba
+  // pegado en pantalla sin nadie que lo apagara.
+  assignmentConfirmModalEl.style.display = "flex";
+  void assignmentConfirmModalEl.offsetHeight;
+  assignmentConfirmModalEl.style.opacity = "1";
   if (assignmentConfirmModalTimer) clearTimeout(assignmentConfirmModalTimer);
   assignmentConfirmModalTimer = setTimeout(() => {
-    if (assignmentConfirmModalEl) assignmentConfirmModalEl.style.opacity = "0";
+    assignmentConfirmModalTimer = null;
+    hideAssignmentConfirmedModal();
   }, 1600);
+}
+
+// Lo apaga y ademas lo saca de la pantalla con display:none. Antes solo se
+// bajaba la opacidad a 0: el nodo seguia cubriendo la pagina y cualquier cosa
+// que volviera a subir la opacidad lo dejaba visible para siempre.
+function hideAssignmentConfirmedModal(){
+  if (assignmentConfirmModalTimer) {
+    clearTimeout(assignmentConfirmModalTimer);
+    assignmentConfirmModalTimer = null;
+  }
+  const el = assignmentConfirmModalEl;
+  if (!el) return;
+  el.style.opacity = "0";
+  setTimeout(() => {
+    if (assignmentConfirmModalEl === el && el.style.opacity === "0") {
+      el.style.display = "none";
+    }
+  }, 220);
 }
 
 function getSwapNoticeStorageKey(){
@@ -1255,6 +1286,72 @@ function stableStringify(value){
   if (Array.isArray(value)) return `[${value.map(v => stableStringify(v)).join(",")}]`;
   const keys = Object.keys(value).sort((a, b) => a.localeCompare(b));
   return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+}
+
+/* ---------- Foto de referencia de la DB nueva ----------
+   Guarda como se leyeron las filas de la base, para poder distinguir lo que
+   ESTE equipo cambio de lo que solo esta de paso en memoria. Hace falta para
+   el usuario que trabaja SIN abrir una base (ve todas a la vez): ahi no se
+   puede acotar el guardado por base, asi que se acota a lo que de verdad
+   cambio. Regla de seguridad: si no hay foto, se considera que todo cambio y
+   se escribe todo, que es el comportamiento de siempre -- nunca al reves, para
+   que un fallo aqui no deje cambios sin guardar. */
+let rowsTargetBaseline = new Map();   // row_key -> contenido tal como se leyo
+
+function rowFingerprint(row){
+  return stableStringify(sanitizeRowForStorage(row || {}));
+}
+
+function snapshotTargetRowsBaseline(rowsInput){
+  const map = new Map();
+  (Array.isArray(rowsInput) ? rowsInput : []).forEach(row => {
+    const key = buildProgramacionRowKey(row);
+    if (key) map.set(key, rowFingerprint(row));
+  });
+  rowsTargetBaseline = map;
+}
+
+function clearTargetRowsBaseline(){
+  rowsTargetBaseline = new Map();
+}
+
+// Sin foto, todo cuenta como cambiado (se escribe todo, como antes).
+function isTargetRowChanged(row){
+  if (rowsTargetBaseline.size === 0) return true;
+  const key = buildProgramacionRowKey(row);
+  if (!key) return true;
+  const previo = rowsTargetBaseline.get(key);
+  if (previo === undefined) return true;   // fila que no estaba: es nueva
+  return previo !== rowFingerprint(row);
+}
+
+// Filas que estaban en la base al cargar y ya no estan en memoria: esas si se
+// borran. Cualquier otra fila de la base se deja en paz.
+function getTargetBaselineRemovedKeys(currentRows){
+  if (rowsTargetBaseline.size === 0) return [];
+  const presentes = new Set(
+    (Array.isArray(currentRows) ? currentRows : [])
+      .map(r => buildProgramacionRowKey(r))
+      .filter(Boolean)
+  );
+  const fuera = [];
+  rowsTargetBaseline.forEach((_sig, key) => {
+    if (!presentes.has(key)) fuera.push(key);
+  });
+  return fuera;
+}
+
+// Tras un guardado confirmado, la foto se pone al dia con lo que quedo escrito;
+// si no, las mismas filas se volverian a reenviar en el siguiente guardado.
+function updateTargetBaselineAfterSave(rowsWritten, deletedKeys){
+  if (rowsTargetBaseline.size === 0) return;
+  (Array.isArray(rowsWritten) ? rowsWritten : []).forEach(row => {
+    const key = buildProgramacionRowKey(row);
+    if (key) rowsTargetBaseline.set(key, rowFingerprint(row));
+  });
+  (Array.isArray(deletedKeys) ? deletedKeys : []).forEach(key => {
+    rowsTargetBaseline.delete(key);
+  });
 }
 
 function rowsSignature(rowsInput){
@@ -2627,6 +2724,8 @@ function renderDateCalendar2(){
     setCalendar2Open(!isCalendar2Open());
   };
   bindCalendar2GlobalEvents();
+  // Cambiar de mes puede cambiar el alto (5 o 6 filas): recolocar si esta abierto.
+  if (isCalendar2Open()) positionCalendar2Pop();
 }
 
 function isCalendar2Open(){
@@ -2642,6 +2741,46 @@ function setCalendar2Open(open){
   pop.hidden = !open;
   wrap.classList.toggle("is-open", !!open);
   if (trigger) trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) positionCalendar2Pop();
+}
+
+/* Coloca el panel pegado al boton usando coordenadas de pantalla. Se abre hacia
+   abajo; si ahi no cabe completo y arriba hay mas sitio, se abre hacia arriba.
+   Si tampoco cabe entero (pantallas muy bajas) se le deja scroll propio, pero
+   nunca queda cortado ni por la ventana ni por un contenedor con overflow. */
+function positionCalendar2Pop(){
+  const pop = document.getElementById("cal2Pop");
+  const trigger = document.getElementById("cal2Trigger");
+  if (!pop || pop.hidden || !trigger) return;
+
+  const MARGEN = 8;   // aire contra el borde de la pantalla
+  const SEP = 6;      // separacion entre el boton y el panel
+  const ALTO_MIN = 180;
+
+  // Medir el alto natural: hay que soltar el max-height de una apertura previa.
+  pop.style.maxHeight = "";
+  const boton = trigger.getBoundingClientRect();
+  const anchoVista = document.documentElement.clientWidth;
+  const altoVista = document.documentElement.clientHeight;
+  const altoNatural = pop.offsetHeight;
+  const ancho = pop.offsetWidth;
+
+  const espacioAbajo = altoVista - boton.bottom - SEP - MARGEN;
+  const espacioArriba = boton.top - SEP - MARGEN;
+  const haciaArriba = altoNatural > espacioAbajo && espacioArriba > espacioAbajo;
+
+  const disponible = Math.max(haciaArriba ? espacioArriba : espacioAbajo, ALTO_MIN);
+  const alto = Math.min(altoNatural, disponible);
+  pop.style.maxHeight = `${alto}px`;
+
+  let left = boton.left;
+  if (left + ancho > anchoVista - MARGEN) left = anchoVista - MARGEN - ancho;
+  if (left < MARGEN) left = MARGEN;
+
+  const top = haciaArriba ? boton.top - SEP - alto : boton.bottom + SEP;
+
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(Math.max(MARGEN, top))}px`;
 }
 
 // Cerrar al pulsar fuera del calendario o con Escape. Se registra una sola vez.
@@ -2656,6 +2795,15 @@ function bindCalendar2GlobalEvents(){
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && isCalendar2Open()) setCalendar2Open(false);
   });
+  // El panel va en coordenadas de pantalla: si el boton se mueve hay que
+  // seguirlo. El scroll se escucha en captura para enterarse tambien del que
+  // ocurre dentro de contenedores (la tabla, el panel de la pestana).
+  window.addEventListener("resize", () => {
+    if (isCalendar2Open()) positionCalendar2Pop();
+  });
+  window.addEventListener("scroll", () => {
+    if (isCalendar2Open()) positionCalendar2Pop();
+  }, true);
 }
 
 async function loadTargetDateCatalogFromSupabase(force = false){
@@ -2698,6 +2846,9 @@ async function loadTargetDateCatalogFromSupabase(force = false){
 }
 
 async function loadTargetProgramacionByDate(dateIsoInput){
+  // La foto anterior deja de valer en cuanto se recarga: se limpia al entrar y
+  // se vuelve a tomar si la carga llega a buen puerto.
+  clearTargetRowsBaseline();
   const dateIso = normalizeDateToISO(dateIsoInput || "");
   if (!dateIso) {
     rowsTarget = [];
@@ -2763,6 +2914,9 @@ async function loadTargetProgramacionByDate(dateIsoInput){
 
   const prepared = normalizeProgramacionRows(rowsForSelectedProgramacion);
   rowsTarget = dedupeProgramacionRows(prepared.normalized).rows;
+  // La foto se toma ANTES de sanear los FICHO: asi, si el saneo cambia algo,
+  // ese cambio se detecta y se guarda como cualquier otra edicion.
+  snapshotTargetRowsBaseline(rowsTarget);
   {
     const { key1, key2 } = getConductorKeysFromArray(rowsTarget);
     sanitizeFichoConductorSlots(rowsTarget, key1, key2);
@@ -2782,6 +2936,7 @@ async function loadTargetProgramacionByDate(dateIsoInput){
 }
 
 async function loadLatestProgramacionFromTargetSupabase(){
+  clearTargetRowsBaseline();
   await loadTargetDateCatalogFromSupabase();
   let query = programacionesTargetClient
     .from("programaciones")
@@ -2820,6 +2975,7 @@ async function loadLatestProgramacionFromTargetSupabase(){
   }
   const prepared = normalizeProgramacionRows(nextRows);
   rowsTarget = dedupeProgramacionRows(prepared.normalized).rows;
+  snapshotTargetRowsBaseline(rowsTarget);
   {
     const { key1, key2 } = getConductorKeysFromArray(rowsTarget);
     sanitizeFichoConductorSlots(rowsTarget, key1, key2);
@@ -2849,16 +3005,40 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
   const targetAuth = await ensureTargetMigrationSession();
   const rowsTargetFechaKey = getFechaKeyFromArray(rowsTarget);
   const fechaScope = normalizeDateToISO(filterDate2?.value || (rowsTarget[0] ? getRowDateISO(rowsTarget[0], rowsTargetFechaKey) : ""));
-  const rowsToPersist = Array.isArray(rowsTarget)
-    ? (fechaScope ? rowsTarget.filter(r => getRowDateISO(r, rowsTargetFechaKey) === fechaScope) : rowsTarget.slice())
+  // Solo se escriben las filas de la base que esta abierta. La tabla nada mas
+  // deja editar esas (renderTable2 filtra por currentBase), pero en memoria
+  // esta el dia COMPLETO de todas las bases, y antes se reenviaba entero: el
+  // guardado de una base repetia su foto vieja encima de lo que otra base
+  // acababa de asignar y lo dejaba "como estaba antes". Acotando el ambito,
+  // cada base escribe y borra unicamente lo suyo y ya no se pisan entre si.
+  const baseScope = getBaseCanonical(currentBase);
+  const rowsEnAmbito = Array.isArray(rowsTarget)
+    ? rowsTarget.filter(r =>
+        (!fechaScope || getRowDateISO(r, rowsTargetFechaKey) === fechaScope) &&
+        (!baseScope || getRowCanonicalBase(r) === baseScope))
     : [];
+  // Sin base abierta (un administrador que ve todas a la vez) no hay ambito que
+  // acotar, asi que se escribe solo lo que cambio en ESTE equipo, comparado con
+  // la foto de como se leyo la programacion. Y se borra unicamente lo que
+  // estaba al cargar y ya no esta: nunca por diferencia contra el envio, que
+  // arrasaria con las filas que otros estan editando.
+  const soloCambios = !baseScope;
+  const rowsToPersist = soloCambios ? rowsEnAmbito.filter(isTargetRowChanged) : rowsEnAmbito;
+  const deleteKeys = soloCambios ? getTargetBaselineRemovedKeys(rowsTarget) : null;
   try {
+    if (soloCambios && rowsToPersist.length === 0 && deleteKeys.length === 0) {
+      // Nada que escribir: no hay por que tocar la base.
+      clearPendingTargetRowsLocal();
+      setSyncStatus("ok", "Confirmado DB nueva");
+      pendingAssignmentConfirmations = [];
+      return true;
+    }
     const rowsSyncResult = await syncProgramacionRowsTableWithClient(
       programacionesTargetClient,
       currentProgramacionIdTarget,
       rowsToPersist,
       targetAuth.userId,
-      { fecha: fechaScope }
+      { fecha: fechaScope, base: baseScope, ...(deleteKeys ? { deleteKeys } : {}) }
     );
     if (!rowsSyncResult?.ok) {
       throw new Error(rowsSyncResult?.unavailable
@@ -2872,14 +3052,34 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
       .eq("id", currentProgramacionIdTarget);
     if (updateResult.error) throw updateResult.error;
 
-    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget, { fecha: fechaScope });
+    const verifyRowsResult = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget, { fecha: fechaScope, base: baseScope });
     if (!verifyRowsResult?.ok) {
       throw new Error("No se pudo verificar programacion_filas en DB nueva.");
     }
-    const ok = rowsSignature(rowsToPersist) === rowsSignature(verifyRowsResult.rows || []);
-    if (!ok) {
-      throw new Error(`Diferencia detectada en DB nueva (${(verifyRowsResult.rows || []).length}/${rowsToPersist.length} filas).`);
+    let ok;
+    if (soloCambios) {
+      // La base tiene mas filas de las que se enviaron (las que no se tocaron),
+      // asi que no sirve comparar el conjunto entero: se comprueba que cada
+      // fila escrita quedo tal cual y que las borradas ya no estan.
+      const actualPorClave = new Map();
+      (verifyRowsResult.rows || []).forEach(r => {
+        const k = buildProgramacionRowKey(r);
+        if (k) actualPorClave.set(k, rowFingerprint(r));
+      });
+      const escritasOk = rowsToPersist.every(r => actualPorClave.get(buildProgramacionRowKey(r)) === rowFingerprint(r));
+      const borradasOk = deleteKeys.every(k => !actualPorClave.has(k));
+      ok = escritasOk && borradasOk;
+      if (!ok) {
+        throw new Error(`Diferencia detectada en DB nueva (${rowsToPersist.length} fila(s) enviada(s), ${deleteKeys.length} borrada(s)).`);
+      }
+    } else {
+      ok = rowsSignature(rowsToPersist) === rowsSignature(verifyRowsResult.rows || []);
+      if (!ok) {
+        throw new Error(`Diferencia detectada en DB nueva (${(verifyRowsResult.rows || []).length}/${rowsToPersist.length} filas).`);
+      }
     }
+    // Lo confirmado pasa a ser la nueva foto de referencia.
+    updateTargetBaselineAfterSave(rowsToPersist, deleteKeys || []);
     clearPendingTargetRowsLocal();
     setSyncStatus("ok", "Confirmado DB nueva");
     showToast(`${reason} (confirmado)`, "ok");
@@ -2891,7 +3091,11 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
     return true;
   } catch (error) {
     console.error("No se pudo guardar en DB nueva:", error?.message || error, error?.code || "");
-    savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsToPersist, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+    // La copia pendiente guarda rowsTarget COMPLETO, no el subconjunto que se
+    // acaba de intentar escribir: al recuperarla se repone rowsTarget tal cual,
+    // y dejarla recortada por fecha o por base borraria de memoria el resto del
+    // dia y las demas bases.
+    savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
     setSyncStatus("warn", "Pendiente DB nueva");
     showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn");
     scheduleTargetSyncRetry(reason);
@@ -3404,6 +3608,10 @@ function renderMigrationDbInfo(){
 async function fetchProgramacionRowsFromClient(client, programacionId, options = {}){
   if (!programacionId) return { ok: true, rows: [] };
   const fechaScope = normalizeDateToISO(options?.fecha || "");
+  // Ambito opcional de base: se compara contra la columna 'base', que se guarda
+  // con la etiqueta completa ("BASE 4"), no con el canonico ("4").
+  const baseCanonical = getBaseCanonical(options?.base || "");
+  const baseScope = baseCanonical ? formatBaseLabel(baseCanonical) : "";
   const pageSize = 1000;
   const allRows = [];
   let offset = 0;
@@ -3415,6 +3623,7 @@ async function fetchProgramacionRowsFromClient(client, programacionId, options =
       .eq("programacion_id", programacionId)
       .order("id", { ascending: true });
     if (fechaScope) query = query.eq("fecha", fechaScope);
+    if (baseScope) query = query.eq("base", baseScope);
     const { data, error } = await query.range(offset, offset + pageSize - 1);
     if (error) {
       if (isProgramacionFilasUnavailable(error)) {
@@ -3437,36 +3646,53 @@ async function fetchProgramacionRowsFromClient(client, programacionId, options =
 async function syncProgramacionRowsTableWithClient(client, programacionId, rowsInput, updatedByOverride = null, options = {}){
   if (!programacionId) return { ok: false, skipped: true };
   const fechaScope = normalizeDateToISO(options?.fecha || "");
+  // Ambito opcional de base. Acota TANTO el inventario de filas existentes como
+  // el borrado, de modo que un guardado nunca pueda eliminar filas de otra base.
+  const baseCanonicalScope = getBaseCanonical(options?.base || "");
+  const baseScope = baseCanonicalScope ? formatBaseLabel(baseCanonicalScope) : "";
   const payload = buildProgramacionFilaPayload(rowsInput, programacionId).map(item => ({
     ...item,
     updated_by: updatedByOverride || item.updated_by || null
   }));
-  const pageSize = 1000;
-  const existingRows = [];
-  let offset = 0;
-  while (true) {
-    let existingQuery = client
-      .from("programacion_filas")
-      .select("row_key")
-      .eq("programacion_id", programacionId)
-      .order("id", { ascending: true });
-    if (fechaScope) existingQuery = existingQuery.eq("fecha", fechaScope);
-    const existingResult = await existingQuery.range(offset, offset + pageSize - 1);
-    if (existingResult.error) {
-      if (isProgramacionFilasUnavailable(existingResult.error)) {
-        return { ok: false, unavailable: true };
+  // Dos formas de decidir que se borra:
+  //  - Lista explicita (deleteKeys): se borra solo eso. La usa el guardado por
+  //    cambios, donde el envio NO es el contenido completo del ambito; inferir
+  //    ahi borraria filas que nadie toco.
+  //  - Por diferencia (sin deleteKeys): se borra lo que hay en la base dentro
+  //    del ambito y ya no viene en el envio. Vale cuando el envio SI es el
+  //    ambito completo (una base abierta, o una carga de Excel).
+  const borradoExplicito = Array.isArray(options?.deleteKeys);
+  let toDelete = [];
+  if (borradoExplicito) {
+    toDelete = options.deleteKeys.map(k => String(k || "")).filter(Boolean);
+  } else {
+    const pageSize = 1000;
+    const existingRows = [];
+    let offset = 0;
+    while (true) {
+      let existingQuery = client
+        .from("programacion_filas")
+        .select("row_key")
+        .eq("programacion_id", programacionId)
+        .order("id", { ascending: true });
+      if (fechaScope) existingQuery = existingQuery.eq("fecha", fechaScope);
+      if (baseScope) existingQuery = existingQuery.eq("base", baseScope);
+      const existingResult = await existingQuery.range(offset, offset + pageSize - 1);
+      if (existingResult.error) {
+        if (isProgramacionFilasUnavailable(existingResult.error)) {
+          return { ok: false, unavailable: true };
+        }
+        throw existingResult.error;
       }
-      throw existingResult.error;
+      const chunk = Array.isArray(existingResult.data) ? existingResult.data : [];
+      existingRows.push(...chunk);
+      if (chunk.length < pageSize) break;
+      offset += pageSize;
     }
-    const chunk = Array.isArray(existingResult.data) ? existingResult.data : [];
-    existingRows.push(...chunk);
-    if (chunk.length < pageSize) break;
-    offset += pageSize;
+    const existingKeys = new Set(existingRows.map(r => String(r.row_key || "")).filter(Boolean));
+    const nextKeys = new Set(payload.map(r => String(r.row_key || "")).filter(Boolean));
+    toDelete = Array.from(existingKeys).filter(k => !nextKeys.has(k));
   }
-
-  const existingKeys = new Set(existingRows.map(r => String(r.row_key || "")).filter(Boolean));
-  const nextKeys = new Set(payload.map(r => String(r.row_key || "")).filter(Boolean));
-  const toDelete = Array.from(existingKeys).filter(k => !nextKeys.has(k));
 
   for (const keyChunk of chunkArray(toDelete, 300)) {
     let deleteQuery = client
@@ -3475,6 +3701,7 @@ async function syncProgramacionRowsTableWithClient(client, programacionId, rowsI
       .eq("programacion_id", programacionId)
       .in("row_key", keyChunk);
     if (fechaScope) deleteQuery = deleteQuery.eq("fecha", fechaScope);
+    if (baseScope) deleteQuery = deleteQuery.eq("base", baseScope);
     const delResult = await deleteQuery;
     if (delResult.error) throw delResult.error;
   }

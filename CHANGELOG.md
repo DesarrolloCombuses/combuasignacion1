@@ -18,6 +18,36 @@ Convencion de version:
 
 ---
 
+## [2.9.1] - 2026-09-21
+
+### Corregido
+- **El calendario de "Turnos del dia" se veia cortado**: el panel se dibujaba dentro de la tarjeta de la pestana, asi que se recortaba en cuanto no cabia. En computador se salia por el **borde inferior de la ventana** y las ultimas semanas del mes quedaban fuera de vista; en celular y tablet se cortaba **tambien por los lados**, porque el contenedor de la pestana (`.tab-content`) usa `overflow-x:auto` en pantallas de 900px o menos para poder desplazar las tablas anchas, y eso recorta cualquier cosa que sobresalga. Ahora el panel **flota sobre la pagina** en coordenadas de pantalla (`position:fixed`), de modo que **ningun contenedor lo puede recortar**: se ve el mes completo siempre.
+- **El calendario se abre hacia arriba cuando no cabe hacia abajo**: si el boton esta cerca del borde inferior, el panel se despliega **por encima** del boton en lugar de salirse de la pantalla. En pantallas muy bajas, donde no cabe entero de ninguna forma, el panel toma **scroll propio** en vez de quedar cortado. Ademas se mantiene pegado al boton al **hacer scroll o cambiar el tamano** de la ventana, y se reacomoda al cambiar de mes (los meses de 6 semanas son mas altos).
+
+- **La programacion de una base se perdia cuando otra base guardaba (perdida de datos)**: al abrir un dia se cargaban en memoria **todas las filas de esa fecha, de todas las bases**, pero la tabla solo deja editar las de la base abierta. Al guardar se reenviaba **la copia completa del dia**, y ademas se **borraban** de la base las filas que no estuvieran en esa copia. Resultado: si BASE 3 abria el dia a las 8:00 y guardaba cualquier cosa a las 10:00, escribia su foto de las 8:00 encima y **el trabajo que BASE 4 habia hecho entre medias desaparecia**, dejando el dia "como estaba antes". El aviso "GUARDADO Y CONFIRMADO" no mentia: en ese instante el dato si estaba verificado en la base; lo pisaban despues. Ahora **cada guardado escribe y borra unicamente las filas de la base que esta abierta**, que son las unicas que ese usuario puede haber modificado, de modo que dos bases trabajando la misma fecha **ya no se pisan entre si**.
+- **El aviso verde "GUARDADO Y CONFIRMADO" se quedaba pegado en pantalla**: el modal se encendia con `requestAnimationFrame` y se apagaba con un temporizador. Si la pestana pasaba a segundo plano justo despues de guardar (algo habitual al cambiar de ventana mientras sincroniza), el navegador **congelaba** el `requestAnimationFrame` pero **no** el temporizador, asi que primero corria el cierre y luego, al volver a la pestana, el modal se **volvia a encender sin nadie que lo apagara**. Ademas solo se bajaba su opacidad a 0: el nodo seguia cubriendo la pagina. Ahora se enciende sin depender de `requestAnimationFrame`, se **oculta de verdad** al cerrarse y, como red de seguridad, se apaga al volver a la pantalla si quedo encendido.
+
+- **El administrador que trabaja sin abrir una base tambien podia pisar el dia entero**: con una base abierta el guardado ya queda acotado a esa base, pero **sin** base abierta (viendo todas a la vez) no hay ambito que acotar y se seguia escribiendo el dia completo. Para ese caso el guardado pasa a ser **por cambios**: al cargar la programacion se toma una **foto de como estaba en la base**, y al guardar se escriben unicamente las filas que **cambiaron en ese equipo**. El borrado deja de deducirse por diferencia (que arrasaba con las filas que otros estaban editando) y se limita a las filas que **estaban al cargar y ya no estan**. Si no cambio nada, no se toca la base. La verificacion en este modo se hace **fila a fila**, porque la base contiene legitimamente mas filas de las que se enviaron.
+
+### Cambiado
+- **La actualizacion pasa a ser obligatoria**: `version.json` gana el campo `minVersion`. Cualquier pestana abierta con una version **inferior** a ese minimo recibe una actualizacion que **no se puede aplazar**: no ofrece "Mas tarde" y no espera a que el usuario deje de escribir. En esta version `minVersion` queda en **2.9.1**, porque la version anterior puede borrar el trabajo de otras bases y no debe seguir en uso.
+- **Se cierra el hueco por el que un usuario podia quedarse en la version vieja para siempre**: si habia foco en un campo de texto, la recarga se aplazaba 15 segundos **y se reintentaba indefinidamente**, asi que un cursor olvidado en un buscador bastaba para no actualizar nunca. Ahora el aplazamiento tiene un tope de **60 segundos**, pasado el cual se suelta el campo y se actualiza igual.
+- **Antes de recargar se confirma lo que quede sin guardar**: la actualizacion automatica llama a `flushPendingTargetSave()` antes de irse, de modo que una recarga forzada no se lleve asignaciones sin confirmar.
+
+### Corregido
+- **La pildora de version podia anunciar una version que no era la que estaba corriendo**: el numero se lee de `version.json`, no del codigo cargado. Si `index.html` seguia pidiendo `js/functions.js?v=<version anterior>`, esa URL ya estaba en cache y el Service Worker la servia tal cual (`stale-while-revalidate`), asi que el usuario **trabajaba con el codigo viejo mientras la pildora decia que estaba al dia** — y la deteccion de actualizaciones no veia nada raro, porque ambos numeros salian del mismo `version.json`. Ahora `js/main.js` declara `APP_CODE_VERSION` **dentro del propio codigo**: `pwa.js` la compara con `version.json` y, si no coinciden, borra los caches, da de baja el Service Worker y recarga limpio (con tope de 2 intentos para no entrar en bucle si el despliegue quedara a medias).
+
+### Anadido
+- **`bump.py`**: el numero de version vivia en cuatro archivos que habia que sincronizar a mano (`version.json`, los `?v=` de `index.html`, `APP_CODE_VERSION` de `js/main.js` y `CHANGELOG.md`), y olvidar uno dejaba a los usuarios con el codigo viejo — ya habia pasado antes (ver v1.5.2). `python bump.py <version>` actualiza los tres archivos de codigo de una vez, `--obligatoria` sube ademas `minVersion`, y `python bump.py --check` verifica que los cuatro coincidan antes de publicar.
+
+### Notas
+- Cambio solo visual: no se toco la logica de seleccion de fecha ni el `<select>` oculto que sigue siendo la fuente de datos, por lo que el guardado, los filtros y las exportaciones funcionan igual.
+- **Regla de seguridad del guardado por cambios**: si por cualquier motivo no hay foto de referencia (por ejemplo, se recupero una copia local pendiente), se considera que **todo cambio** y se escribe todo, que es el comportamiento de siempre. El fallo nunca ocurre al reves, de modo que un problema aqui no puede dejar cambios sin guardar.
+- La subida de programaciones desde Excel y la migracion entre proyectos **no cambian**: siguen escribiendo el conjunto completo, como deben.
+- **Queda un caso sin cubrir**: dos personas de la **misma base** editando la misma fecha a la vez (dos equipos, o dos pestanas del mismo usuario) todavia pueden pisarse, porque con base abierta se escribe el ambito completo de esa base. Si llega a pasar, el mismo mecanismo de guardado por cambios se puede extender a ese caso.
+
+---
+
 ## [2.9.0] - 2026-09-05
 
 ### Anadido

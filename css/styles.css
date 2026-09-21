@@ -1532,8 +1532,16 @@ td, th{ overflow-wrap:anywhere; }
 .cal2-hint{ font-size:12px; color:var(--color-text-mut); }
 
 /* ---- Panel flotante ---- */
+/* Va en coordenadas de pantalla (position:fixed) y no dentro de la tarjeta:
+   asi ningun contenedor con overflow lo recorta. .tab-content lleva
+   overflow-x:auto en pantallas <=900px y cortaba el panel por los lados y por
+   abajo; en escritorio se salia del borde inferior de la ventana. El JS le
+   calcula top/left contra el boton y lo voltea hacia arriba si no cabe abajo. */
 .cal2-pop{
-  position:absolute; top:calc(100% + 6px); left:0; z-index:60;
+  position:fixed; top:0; left:0; z-index:10015;
+  width:max-content; max-width:calc(100vw - 16px);
+  max-height:calc(100vh - 16px);
+  overflow-y:auto; overscroll-behavior:contain;
   background:var(--color-surface);
   border:1px solid var(--color-border); border-radius:12px;
   padding:10px 11px 8px;
@@ -1620,7 +1628,7 @@ td, th{ overflow-wrap:anywhere; }
   .cal2-trigger{ flex:1 1 auto; justify-content:space-between; padding:10px 12px; font-size:14px; }
   .cal2-hint{ flex:1 1 100%; }
   .cal2-pop{
-    left:0; right:0;
+    width:calc(100vw - 24px);
     max-width:calc(100vw - 24px);
     padding:12px;
   }

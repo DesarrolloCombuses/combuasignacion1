@@ -1,6 +1,7 @@
 {
-  "version": "2.9.0",
-  "buildDate": "2026-09-05",
+  "version": "2.9.1",
+  "minVersion": "2.9.1",
+  "buildDate": "2026-09-21",
   "channel": "stable",
-  "notes": "Nuevo: la fecha de 'Turnos del dia' se elige en un calendario desplegable que muestra el mes en curso y pinta los dias que ya tienen programacion cargada; se cierra solo al elegir el dia y esta adaptado a celular. Cambios de flota: los vehiculos 708, 733 y 757 pasan a BASE 3 y el 747 pasa a BASE 8 (sus fichos y turnos los siguen). BASE 4 ya puede mover la posicion de los vehiculos y sus fichos, igual que BASE 3, y al entrar recibe un aviso que se lo explica. BASE 3 ve ahora tambien los conductores de BASE 5 para poder asignarlos a los carros trasladados."
+  "notes": "Corregido: la programacion de una base ya no se pierde cuando otra guarda. Antes cada guardado reescribia el dia completo de todas las bases con la copia que ese equipo tenia cargada, y el trabajo de otra base quedaba 'como estaba antes'; ahora cada base escribe solo lo suyo, y quien trabaja sin abrir una base escribe unicamente las filas que cambio. Tambien se corrigio el aviso verde 'GUARDADO Y CONFIRMADO' que se quedaba pegado en pantalla, y el calendario de 'Turnos del dia' que se veia cortado. Actualizacion OBLIGATORIA: la version anterior puede borrar el trabajo de otras bases."
 }
