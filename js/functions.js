@@ -540,6 +540,36 @@ function canExportXlsx(){
   return isSuperAdmin();
 }
 
+// Bases cuya programacion se comparte con un sistema externo. La pestana que
+// lo explica solo aparece para ellas. Sumar una base aqui es el unico cambio
+// necesario si manana se comparte otra.
+const API_SHARING_BASES = ["3"];
+
+function canSeeApiSharingTab(){
+  if (isSuperAdmin()) return true;
+  const base = isBaseOperator() ? currentUserBase : currentBase;
+  return API_SHARING_BASES.includes(getBaseCanonical(base));
+}
+
+// Se llama al aplicar permisos y tambien al abrir una base: un administrador
+// puede pasar de una base a otra sin volver a iniciar sesion.
+function updateApiSharingTabVisibility(){
+  const tab = document.querySelector('.tab[data-tab="api-cliente"]');
+  if (!tab) return;
+  const visible = canSeeApiSharingTab();
+  tab.classList.toggle("hidden", !visible);
+  // Si estaba abierta y deja de corresponder, se vuelve a Turnos del dia.
+  if (!visible) {
+    const contenido = document.getElementById("tab-api-cliente");
+    if (contenido?.classList.contains("active")) {
+      contenido.classList.remove("active");
+      tab.classList.remove("active");
+      document.querySelector('.tab[data-tab="programacion2"]')?.classList.add("active");
+      document.getElementById("tab-programacion2")?.classList.add("active");
+    }
+  }
+}
+
 function canSwapVehiclePositions(){
   return isSuperAdmin() || VEHICLE_SWAP_BASES.includes(getBaseCanonical(currentBase));
 }
@@ -2436,6 +2466,7 @@ function applyRoleRestrictions(){
     if (getBaseCanonical(currentBase) !== getBaseCanonical(currentUserBase)) {
       enterBase(currentUserBase);
     }
+    updateApiSharingTabVisibility();
     updateExportAccess();
     return;
   }
@@ -2464,6 +2495,7 @@ function applyRoleRestrictions(){
     migrationOutput.textContent = "Migracion manual disponible solo para el super administrador.";
   }
   if (operativoTitle) operativoTitle.textContent = operativoViewMode === "llegadas" ? "Panel de llegadas vehiculos" : "Panel de operacion";
+  updateApiSharingTabVisibility();
   updateExportAccess();
   renderAdminComplianceDashboard();
 }
@@ -8915,6 +8947,7 @@ function enterBase(base){
 
   rebuildAssigned();
   updateWorkflowGuide();
+  updateApiSharingTabVisibility();
   if (usingTargetView) {
     const selectedDate2 = normalizeDateToISO(filterDate2?.value || "");
     if (selectedDate2) {

@@ -1,7 +1,7 @@
 {
-  "version": "2.9.1",
+  "version": "2.9.2",
   "minVersion": "2.9.1",
   "buildDate": "2026-09-21",
   "channel": "stable",
-  "notes": "Corregido: la programacion de una base ya no se pierde cuando otra guarda. Antes cada guardado reescribia el dia completo de todas las bases con la copia que ese equipo tenia cargada, y el trabajo de otra base quedaba 'como estaba antes'; ahora cada base escribe solo lo suyo, y quien trabaja sin abrir una base escribe unicamente las filas que cambio. Tambien se corrigio el aviso verde 'GUARDADO Y CONFIRMADO' que se quedaba pegado en pantalla, y el calendario de 'Turnos del dia' que se veia cortado. Actualizacion OBLIGATORIA: la version anterior puede borrar el trabajo de otras bases."
+  "notes": "Nuevo: las bases cuya programacion se consulta desde fuera (hoy BASE 3) tienen una pestana 'Datos compartidos con el cliente' que explica que informacion sale y cual no. Se comparten los turnos, el conductor asignado, cuantos faltan por asignar y quien descansa o esta de vacaciones; no salen las incapacidades, calamidades ni permisos, ni las cedulas, ni ninguna otra base. El sistema externo solo puede leer."
 }

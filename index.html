@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=2.9.1">
+<link rel="stylesheet" href="css/styles.css?v=2.9.2">
 <style>
   .parque-foto-link { font-size:12px; }
 
@@ -305,6 +305,7 @@
           <div class="tab" data-tab="despachos-realizados">Despachos en vivo</div>
           <div class="tab" data-tab="asistencias">Asistencias</div>
           <div class="tab" data-tab="parque-automotor">Parque automotor y documentacion de vehiculos</div>
+          <div class="tab hidden" data-tab="api-cliente">Datos compartidos con el cliente</div>
           <div class="tab" data-tab="consulta">Consulta por fechas</div>
           <div class="tab" data-tab="visor">Visor Excel en linea</div>
           <div class="tab" data-tab="audit">Auditoria</div>
@@ -351,6 +352,72 @@
                 <!-- Se llena dinamicamente -->
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div id="tab-api-cliente" class="tab-content">
+          <div class="apisha-cab">
+            <h3>Que ve el cliente de esta base</h3>
+            <p>
+              Un sistema externo consulta de forma automatica la programacion de
+              esta base. Aqui puedes ver <strong>exactamente</strong> que
+              informacion sale y cual no.
+            </p>
+          </div>
+
+          <div class="apisha-aviso">
+            <strong>Lo que asignas se ve enseguida.</strong>
+            El cliente consulta cada pocos minutos, asi que la programacion que
+            armas durante el dia la va viendo segun avanzas. No espera a que
+            termines: por eso la consulta le indica siempre cuantos turnos
+            quedan por asignar, para que sepa distinguir un turno pendiente de
+            uno que va a quedar sin cubrir.
+          </div>
+
+          <div class="apisha-cols">
+            <div class="apisha-col apisha-si">
+              <div class="apisha-tit">Si se comparte</div>
+              <ul>
+                <li><strong>Turnos del dia</strong>: numero de puesto, vehiculo,
+                    hora de inicio y hora de fin.</li>
+                <li><strong>Nombre del conductor</strong> asignado a cada turno.</li>
+                <li><strong>Cuantos turnos faltan</strong> por asignar.</li>
+                <li><strong>Quien descansa</strong>, esta de vacaciones o en
+                    reconocimiento de ruta.</li>
+              </ul>
+            </div>
+            <div class="apisha-col apisha-no">
+              <div class="apisha-tit">No se comparte</div>
+              <ul>
+                <li><strong>Incapacidades, calamidades ni permisos.</strong>
+                    Salen agrupados como "ausencia", sin decir el motivo.</li>
+                <li><strong>Cedulas</strong> ni ningun otro dato personal
+                    aparte del nombre.</li>
+                <li><strong>Ninguna otra base.</strong> Solo esta.</li>
+                <li><strong>Novedades de otros dias</strong> fuera del rango
+                    consultado.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="apisha-nota">
+            <p>
+              <strong>Por que se ocultan los motivos de ausencia.</strong>
+              Una incapacidad o una calamidad dicen algo sobre la salud o la
+              vida personal del trabajador. La ley los trata como
+              <em>datos sensibles</em> y exige permiso expreso de la persona
+              para compartirlos, asi que la consulta solo informa de que ese dia
+              no esta disponible.
+            </p>
+            <p>
+              <strong>Solo puede leer.</strong> El sistema del cliente no puede
+              modificar nada: ni asignar, ni borrar, ni cambiar un turno. Todas
+              sus consultas quedan registradas.
+            </p>
+            <p class="apisha-pie">
+              Si detectas algo que no deberia compartirse, avisa al area de
+              desarrollo.
+            </p>
           </div>
         </div>
 
@@ -1107,9 +1174,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=2.9.1"></script>
-<script src="js/main.js?v=2.9.1"></script>
-<script src="js/pwa.js?v=2.9.1"></script>
+<script src="js/functions.js?v=2.9.2"></script>
+<script src="js/main.js?v=2.9.2"></script>
+<script src="js/pwa.js?v=2.9.2"></script>
 </body>
 </html>
 

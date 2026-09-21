@@ -18,6 +18,16 @@ Convencion de version:
 
 ---
 
+## [2.9.2] - 2026-09-21
+
+### Anadido
+- **Pestana "Datos compartidos con el cliente"** para las bases cuya programacion se consulta desde fuera (hoy solo BASE 3). Explica **que informacion sale y cual no**: se comparten los turnos del dia, el conductor asignado, cuantos turnos faltan por asignar y quien descansa o esta de vacaciones; **no** salen las incapacidades, calamidades ni permisos (se entregan agrupados como "ausencia", sin el motivo), ni las cedulas, ni ninguna otra base. Aclara tambien que lo que se asigna se ve enseguida, porque el sistema externo consulta cada pocos minutos, y que solo puede leer: no puede asignar, borrar ni modificar nada. La lista de bases esta en `API_SHARING_BASES`, de modo que habilitar otra base en el futuro es un unico cambio.
+
+### Notas
+- La pestana **no muestra la credencial de acceso ni la direccion de la API**, y es deliberado: la aplicacion es un sitio estatico, asi que cualquiera puede leer su HTML y su JavaScript **sin iniciar sesion**. El inicio de sesion decide que se ve en pantalla, no que se puede descargar. Todo secreto que se pusiera aqui quedaria igual de expuesto que publicandolo; las credenciales se entregan por separado, en un documento que no vive en el repositorio.
+
+---
+
 ## [2.9.1] - 2026-09-21
 
 ### Corregido

@@ -1637,3 +1637,55 @@ td, th{ overflow-wrap:anywhere; }
   .cal2-nav{ width:32px; height:32px; flex:0 0 32px; }
   .cal2-foot{ max-width:none; }
 }
+
+/* ---------- Pestana "Datos compartidos con el cliente" ----------
+   Informativa: le muestra a la base que sale de su programacion hacia el
+   sistema externo y que no. No lleva credenciales ni URLs: la app es un sitio
+   estatico, asi que cualquiera puede leer este HTML sin iniciar sesion. */
+.apisha-cab{ margin-bottom:var(--space-4); }
+.apisha-cab h3{ margin:0 0 6px; font-size:18px; }
+.apisha-cab p{ margin:0; color:var(--color-text-2); max-width:70ch; }
+
+.apisha-aviso{
+  border-left:3px solid var(--color-primary-600);
+  background:var(--color-primary-50);
+  border-radius:0 8px 8px 0;
+  padding:12px 16px; margin-bottom:var(--space-4);
+  font-size:14px; line-height:1.55; color:var(--color-text);
+  max-width:80ch;
+}
+
+.apisha-cols{
+  display:grid; grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:var(--space-3); margin-bottom:var(--space-4);
+}
+.apisha-col{
+  border:1px solid var(--color-border); border-radius:10px;
+  padding:14px 16px; background:var(--color-surface);
+}
+.apisha-col ul{ margin:0; padding-left:18px; }
+.apisha-col li{ margin-bottom:7px; font-size:14px; line-height:1.5; }
+.apisha-col li:last-child{ margin-bottom:0; }
+.apisha-tit{
+  font-size:11.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--color-border);
+}
+.apisha-si{ border-color:var(--color-primary-200); }
+.apisha-si .apisha-tit{ color:var(--color-primary-700); }
+.apisha-no{ border-color:#f0c9c6; }
+.apisha-no .apisha-tit{ color:#8c2b2b; }
+
+.apisha-nota{
+  border:1px solid var(--color-border); border-radius:10px;
+  background:var(--color-surface-2); padding:14px 16px;
+  font-size:13.5px; line-height:1.6; color:var(--color-text-2);
+  max-width:80ch;
+}
+.apisha-nota p{ margin:0 0 10px; }
+.apisha-nota p:last-child{ margin-bottom:0; }
+.apisha-nota strong{ color:var(--color-text); }
+.apisha-pie{ color:var(--color-text-mut); font-size:12.5px; }
+
+@media (max-width: 760px){
+  .apisha-cols{ grid-template-columns:1fr; }
+}
