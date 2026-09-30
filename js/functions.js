@@ -2371,7 +2371,10 @@ function updateWorkflowGuide(){
     return;
   }
   workflowGuide.classList.remove("hidden");
-  const selectedDate = document.getElementById("filterDate")?.value || "";
+  // Fecha de la pestana activa. Antes se leia <select id="filterDate">, que es
+  // el de la base vieja: esta oculto y nunca se llena, asi que la guia se
+  // quedaba clavada en el paso 1 y de paso dejaba el buscador deshabilitado.
+  const selectedDate = getActiveSelectedDateISO();
   const filterInput = document.getElementById("filterDrivers");
 
   if (!selectedDate) {
@@ -2384,7 +2387,7 @@ function updateWorkflowGuide(){
   }
 
   stepSelectDate.className = "workflow-step done";
-  const status = getDateStatusForBase(selectedDate);
+  const status = getDateStatusForBase(selectedDate, currentBase, getActiveRowsForDrivers());
 
   if (status.state === "complete") {
     stepAssignDrivers.className = "workflow-step done";
@@ -6740,11 +6743,15 @@ function getDriverPoolForBase(base){
   return pool;
 }
 
-function getAvailableDriversForBase(base){
-  base = getBaseCanonical(base);
-  if(!base) return [];
-  const relatedBases = getDriverBasesForBase(base);
-  const pool = getDriverPoolForBase(base);
+// Reparto del listado de conductores de una base para la fecha activa: quien
+// tiene turno, quien tiene estado registrado y quien queda sin ubicar. El panel
+// y el texto que lo explica salen de esta misma cuenta a proposito: calculados
+// por separado acabarian contando distinto y el mensaje terminaria mintiendo.
+function getDriverAvailabilityBreakdown(base){
+  const canonical = getBaseCanonical(base);
+  if (!canonical) return { pool: [], asignados: [], conEstado: [], libres: [] };
+  const relatedBases = getDriverBasesForBase(canonical);
+  const pool = getDriverPoolForBase(canonical);
 
   // Ya asignados: se revisan todas las bases del pool para no ofrecer dos veces
   // a un conductor que ya esta puesto en un carro de su base de origen.
@@ -6755,14 +6762,43 @@ function getAvailableDriversForBase(base){
   });
   const selectedDate = getActiveSelectedDateISO();
 
-  // Excluir conductores en novedades de esas bases y misma fecha operativa.
-  const enNovedades = new Set(
-    novedades
-      .filter(n => relatedBases.some(b => sameBase(n.base, b)) && (!selectedDate || normalizeDateToISO(n.fecha) === selectedDate))
-      .map(n => norm(n.nombre))
-  );
+  // Novedades de esas bases en la misma fecha operativa. Sacan del panel con
+  // CUALQUIER estado, PENDIENTE y DISPONIBLE incluidos; por eso se guarda cual
+  // es, para poder decirlo en pantalla.
+  const estadoPorNombre = new Map();
+  novedades.forEach(n => {
+    if (!relatedBases.some(b => sameBase(n.base, b))) return;
+    if (selectedDate && normalizeDateToISO(n.fecha) !== selectedDate) return;
+    estadoPorNombre.set(norm(n.nombre), String(n.estado || "").trim() || "PENDIENTE");
+  });
 
-  return pool.filter(d => !used.has(norm(d)) && !enNovedades.has(norm(d)));
+  const asignados = [];
+  const conEstado = [];
+  const libres = [];
+  pool.forEach(nombre => {
+    const key = norm(nombre);
+    if (used.has(key)) asignados.push(nombre);
+    else if (estadoPorNombre.has(key)) conEstado.push({ nombre, estado: estadoPorNombre.get(key) });
+    else libres.push(nombre);
+  });
+
+  return { pool, asignados, conEstado, libres };
+}
+
+function getAvailableDriversForBase(base){
+  return getDriverAvailabilityBreakdown(base).libres;
+}
+
+// Texto del panel cuando no queda nadie por arrastrar. Antes decia siempre
+// "Todos los conductores asignados", aunque en realidad estuvieran en Estados
+// del personal: el operador se quedaba sin saber donde buscarlos.
+function describeDriverPanelEmpty(reparto){
+  const total = reparto.pool.length;
+  if (total === 0) return "Esta base no tiene conductores en el listado.";
+  const partes = [];
+  if (reparto.asignados.length) partes.push(`${reparto.asignados.length} con turno asignado`);
+  if (reparto.conEstado.length) partes.push(`${reparto.conEstado.length} con estado registrado`);
+  return `Los ${total} conductores de la base ya estan ubicados: ${partes.join(" y ")}.`;
 }
 
 function refreshNovedadesManualAutocomplete2(){
@@ -6863,18 +6899,40 @@ function renderDrivers(){
   }
 
   currentBaseDisplay.textContent = formatBaseLabel(base);
-  const available = getAvailableDriversForBase(base);
-  const dateStatus = getDateStatusForBase(selectedDate);
+  const reparto = getDriverAvailabilityBreakdown(base);
+  const available = reparto.libres;
+  // El estado del dia se mide sobre las filas que se estan viendo. El tercer
+  // argumento por defecto es `rows`, el dataset de la base vieja: en esta
+  // pestana no es el mismo, y por eso el aviso de sobrantes nunca salia.
+  const dateStatus = getDateStatusForBase(selectedDate, base, getActiveRowsForDrivers());
 
   const visible = available.filter(d => d.toLowerCase().includes(filterText));
   if (visible.length === 0) {
     list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">${
       available.length === 0
-        ? "Todos los conductores asignados"
+        ? describeDriverPanelEmpty(reparto)
         : "No hay coincidencias con ese filtro"
     }</div>`;
+    // Tambien aqui: al quedarse el panel sin nadie, la guia de pasos se
+    // quedaba con el texto de la vez anterior.
+    updateWorkflowGuide();
     return;
   }
+
+  // Resumen siempre a la vista: un panel con un solo nombre y una base de
+  // veintidos parece una falla, y hasta ahora no habia forma de saber si el
+  // resto estaba con turno o en Estados del personal.
+  const resumen = document.createElement("div");
+  resumen.className = "muted";
+  resumen.style.padding = "6px 8px";
+  resumen.style.marginBottom = "8px";
+  resumen.style.fontSize = "11px";
+  resumen.style.textAlign = "center";
+  resumen.textContent = `${reparto.pool.length} en la base: `
+    + `${reparto.asignados.length} con turno, `
+    + `${reparto.conEstado.length} con estado, `
+    + `${reparto.libres.length} sin ubicar.`;
+  list.appendChild(resumen);
 
   if (dateStatus.state === "needs_states") {
     const info = document.createElement("div");
@@ -6884,7 +6942,10 @@ function renderDrivers(){
     info.style.border = "1px solid #fcd34d";
     info.style.borderRadius = "8px";
     info.style.background = "#fffbeb";
-    info.textContent = `Quedan ${dateStatus.remaining} conductores sobrantes. Arrastralos a la pestana "Estados del personal".`;
+    // El numero sale del propio panel, no de getRemainingDriversCountForDate:
+    // esa funcion descarta las filas FICHO y el panel no, asi que las dos
+    // cuentas podian salir distintas en la misma pantalla.
+    info.textContent = `Quedan ${available.length} conductores sobrantes. Arrastralos a la pestana "Estados del personal".`;
     list.appendChild(info);
   }
 

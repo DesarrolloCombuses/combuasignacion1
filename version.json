@@ -1,7 +1,7 @@
 {
-  "version": "2.9.2",
+  "version": "2.9.3",
   "minVersion": "2.9.1",
-  "buildDate": "2026-09-21",
+  "buildDate": "2026-09-30",
   "channel": "stable",
-  "notes": "Nuevo: las bases cuya programacion se consulta desde fuera (hoy BASE 3) tienen una pestana 'Datos compartidos con el cliente' que explica que informacion sale y cual no. Se comparten los turnos, el conductor asignado, cuantos faltan por asignar y quien descansa o esta de vacaciones; no salen las incapacidades, calamidades ni permisos, ni las cedulas, ni ninguna otra base. El sistema externo solo puede leer."
+  "notes": "El panel 'Conductores disponibles' ahora dice por que falta gente: encabeza con cuantos conductores de la base tienen turno, cuantos tienen estado registrado y cuantos quedan sin ubicar. Antes, una base de 22 podia mostrar uno solo sin ninguna explicacion, y el mensaje de panel vacio decia 'Todos los conductores asignados' aunque estuvieran en Estados del personal. Se reactivan tambien el aviso de sobrantes, la guia de pasos y el buscador por nombre, que estaban leyendo la fecha del selector de la base vieja y no funcionaban."
 }

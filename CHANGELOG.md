@@ -18,6 +18,20 @@ Convencion de version:
 
 ---
 
+## [2.9.3] - 2026-09-30
+
+### Corregido
+- **El panel "Conductores disponibles" no explicaba por que faltaba gente**: una base con 22 conductores podia mostrar uno solo, sin ninguna indicacion de donde estaba el resto. Un conductor sale del panel por dos motivos y nada mas (tiene turno asignado ese dia, o tiene un estado registrado en "Estados del personal" para esa fecha), pero ninguno de los dos se veia en pantalla. Ahora el panel encabeza siempre con el reparto completo -- **cuantos con turno, cuantos con estado y cuantos sin ubicar** -- de modo que un panel casi vacio deja de parecer una falla.
+- **El mensaje del panel vacio era falso**: decia "Todos los conductores asignados" aunque estuvieran en Estados del personal, que es justo el sitio donde habria que ir a buscarlos. Ahora distingue los dos casos y da la cuenta de cada uno.
+- **El aviso de sobrantes nunca aparecia en la pestana de la base nueva**: el mensaje "Quedan N conductores sobrantes, arrastralos a Estados del personal" se calculaba sobre `rows`, el conjunto de filas de la **base vieja**, mientras el panel trabaja sobre `rowsTarget`. Con la base vieja apagada (`USE_ONLY_NEW_DB`) la cuenta daba siempre cero y el aviso no salia jamas. Ahora se calcula sobre las filas que realmente se estan viendo.
+- **La guia de pasos y el buscador de conductores estaban muertos**: `updateWorkflowGuide()` leia la fecha del `<select id="filterDate">`, que es el selector de la base vieja: esta oculto y nunca se llena. La guia se quedaba clavada en "Paso 1: selecciona la fecha" y, como efecto secundario, dejaba el campo **"Buscar por nombre..." deshabilitado de forma permanente**. Ahora lee la fecha de la pestana activa.
+
+### Notas
+- El panel y el texto que lo explica salen ahora de **una sola cuenta** (`getDriverAvailabilityBreakdown`). Calcularlos por separado era lo que permitia que el mensaje contradijera a la lista.
+- El numero del aviso de sobrantes se toma del propio panel y no de `getRemainingDriversCountForDate`: esa funcion descarta las filas FICHO y el panel no, asi que las dos cuentas podian mostrar numeros distintos en la misma pantalla.
+
+---
+
 ## [2.9.2] - 2026-09-21
 
 ### Anadido
