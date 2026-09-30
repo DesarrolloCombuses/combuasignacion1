@@ -18,6 +18,19 @@ Convencion de version:
 
 ---
 
+## [2.9.4] - 2026-09-30
+
+### Anadido
+- **La carga de conductores dice ahora quien quedo fuera y por que.** La aplicacion solo puede usar a un conductor si en la hoja de conductores esta **habilitado** (`ENABLED`) **y** tiene base escrita en su columna. Quien no cumple las dos cosas se descartaba **en silencio**: el contador decia "Conductores: 107 en 6 bases" y no habia forma de saber, desde la aplicacion, que otros 68 habilitados se estaban quedando fuera por no tener base. Averiguarlo obligaba a descargar el CSV y contarlo a mano.
+- La pildora del encabezado pasa a decir **"Conductores: 107 en 6 bases - 68 sin base"** y se pone en **ambar** cuando hay alguno sin ubicar.
+- En la tarjeta de administracion de bases, junto a "Recargar CSV", se muestra el detalle: cuantos entraron, cuantas filas estan inactivas (normal, no se cargan) y un aviso desplegable con **los nombres** de los habilitados sin base, para poder corregir la hoja sin salir de la aplicacion.
+
+### Notas
+- El problema que destapo esto: en BASE 4 faltaban conductores en el panel. No era la lectura del CSV, que funciona bien; eran personas activas a las que **nunca se les escribio la base** en la hoja. La aplicacion no tiene forma de adivinar a que base pertenecen, asi que no las puede mostrar en ninguna.
+- Cuando la carga cae al **cache local** (sin internet), el resumen lo dice y **no reporta** cuentas de descartados: el cache solo guarda el listado por base y no sabe quien quedo fuera. Arrastrar la cifra de la carga anterior seria mentir.
+
+---
+
 ## [2.9.3] - 2026-09-30
 
 ### Corregido

@@ -2108,6 +2108,11 @@ let currentProgramacionIdTarget = null;
 let currentProgramacionFileNameTarget = "programacion_online";
 let currentBase = "";
 let driversByBase = {};     // { "2": ["NOMBRE", ...] }
+// Quien queda FUERA del listado y por que. La app solo puede usar a un conductor
+// si en la hoja esta habilitado Y tiene base; quien no cumple las dos cosas
+// desaparecia sin dejar rastro, y averiguarlo obligaba a bajar el CSV a mano.
+let driversSinBaseAsignada = [];   // habilitados a los que no se les puso base
+let driversInactivosCount = 0;     // filas con status distinto de ENABLED
 let assignedByBase = {};    // { "2": Set(["..."]) }
 let basesCatalog = [];
 let isLoadingDrivers = false;
@@ -6495,6 +6500,49 @@ function dedupeProgramacionRows(inputRows){
 }
 
 /* ===================== CARGAR CONDUCTORES DESDE CSV ===================== */
+// Resumen de la carga de conductores: no solo cuantos entraron, sino cuantos
+// quedaron fuera y por que. Un conductor habilitado al que no se le puso base
+// no aparece en NINGUNA pantalla de la aplicacion, y hasta ahora la unica forma
+// de enterarse era descargar el CSV y contarlo a mano.
+function renderDriversCsvSummary(totalEnabled, totalBases, opts = {}){
+  const sufijo = opts.cache ? " (cache)" : "";
+  const sinBase = driversSinBaseAsignada.length;
+
+  if (lblDriversCount) {
+    lblDriversCount.textContent = sinBase
+      ? `Conductores: ${totalEnabled} en ${totalBases} bases - ${sinBase} sin base${sufijo}`
+      : `Conductores: ${totalEnabled} en ${totalBases} bases${sufijo}`;
+    lblDriversCount.classList.toggle("pill-warn", sinBase > 0);
+    lblDriversCount.title = sinBase
+      ? `${sinBase} conductores habilitados no tienen base en la hoja de conductores, asi que no aparecen en ninguna base de la aplicacion.`
+      : "Conductores habilitados con base asignada en la hoja de conductores";
+  }
+
+  if (!csvStatus) return;
+  const partes = [];
+  if (opts.nota) partes.push(`<div>${escapeHtml(opts.nota)}</div>`);
+  partes.push(`<div>Cargados <strong>${totalEnabled}</strong> conductores en ${totalBases} bases${sufijo}.</div>`);
+  if (driversInactivosCount) {
+    partes.push(`<div>${driversInactivosCount} filas inactivas (status distinto de ENABLED). Es lo normal: no se cargan.</div>`);
+  }
+  if (sinBase) {
+    partes.push(
+      `<div style="margin-top:8px;padding:8px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb">` +
+        `<strong>${sinBase} conductores habilitados sin base asignada.</strong> ` +
+        `No salen en ninguna base porque en la hoja de conductores esa columna esta vacia ` +
+        `o trae un correo en lugar de "BASE n". Escribe ahi la base que les corresponde y ` +
+        `apareceran en la siguiente carga.` +
+        `<details style="margin-top:6px"><summary style="cursor:pointer">Ver los ${sinBase} nombres</summary>` +
+          `<div style="max-height:180px;overflow:auto;margin-top:6px;font-size:12px;line-height:1.6">` +
+            driversSinBaseAsignada.map(n => escapeHtml(n)).join("<br>") +
+          `</div>` +
+        `</details>` +
+      `</div>`
+    );
+  }
+  csvStatus.innerHTML = partes.join("");
+}
+
 async function loadDriversFromCSV() {
   if (isLoadingDrivers) return;
   isLoadingDrivers = true;
@@ -6573,6 +6621,8 @@ async function loadDriversFromCSV() {
     const newDriversByBase = {};
     const newCedulaByName = new Map();
     let totalEnabled = 0;
+    const sinBase = [];      // habilitados sin base: no se pueden usar en ninguna
+    let inactivos = 0;       // status distinto de ENABLED
 
     for (let i = 1; i < lines.length; i++) {
       const values = parseCsvRow(lines[i]);
@@ -6587,12 +6637,20 @@ async function loadDriversFromCSV() {
         if (!newCedulaByName.has(k)) newCedulaByName.set(k, cedula);
       }
 
+      // Tres destinos posibles, y los tres se cuentan: antes solo se contaba el
+      // primero y los otros dos se perdian en silencio.
       const baseMatch = email.match(/BASE\s*(\d+)/i);
-      if (baseMatch && nombre && status === 'ENABLED') {
+      if (!nombre) {
+        // fila sin nombre: no es un conductor
+      } else if (status !== 'ENABLED') {
+        inactivos++;
+      } else if (baseMatch) {
         const baseNumber = baseMatch[1];
         if (!newDriversByBase[baseNumber]) newDriversByBase[baseNumber] = [];
         newDriversByBase[baseNumber].push(nombre);
         totalEnabled++;
+      } else {
+        sinBase.push(nombre);
       }
     }
 
@@ -6602,12 +6660,13 @@ async function loadDriversFromCSV() {
     });
 
     driversByBase = newDriversByBase;
+    driversSinBaseAsignada = sinBase.slice().sort((a, b) => a.localeCompare(b, "es"));
+    driversInactivosCount = inactivos;
     if (newCedulaByName.size) driverCedulaByName = newCedulaByName;
     saveDriversCache();
-    
+
     const totalBases = Object.keys(driversByBase).length;
-    lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases`;
-    csvStatus.innerHTML = `Cargados ${totalEnabled} conductores`;
+    renderDriversCsvSummary(totalEnabled, totalBases);
     
     fillStartBases();
     if (currentBase) {
@@ -6628,13 +6687,22 @@ async function loadDriversFromCSV() {
     if (loadedFromCache) {
       const totalBases = Object.keys(driversByBase || {}).length;
       const totalEnabled = Object.values(driversByBase || {}).reduce((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0);
-      lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases (cache)`;
-      csvStatus.innerHTML = 'Sin internet para Google Sheet; usando cache local de conductores';
+      // El cache solo guarda el listado por base: no sabe quien quedo fuera, y
+      // conviene no arrastrar la cuenta de la carga anterior como si fuera de esta.
+      driversSinBaseAsignada = [];
+      driversInactivosCount = 0;
+      renderDriversCsvSummary(totalEnabled, totalBases, {
+        cache: true,
+        nota: "Sin internet para Google Sheet; usando cache local de conductores."
+      });
       fillStartBases();
       rebuildAssigned();
       renderDrivers();
     } else {
+      driversSinBaseAsignada = [];
+      driversInactivosCount = 0;
       lblDriversCount.textContent = "Conductores: 0 en 0 bases";
+      lblDriversCount.classList.remove("pill-warn");
       csvStatus.innerHTML = 'Error al cargar conductores';
       showToast(`No se pudo leer conductores desde Google Sheets (${String(error?.message || "sin detalle")}).`, "err");
     }

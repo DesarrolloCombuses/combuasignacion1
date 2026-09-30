@@ -1,7 +1,7 @@
 {
-  "version": "2.9.3",
+  "version": "2.9.4",
   "minVersion": "2.9.1",
   "buildDate": "2026-09-30",
   "channel": "stable",
-  "notes": "El panel 'Conductores disponibles' ahora dice por que falta gente: encabeza con cuantos conductores de la base tienen turno, cuantos tienen estado registrado y cuantos quedan sin ubicar. Antes, una base de 22 podia mostrar uno solo sin ninguna explicacion, y el mensaje de panel vacio decia 'Todos los conductores asignados' aunque estuvieran en Estados del personal. Se reactivan tambien el aviso de sobrantes, la guia de pasos y el buscador por nombre, que estaban leyendo la fecha del selector de la base vieja y no funcionaban."
+  "notes": "La carga de conductores ahora avisa de quien queda fuera. La aplicacion solo puede usar a un conductor si en la hoja esta habilitado Y tiene base escrita; quien no cumple las dos cosas se descartaba en silencio. El contador del encabezado pasa a decir cuantos quedaron sin base y se pone en ambar, y en la tarjeta de bases se puede desplegar la lista de nombres para corregir la hoja."
 }
