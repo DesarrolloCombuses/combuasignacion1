@@ -366,20 +366,302 @@ function setAuthStatus(msg, type){
   authStatus.className = `auth-status ${type}`;
 }
 
-function showToast(msg, type = "ok"){
+// showToast(msg, tipo, error?): un aviso de error ("err"), o cualquier aviso al
+// que se le pase el error, se puede tocar para abrir el reporte copiable.
+function showToast(msg, type = "ok", error){
   if (!appToast) return;
+  const reportable = type === "err" || (error != null && error !== "");
+  const report = reportable ? buildErrorReport(msg, error) : null;
+  if (report) {
+    lastErrorReport = report;
+    console.error(`[${report.ref}] ${msg}`, error ?? "");
+  }
   appToast.textContent = msg;
-  appToast.className = `toast ${type} show`;
+  appToast.onclick = null;
+  appToast.onkeydown = null;
+  appToast.removeAttribute("role");
+  appToast.removeAttribute("tabindex");
+  if (report) {
+    const cta = document.createElement("span");
+    cta.className = "toast-cta";
+    cta.textContent = "Toca aqui para ver y copiar el error";
+    appToast.appendChild(cta);
+    const open = () => {
+      clearTimeout(dragFeedbackTimer);
+      appToast.className = `toast ${type}`;
+      openErrorReportModal(report);
+    };
+    appToast.onclick = open;
+    appToast.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } };
+    appToast.setAttribute("role", "button");
+    appToast.setAttribute("tabindex", "0");
+  }
+  appToast.className = `toast ${type} show${report ? " toast-action" : ""}`;
   clearTimeout(dragFeedbackTimer);
+  // Un error se queda mas tiempo: hay que alcanzar a leerlo y a tocarlo.
   dragFeedbackTimer = setTimeout(() => {
     appToast.className = `toast ${type}`;
-  }, 2600);
+  }, report ? 9000 : 2600);
 }
 
 function setSyncStatus(type, msg){
   lblSync.textContent = msg;
   lblSync.className = `pill pill-${type}`;
+  // En rojo, la pildora abre el ultimo error: el aviso flotante se va solo y
+  // la pildora es lo que queda a la vista.
+  const clickable = type === "err";
+  lblSync.classList.toggle("pill-clickable", clickable);
+  lblSync.title = clickable ? "Toca para ver y copiar el error" : "";
 }
+
+/* ===================== REPORTE DE ERRORES =====================
+   Los errores salian en un alert() o en un aviso rojo de 2,6 segundos: no se
+   alcanzaban a leer, no se podian copiar y a soporte le llegaba "salio un
+   error" sin ningun detalle. Ahora cada error arma un reporte de texto (que
+   paso, el mensaje tecnico, donde estaba el usuario, que version corria) que
+   se copia con un boton y se pega en el WhatsApp de soporte.
+   - reportError(titulo, error, { hint }): abre la ventana del reporte. Para
+     errores de acciones del usuario (guardar, asignar, cambiar carro...).
+   - showToast(msg, "err", error): aviso rojo que no tapa la pantalla; al
+     tocarlo abre el mismo reporte. Para cargas en segundo plano, que pueden
+     repetirse cada pocos segundos y no deben abrir una ventana cada vez. */
+
+const ERROR_REPORT_MAX_JUNTOS = 5;
+let lastErrorReport = null;
+let errorModalReports = [];
+let errorModalCopied = false;
+let errorModalCloseWarned = false;
+
+function safeErrorValue(fn, fallback = ""){
+  try {
+    const v = fn();
+    return v == null || v === "" ? fallback : v;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function describeBrowserForReport(){
+  const ua = navigator.userAgent || "";
+  const major = (re) => { const m = ua.match(re); return m ? m[1].split(".")[0] : ""; };
+  let nav = "Navegador desconocido";
+  if (/Edg\//.test(ua)) nav = `Edge ${major(/Edg\/([\d.]+)/)}`;
+  else if (/OPR\//.test(ua)) nav = `Opera ${major(/OPR\/([\d.]+)/)}`;
+  else if (/SamsungBrowser\//.test(ua)) nav = `Samsung Internet ${major(/SamsungBrowser\/([\d.]+)/)}`;
+  else if (/Chrome\//.test(ua)) nav = `Chrome ${major(/Chrome\/([\d.]+)/)}`;
+  else if (/Firefox\//.test(ua)) nav = `Firefox ${major(/Firefox\/([\d.]+)/)}`;
+  else if (/Safari\//.test(ua)) nav = `Safari ${major(/Version\/([\d.]+)/)}`;
+  let so = "";
+  if (/Windows/.test(ua)) so = "Windows";
+  else if (/Android/.test(ua)) so = "Android";
+  else if (/iPhone|iPad|iPod/.test(ua)) so = "iOS";
+  else if (/Mac OS X/.test(ua)) so = "Mac";
+  else if (/Linux/.test(ua)) so = "Linux";
+  return so ? `${nav} / ${so}` : nav;
+}
+
+// Las lineas tecnicas del error. Sirve para Error de JS, errores de Supabase
+// (message, code, details, hint) y textos sueltos.
+function describeErrorForReport(error){
+  if (error == null || error === "") return [];
+  if (typeof error === "string") return [`Error: ${error}`];
+  const lines = [];
+  const message = error.message || error.error_description || error.msg || "";
+  let fallback = "";
+  if (!message) {
+    try { fallback = JSON.stringify(error); } catch (e) { fallback = String(error); }
+  }
+  lines.push(`Error: ${message || fallback || "sin detalle"}`);
+  if (error.name && error.name !== "Error" && !String(message).startsWith(error.name)) lines.push(`Tipo: ${error.name}`);
+  if (error.code) lines.push(`Codigo: ${error.code}`);
+  if (error.status) lines.push(`Estado HTTP: ${error.status}`);
+  if (error.details) lines.push(`Detalle tecnico: ${error.details}`);
+  if (error.hint) lines.push(`Pista: ${error.hint}`);
+  if (error.stack) {
+    // Solo las primeras lineas del rastro, con las URL reducidas al archivo
+    // (".../js/functions.js?v=2.9.5:8916:25" -> "functions.js:8916:25").
+    const rastro = String(error.stack).split("\n").slice(1, 5)
+      .map(l => l.trim().replace(/https?:\/\/[^\s)]*\/([^\/\s?)]+)(?:\?[^\s:)]*)?/g, "$1"))
+      .filter(Boolean);
+    if (rastro.length) lines.push("Rastro:", ...rastro.map(l => `  ${l}`));
+  }
+  return lines;
+}
+
+function buildErrorReport(title, error, opts = {}){
+  const now = new Date();
+  const ref = `ERR-${now.getTime().toString(36).toUpperCase().slice(-6)}`;
+  const tabName = safeErrorValue(() => document.querySelector(".tab.active")?.textContent.trim(), "-");
+  const base = safeErrorValue(() => currentBase ? formatBaseLabel(currentBase) : "", "sin base abierta");
+  const fecha = safeErrorValue(() => getActiveSelectedDateISO(), "sin fecha");
+  const usuario = safeErrorValue(() => currentUserEmail, "sin sesion");
+  const version = safeErrorValue(() => window.APP_CODE_VERSION, "?");
+  const hora = safeErrorValue(() => now.toLocaleString("es-CO"), now.toISOString());
+  const lines = [
+    `*Error en CombuAsigna* (${ref})`,
+    `Que paso: ${String(title || "Error sin titulo").trim()}`,
+    ...describeErrorForReport(error),
+    "",
+    `Usuario: ${usuario}`,
+    `Base: ${base}`,
+    `Pestana: ${tabName}`,
+    `Fecha de trabajo: ${fecha}`,
+    `Version: ${version}`,
+    `Navegador: ${describeBrowserForReport()}`,
+    `Conexion: ${navigator.onLine ? "con internet" : "SIN INTERNET"}`,
+    `Hora: ${hora}`
+  ];
+  return {
+    ref,
+    title: String(title || "Ocurrio un error").trim(),
+    hint: String(opts.hint || "").trim(),
+    text: lines.join("\n")
+  };
+}
+
+function reportError(title, error, opts = {}){
+  const report = buildErrorReport(title, error, opts);
+  lastErrorReport = report;
+  console.error(`[${report.ref}] ${report.title}`, error ?? "");
+  openErrorReportModal(report);
+  return report;
+}
+
+function getErrorReportText(){
+  return errorModalReports.map(r => r.text).join("\n\n------\n\n");
+}
+
+function renderErrorReportModal(){
+  const first = errorModalReports[0];
+  if (!first) return;
+  const titleEl = document.getElementById("errorReportTitle");
+  const subEl = document.getElementById("errorReportSub");
+  const textEl = document.getElementById("errorReportText");
+  const extra = errorModalReports.length - 1;
+  if (titleEl) titleEl.textContent = first.title;
+  if (subEl) {
+    const base = first.hint || "La accion no se completo.";
+    subEl.textContent = extra > 0
+      ? `${base} Ademas ocurrieron ${extra} error(es) mas; van todos juntos en el reporte.`
+      : base;
+  }
+  if (textEl) {
+    textEl.value = getErrorReportText();
+    textEl.scrollTop = 0;
+  }
+}
+
+function setErrorReportStatus(kind, msg){
+  const el = document.getElementById("errorReportStatus");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = `errrep-status errrep-status-${kind}${msg ? "" : " hidden"}`;
+}
+
+function openErrorReportModal(report){
+  const modal = document.getElementById("errorReportModal");
+  if (!modal) {
+    // Sin la ventana (HTML viejo en cache): al menos que se pueda copiar.
+    window.prompt("Copia este error y pegalo en el WhatsApp de soporte:", report.text);
+    return;
+  }
+  const isOpen = !modal.classList.contains("hidden");
+  if (isOpen) {
+    // Ya hay un reporte abierto: el nuevo se suma en vez de reemplazarlo,
+    // porque el primero suele ser la causa de los siguientes.
+    if (errorModalReports.some(r => r.ref === report.ref)) return;
+    if (errorModalReports.length >= ERROR_REPORT_MAX_JUNTOS) return;
+    errorModalReports.push(report);
+    errorModalCopied = false;
+    errorModalCloseWarned = false;
+    setErrorReportStatus("info", "");
+    const copyBtn = document.getElementById("btnErrorReportCopy");
+    if (copyBtn) copyBtn.textContent = "Copiar error";
+    renderErrorReportModal();
+    return;
+  }
+  errorModalReports = [report];
+  errorModalCopied = false;
+  errorModalCloseWarned = false;
+  setErrorReportStatus("info", "");
+  const copyBtn = document.getElementById("btnErrorReportCopy");
+  if (copyBtn) copyBtn.textContent = "Copiar error";
+  const closeBtn = document.getElementById("btnErrorReportClose");
+  if (closeBtn) closeBtn.textContent = "Cerrar";
+  renderErrorReportModal();
+  modal.classList.remove("hidden");
+  setTimeout(() => copyBtn?.focus(), 0);
+}
+
+function closeErrorReportModal(force = false){
+  const modal = document.getElementById("errorReportModal");
+  if (!modal || modal.classList.contains("hidden")) return;
+  if (!force && !errorModalCopied && !errorModalCloseWarned) {
+    // Un solo recordatorio: si cierra sin copiar, soporte se queda sin el detalle.
+    errorModalCloseWarned = true;
+    setErrorReportStatus("warn", "Antes de cerrar, copia el error y envialo por WhatsApp a soporte para que lo podamos revisar.");
+    const closeBtn = document.getElementById("btnErrorReportClose");
+    if (closeBtn) closeBtn.textContent = "Cerrar sin copiar";
+    document.getElementById("btnErrorReportCopy")?.focus();
+    return;
+  }
+  modal.classList.add("hidden");
+  errorModalReports = [];
+}
+
+async function copyErrorReportText(){
+  const text = getErrorReportText();
+  const textEl = document.getElementById("errorReportText");
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (e) {
+    ok = false;
+  }
+  if (!ok && textEl) {
+    try {
+      textEl.focus();
+      textEl.select();
+      textEl.setSelectionRange(0, text.length);
+      ok = !!document.execCommand("copy");
+    } catch (e) {
+      ok = false;
+    }
+  }
+  const copyBtn = document.getElementById("btnErrorReportCopy");
+  if (ok) {
+    errorModalCopied = true;
+    if (copyBtn) copyBtn.textContent = "Copiado ✓";
+    const closeBtn = document.getElementById("btnErrorReportClose");
+    if (closeBtn) closeBtn.textContent = "Cerrar";
+    setErrorReportStatus("ok", "Copiado. Ahora pegalo en el WhatsApp de soporte y envialo.");
+  } else {
+    // No se pudo copiar solo: el texto queda seleccionado para copiarlo a mano.
+    if (textEl) { textEl.focus(); textEl.select(); }
+    setErrorReportStatus("warn", "No se pudo copiar automaticamente. El texto quedo seleccionado: copialo con Ctrl+C (en el celular, manten presionado y elige Copiar).");
+  }
+  return ok;
+}
+
+function bindErrorReportModal(){
+  const modal = document.getElementById("errorReportModal");
+  if (!modal || modal.dataset.bound === "1") return;
+  modal.dataset.bound = "1";
+  document.getElementById("btnErrorReportCopy")?.addEventListener("click", () => { copyErrorReportText(); });
+  document.getElementById("btnErrorReportClose")?.addEventListener("click", () => closeErrorReportModal());
+  modal.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { ev.preventDefault(); closeErrorReportModal(); }
+  });
+  lblSync?.addEventListener("click", () => {
+    if (!lblSync.classList.contains("pill-clickable")) return;
+    openErrorReportModal(lastErrorReport || buildErrorReport(lblSync.textContent || "Error", null));
+  });
+}
+
+bindErrorReportModal();
 
 // Modal verde de confirmacion que se cierra solo (~1.6s). Se invoca unicamente
 // cuando el guardado quedo CONFIRMADO en la base de datos.
@@ -655,6 +937,71 @@ function highlightDropTargets(active){
     td.classList.toggle("drop-active", active);
   });
 }
+
+/* ---------- Datos del arrastre (conductores y vehiculos) ----------
+   Cada arrastre propio viaja como JSON en dataTransfer ("text/plain"). Antes
+   cada destino hacia JSON.parse(getData(...)) a pelo: si el navegador entregaba
+   ese texto vacio al soltar, JSON.parse("") reventaba con "Unexpected end of
+   JSON input" y, en Estados del personal, el aviso decia "No se pudo guardar la
+   novedad en Supabase" aunque Supabase ni siquiera se habia tocado.
+   Ahora el origen guarda ademas una copia en memoria: origen y destino viven en
+   la misma pagina, asi que si dataTransfer llega vacio la copia sirve igual.
+   readDragPayload nunca lanza: devuelve el objeto o null. */
+const DRAG_PAYLOAD_MAX_AGE_MS = 120000;
+let activeDragPayload = null;
+let activeDragPayloadAt = 0;
+
+function clearDragPayload(){
+  activeDragPayload = null;
+  activeDragPayloadAt = 0;
+}
+
+function setDragPayload(ev, payload){
+  activeDragPayload = payload;
+  activeDragPayloadAt = Date.now();
+  try {
+    ev.dataTransfer.setData("text/plain", JSON.stringify(payload));
+  } catch (e) {
+    console.warn("[arrastre] el navegador no acepto los datos del arrastre:", e?.message || e);
+  }
+}
+
+function readDragPayload(ev){
+  const dt = ev?.dataTransfer;
+  const types = Array.from(dt?.types || []);
+  let raw = "";
+  try { raw = String(dt?.getData("text/plain") || ""); } catch (e) { raw = ""; }
+  const memo = activeDragPayload;
+  const memoFresh = !!memo && (Date.now() - activeDragPayloadAt) < DRAG_PAYLOAD_MAX_AGE_MS;
+  // Se consume al leer: un mismo arrastre no puede servir para dos soltadas.
+  clearDragPayload();
+
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && parsed.tipo) return parsed;
+    } catch (e) {}
+    // Texto que no es nuestro (una seleccion, algo de otra aplicacion): no se
+    // usa la copia en memoria, porque no corresponde a lo que se solto.
+    console.warn("[arrastre] se solto texto que no es un conductor ni un vehiculo:", raw.slice(0, 120));
+    return null;
+  }
+
+  // dataTransfer llego vacio. Si viene un archivo es algo de fuera de la app;
+  // si no, se usa la copia que dejo el origen al empezar el arrastre.
+  if (memoFresh && !types.includes("Files")) {
+    console.warn("[arrastre] dataTransfer llego vacio; se usa la copia en memoria. Tipos:", types);
+    return memo;
+  }
+  console.warn("[arrastre] se solto algo sin datos reconocibles. Tipos:", types);
+  return null;
+}
+
+// Todo arrastre nuevo empieza limpio (en captura: corre antes que el
+// ondragstart del elemento, que es el que guarda la copia nueva) y la copia
+// se descarta al terminar, se haya soltado donde se haya soltado.
+document.addEventListener("dragstart", clearDragPayload, true);
+document.addEventListener("dragend", clearDragPayload, true);
 
 function autoScrollDuringDrag(clientY){
   const edge = 90;
@@ -1079,9 +1426,10 @@ function applyAuthState(session){
       setSyncStatus("warn", "Validando datos...");
       appInitialized = true;
       initializeApp().catch((error) => {
-        console.error("Error inicializando app:", error);
         setSyncStatus("err", "Error inicializando");
-        showToast("No se pudo inicializar la app.", "err");
+        reportError("No se pudo iniciar la aplicacion", error, {
+          hint: "Recarga la pagina. Si vuelve a salir, envia este error."
+        });
         appInitialized = false;
       });
     } else {
@@ -1618,7 +1966,7 @@ async function loadLatestProgramacionFromSupabase(){
 
   if (error) {
     console.error("Error cargando programacion:", error);
-    showToast(`Error programaciones: ${error.message || "sin detalle"}`, "err");
+    showToast("No se pudieron cargar las programaciones.", "err", error);
     setSyncStatus("err", "Error de lectura");
     return;
   }
@@ -1961,9 +2309,9 @@ async function syncProgramacionRowsToSupabase(reason = "Cambios guardados en Sup
     setSyncStatus("err", "Error guardando cambios");
     const detail = String(error?.message || "");
     if (isPermissionLikeError(error)) {
-      showToast("Cambios pendientes por permisos en Supabase (RLS). Contacta al administrador.", "err");
+      showToast("Cambios pendientes por permisos en Supabase (RLS). Contacta al administrador.", "err", error);
     } else {
-      showToast(`Cambios pendientes. Se reintentara al reconectar.${detail ? ` (${detail})` : ""}`, "warn");
+      showToast(`Cambios pendientes. Se reintentara al reconectar.${detail ? ` (${detail})` : ""}`, "warn", error);
     }
     scheduleSyncRetry(reason);
     return false;
@@ -1990,7 +2338,7 @@ async function loadNovedadesFromSupabase(options = {}){
 
   if (error) {
     console.error("Error cargando novedades:", error);
-    showToast(`Error novedades: ${error.message || "sin detalle"}`, "err");
+    showToast("No se pudo cargar Estados del personal.", "err", error);
     novedades = [];
     setSyncStatus("err", "Error novedades");
     return;
@@ -3137,7 +3485,9 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
     // dia y las demas bases.
     savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
     setSyncStatus("warn", "Pendiente DB nueva");
-    showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn");
+    // El cambio no se pierde (queda en este equipo y se reintenta), pero el
+    // error se adjunta: si se repite, soporte necesita saber por que.
+    showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn", error);
     scheduleTargetSyncRetry(reason);
     return false;
   } finally {
@@ -3481,7 +3831,11 @@ function renderTable2(){
           ev.preventDefault();
           td.classList.remove("highlight");
           try {
-            const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
+            const data = readDragPayload(ev);
+            if (!data) {
+              showToast("No se reconocio lo que soltaste. Arrastra el conductor desde el panel o escribelo en la casilla.", "warn");
+              return;
+            }
             if (data.tipo !== "conductor") return;
             r[k] = data.nombre;
             setConductorNote(r, k, "");
@@ -3495,8 +3849,7 @@ function renderTable2(){
             scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
             renderDrivers();
           } catch (e) {
-            console.error("No se pudo asignar conductor en tabla 2:", e);
-            showToast("No se pudo asignar conductor en Turnos del dia 2.", "err");
+            reportError("No se pudo asignar el conductor en Turnos del dia", e);
           }
         };
         td.ondblclick = async () => {
@@ -3532,14 +3885,14 @@ function renderTable2(){
             return;
           }
           td.classList.add("highlight");
-          ev.dataTransfer.setData("text/plain", JSON.stringify({
+          setDragPayload(ev, {
             tipo: "vehiculo_posicion",
             sourceRowUiId: ensureRowUiId(r),
             sourceRowKey: buildProgramacionRowKey(r),
             sourceVehiculoKey: k,
             sourceVehiculo: String(sourceValue),
             sourceLabel: rowLabel
-          }));
+          });
           ev.dataTransfer.effectAllowed = "move";
         };
         td.ondragend = () => td.classList.remove("highlight");
@@ -3553,7 +3906,11 @@ function renderTable2(){
           ev.preventDefault();
           td.classList.remove("highlight");
           try {
-            const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
+            const data = readDragPayload(ev);
+            if (!data) {
+              showToast("No se reconocio el vehiculo arrastrado. Vuelve a arrastrarlo desde su casilla de vehiculo.", "warn");
+              return;
+            }
             if (data.tipo !== "vehiculo_posicion") return;
 
             const sourceRow = rowsTarget.find(row => ensureRowUiId(row) === data.sourceRowUiId)
@@ -3607,8 +3964,9 @@ function renderTable2(){
             showToast(`Cambio confirmado: ${sourceValue || "-"} <-> ${targetValue || "-"}${conductorMsg}${fichoUpdated ? ` | FICHO actualizados: ${fichoUpdated}` : ""}`, "ok");
             await syncProgramacionRowsToTargetSupabase("Cambio de posicion de vehiculos guardado en DB nueva.");
           } catch (e) {
-            console.error("Error intercambio vehiculos en DB nueva", e);
-            showToast("No se pudo intercambiar la posicion de vehiculos en DB nueva.", "err");
+            reportError("No se pudo cambiar el carro de posicion", e, {
+              hint: "Revisa la tabla: si los carros no quedaron donde debian, vuelve a intentarlo despues de enviar el error."
+            });
           }
         };
       } else {
@@ -3991,7 +4349,7 @@ async function migrateProgramacionToNewProject(recordId = null){
   } catch (e) {
     const message = e?.message || String(e);
     setMigrationOutput(`Error en migracion manual:\n${message}`);
-    showToast("Fallo la migracion manual. Revisa el detalle en Diagnostico.", "err");
+    showToast("Fallo la migracion manual. Revisa el detalle en Diagnostico.", "err", e);
   }
 }
 
@@ -5105,7 +5463,7 @@ async function loadPlanillaAfiliadosFromSupabase(){
     if (llegadasSanDiegoStatus) llegadasSanDiegoStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
     if (llegadasNutibaraStatus) llegadasNutibaraStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
     if (llegadasNovedadesStatus) llegadasNovedadesStatus.textContent = `Error: ${error?.message || "consulta fallida"}`;
-    showToast(`No se pudo cargar ${PLANILLA_TABLE_NAME} desde Supabase.`, "err");
+    showToast(`No se pudo cargar ${PLANILLA_TABLE_NAME} desde Supabase.`, "err", error);
   } finally {
     planillaAfiliadosLoading = false;
   }
@@ -6704,7 +7062,7 @@ async function loadDriversFromCSV() {
       lblDriversCount.textContent = "Conductores: 0 en 0 bases";
       lblDriversCount.classList.remove("pill-warn");
       csvStatus.innerHTML = 'Error al cargar conductores';
-      showToast(`No se pudo leer conductores desde Google Sheets (${String(error?.message || "sin detalle")}).`, "err");
+      showToast("No se pudo leer el listado de conductores (Google Sheets).", "err", error);
     }
   } finally {
     isLoadingDrivers = false;
@@ -7029,13 +7387,15 @@ function renderDrivers(){
       `;
       
       div.ondragstart = ev => {
-        highlightDropTargets(true);
-        ev.dataTransfer.setData('text/plain', JSON.stringify({
+        // Primero los datos: si algo de lo que sigue fallara, el arrastre
+        // ya lleva al conductor.
+        setDragPayload(ev, {
           tipo: 'conductor',
           nombre: name,
           base: base
-        }));
+        });
         ev.dataTransfer.effectAllowed = 'move';
+        highlightDropTargets(true);
       };
       div.ondragend = () => highlightDropTargets(false);
       
@@ -7128,8 +7488,9 @@ function renderNovedadesInto(opts = {}){
         await updateNovedadEstadoInSupabase(id, nuevoEstado);
         await refreshNovedadesFromDbAndRender();
       } catch (error) {
-        console.error("Error actualizando novedad:", error);
-        alert(`No se pudo actualizar la novedad en Supabase.\n${error?.message || ""}`);
+        reportError("No se pudo cambiar el estado del conductor", error, {
+          hint: "El estado no se guardo; la tabla vuelve a mostrar el que tenia."
+        });
         renderNovedades();
       }
     });
@@ -7144,8 +7505,9 @@ function renderNovedadesInto(opts = {}){
         await deleteNovedadInSupabase(id);
         await refreshNovedadesFromDbAndRender();
       } catch (error) {
-        console.error("Error eliminando novedad:", error);
-        alert("No se pudo eliminar la novedad en Supabase.");
+        reportError("No se pudo quitar al conductor de Estados del personal", error, {
+          hint: "El conductor sigue en la lista."
+        });
       }
     });
   });
@@ -7650,8 +8012,12 @@ function renderTable(){
           highlightDropTargets(false);
           
           try {
-            const data = JSON.parse(ev.dataTransfer.getData('text/plain'));
-            
+            const data = readDragPayload(ev);
+            if (!data) {
+              showToast("No se reconocio lo que soltaste. Arrastra el conductor desde el panel.", "warn");
+              return;
+            }
+
             if (data.tipo === 'conductor') {
               const existingName = extractConductorName(r[k] || "");
               if (existingName && norm(existingName) !== norm(data.nombre)) {
@@ -7667,8 +8033,7 @@ function renderTable(){
               await syncProgramacionRowsToSupabase(`Asignacion guardada en ${k}.`);
             }
           } catch (e) {
-            console.error('Error parsing drop data', e);
-            showToast("No se pudo asignar el conductor.", "err");
+            reportError("No se pudo asignar el conductor", e);
           }
         };
 
@@ -7733,14 +8098,14 @@ function renderTable(){
           }
           const sourceLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
           td.classList.add("highlight");
-          ev.dataTransfer.setData("text/plain", JSON.stringify({
+          setDragPayload(ev, {
             tipo: "vehiculo_posicion",
             sourceRowUiId: ensureRowUiId(r),
             sourceRowKey: buildProgramacionRowKey(r),
             sourceVehiculoKey: k,
             sourceVehiculo: String(sourceValue),
             sourceLabel
-          }));
+          });
           ev.dataTransfer.effectAllowed = "move";
           showToast(`Cambio de carro: origen ${sourceLabel} (VEH ${sourceValue}).`, "warn");
         };
@@ -7755,7 +8120,11 @@ function renderTable(){
           ev.preventDefault();
           td.classList.remove("highlight");
           try {
-            const data = JSON.parse(ev.dataTransfer.getData("text/plain"));
+            const data = readDragPayload(ev);
+            if (!data) {
+              showToast("No se reconocio el vehiculo arrastrado. Vuelve a arrastrarlo desde su casilla de vehiculo.", "warn");
+              return;
+            }
             if (data.tipo !== "vehiculo_posicion") return;
 
             const sourceRow = rows.find(row => ensureRowUiId(row) === data.sourceRowUiId)
@@ -7823,8 +8192,9 @@ function renderTable(){
             showToast(`Cambio confirmado: ${sourceValue || "-"} <-> ${targetValue || "-"}${conductorMsg}${fichoUpdated ? ` | FICHO actualizados: ${fichoUpdated}` : ""}${nutibaraTopUpdated ? ` | NUTIBARA top10: ${nutibaraTopUpdated}` : ""}${dedupedAfterSwap.removed ? ` | Duplicados limpiados: ${dedupedAfterSwap.removed}` : ""}`, "ok");
             await syncProgramacionRowsToSupabase("Cambio de posicion de vehiculos guardado.");
           } catch (e) {
-            console.error("Error intercambio vehiculos", e);
-            showToast("No se pudo intercambiar la posicion de vehiculos.", "err");
+            reportError("No se pudo cambiar el carro de posicion", e, {
+              hint: "Revisa la tabla: si los carros no quedaron donde debian, vuelve a intentarlo despues de enviar el error."
+            });
           }
         };
       } else {
@@ -8348,8 +8718,7 @@ async function handleExportReporteTurnos(){
     const sinCedula = personas.filter(p => !p.cedula).length;
     showToast(`Reporte generado: ${personas.length} personas, ${dates.length} dias (${conTurno} con turno)${sinCedula ? ` | ${sinCedula} sin cedula` : ""}.`, sinCedula ? "warn" : "ok");
   } catch (err) {
-    console.error("Reporte de turnos:", err);
-    showToast("Error al generar el reporte: " + (err?.message || "desconocido"), "err");
+    reportError("No se pudo generar el reporte de turnos", err);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -8617,7 +8986,7 @@ async function loadDespachosPage(opts = {}){
   } catch (e) {
     console.error("Error cargando despachos_realizados:", e);
     if (despachoStatus) despachoStatus.textContent = `Error: ${e?.message || "consulta fallida"}`;
-    showToast("No se pudo cargar despachos realizados desde Supabase.", "err");
+    showToast("No se pudo cargar despachos realizados desde Supabase.", "err", e);
   } finally {
     despachosLoading = false;
   }
@@ -8847,7 +9216,7 @@ document.querySelectorAll('.tab').forEach(tab => {
         })
         .catch((e) => {
           console.error("Error cargando programacion 2:", e);
-          showToast("No se pudo cargar la programacion de DB nueva.", "err");
+          showToast("No se pudo cargar la programacion de Turnos del dia.", "err", e);
           renderTable2();
           renderDrivers();
         });
@@ -8899,11 +9268,6 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-async function handleNovedadesDropData(data){
-  if (!data || data.tipo !== "conductor") return;
-  await addNovedadByName(data.nombre);
-}
-
 function attachNovedadesDropHandlers(gridEl){
   if (!gridEl) return;
   gridEl.ondragover = ev => {
@@ -8912,17 +9276,28 @@ function attachNovedadesDropHandlers(gridEl){
   };
   gridEl.ondrop = async ev => {
     ev.preventDefault();
+    // Leer lo que se solto NO es un fallo de Supabase: se resuelve aqui, con su
+    // propio mensaje, y el aviso de Supabase queda solo para errores reales.
+    const data = readDragPayload(ev);
+    if (!data) {
+      showToast("No se reconocio lo que soltaste. Arrastra el conductor desde el panel \"Conductores disponibles\" o usa \"Asignar por nombre\".", "warn");
+      return;
+    }
+    if (data.tipo !== "conductor") {
+      showToast("Aqui solo se sueltan conductores del panel \"Conductores disponibles\".", "warn");
+      return;
+    }
     try {
-      const data = JSON.parse(ev.dataTransfer.getData('text/plain'));
-      await handleNovedadesDropData(data);
+      await addNovedadByName(data.nombre);
     } catch (e) {
-      console.error('Error creando novedad', e);
       const detail = String(e?.message || "");
-      const duplicateHint = detail.toLowerCase().includes("duplicate key")
-        ? "\nPosible causa: indice unico de novedades sin fecha."
-        : "";
-      alert(`No se pudo guardar la novedad en Supabase.\n${detail}${duplicateHint}`);
+      const duplicate = detail.toLowerCase().includes("duplicate key");
       setSyncStatus("err", "Error novedades");
+      reportError(`No se pudo registrar a ${data.nombre} en Estados del personal`, e, {
+        hint: duplicate
+          ? "El conductor no quedo registrado. Posible causa: indice unico de novedades sin fecha."
+          : "El conductor no quedo registrado."
+      });
     }
   };
 }
@@ -9035,9 +9410,11 @@ async function readFile(file, options = {}){
       lblGlobal.textContent = `Archivo cargado localmente: ${file.name} | Filas: ${rows.length}`;
     }
     setSyncStatus("warn", "Solo local");
-    alert(mode === "target"
-      ? `El archivo se cargo, pero no se pudo guardar en la base nueva de Supabase.\n\nDetalle: ${detail || "sin detalle"}`
-      : "El archivo se cargo, pero no se pudo guardar en Supabase. Revisa tablas/politicas.");
+    reportError(`El archivo ${file.name} se leyo, pero no se pudo guardar en Supabase`, error, {
+      hint: mode === "target"
+        ? "La programacion solo quedo en este equipo; los demas no la ven."
+        : "La programacion solo quedo en este equipo. Revisa tablas/politicas."
+    });
   }
 
   if(currentBase){
@@ -9217,9 +9594,8 @@ async function handleProgramacionFileChange(e){
     setSyncStatus("warn", "Subiendo archivo...");
     await readFile(f);
   } catch (error) {
-    console.error("Error procesando archivo:", error);
     setSyncStatus("err", "Archivo invalido");
-    alert(error?.message || "No se pudo cargar el archivo en Supabase.");
+    reportError(`No se pudo cargar el archivo ${f.name}`, error);
   } finally {
     if (e?.target) e.target.value = "";
   }
@@ -9261,13 +9637,14 @@ async function handleProgramacionFileChangeNewDb(e){
         showToast(`${ok} archivos cargados en la base nueva.`, "ok");
       } else {
         setSyncStatus("warn", `Cargados ${ok}/${files.length}`);
-        alert(`Se cargaron ${ok} de ${files.length} archivos en la base nueva.\n\nFallaron:\n- ${errores.join("\n- ")}`);
+        reportError(`Se cargaron ${ok} de ${files.length} archivos; ${errores.length} fallaron`,
+          `Fallaron:\n- ${errores.join("\n- ")}`,
+          { hint: "Los archivos que fallaron no quedaron guardados." });
       }
     }
   } catch (error) {
-    console.error("Error procesando archivo para DB nueva:", error);
     setSyncStatus("err", "Archivo invalido (DB nueva)");
-    alert(error?.message || "No se pudo cargar el archivo en la base nueva de Supabase.");
+    reportError("No se pudo cargar el archivo de programacion", error);
   } finally {
     if (e?.target) e.target.value = "";
   }
@@ -9388,9 +9765,8 @@ async function handleDeleteDayClick(){
     setSyncStatus("ok", "Dia eliminado");
     showToast(`Dia ${legible} eliminado (${totalEliminadas} filas) de la base de datos.`, "ok");
   } catch (error) {
-    console.error("No se pudo eliminar el dia en la DB nueva:", error);
     setSyncStatus("err", "Error al eliminar");
-    showToast(`No se pudo eliminar el dia ${legible}: ${error?.message || "sin detalle"}`, "err");
+    reportError(`No se pudo eliminar el dia ${legible}`, error);
   } finally {
     if (btnDeleteDay) btnDeleteDay.disabled = !AppState.hasRows;
   }
@@ -9680,8 +10056,9 @@ function bindUIEvents(){
       try {
         await addNovedadByName(novedadManualInput2?.value || "");
       } catch (error) {
-        console.error("Error asignando novedad manual:", error);
-        showToast("No se pudo asignar el conductor por nombre.", "err");
+        reportError("No se pudo registrar al conductor por nombre en Estados del personal", error, {
+          hint: "El conductor no quedo registrado."
+        });
       }
     });
   }
@@ -9692,8 +10069,9 @@ function bindUIEvents(){
       try {
         await addNovedadByName(novedadManualInput2.value || "");
       } catch (error) {
-        console.error("Error asignando novedad manual:", error);
-        showToast("No se pudo asignar el conductor por nombre.", "err");
+        reportError("No se pudo registrar al conductor por nombre en Estados del personal", error, {
+          hint: "El conductor no quedo registrado."
+        });
       }
     });
   }
@@ -9751,8 +10129,7 @@ function bindUIEvents(){
         renderDrivers();
         showToast("Programacion 2 actualizada desde DB nueva.", "ok");
       } catch (e) {
-        console.error("No se pudo actualizar programacion 2:", e);
-        showToast("No se pudo actualizar Programacion 2.", "err");
+        reportError("No se pudo actualizar la programacion", e);
       }
     });
   }
@@ -10164,7 +10541,7 @@ function bindWindowEvents(){
     } catch (err){
       console.error("[asistencias] error de carga:", err);
       setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudieron cargar las asistencias.", "err");
+      if (typeof showToast === "function") showToast("No se pudieron cargar las asistencias.", "err", err);
     } finally {
       state.loading = false;
     }
@@ -10660,7 +11037,7 @@ function bindWindowEvents(){
     } catch (err){
       console.error("[llegadas_104] error de carga:", err);
       setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudieron cargar las llegadas 104.", "err");
+      if (typeof showToast === "function") showToast("No se pudieron cargar las llegadas 104.", "err", err);
     } finally {
       state.loading = false;
     }
@@ -11076,7 +11453,7 @@ function bindWindowEvents(){
     } catch (err){
       console.error("[parque_automotor] error de carga:", err);
       setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudo cargar el parque automotor. Verifica que la tabla 'parque_automotor' exista en Supabase.", "err");
+      if (typeof showToast === "function") showToast("No se pudo cargar el parque automotor. Verifica que la tabla 'parque_automotor' exista en Supabase.", "err", err);
     } finally { state.loading = false; }
   }
 
@@ -11356,7 +11733,9 @@ function bindWindowEvents(){
     } catch (err){
       console.error("[parque_documentos] error al guardar:", err);
       setDocStatus("Error al guardar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudo guardar. Revisa que exista la tabla 'parque_documentos' y el bucket 'parque-docs'.", "err");
+      reportError("No se pudieron guardar los documentos del vehiculo", err, {
+        hint: "Los cambios no se guardaron. Revisa que exista la tabla 'parque_documentos' y el bucket 'parque-docs'."
+      });
     } finally {
       if (btn) btn.disabled = false;
     }

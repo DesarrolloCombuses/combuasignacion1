@@ -18,6 +18,28 @@ Convencion de version:
 
 ---
 
+## [2.10.0] - 2026-11-07
+
+### Anadido
+- **Reporte de errores para enviar a soporte por WhatsApp.** Antes los errores salian en un `alert()` del navegador o en un aviso rojo que se iba a los 2,6 segundos: no se alcanzaban a leer, no se podian copiar y a soporte le llegaba "salio un error" sin ningun detalle. Ahora sale una ventana con lo que paso, los pasos ("1. Toca Copiar error. 2. Pegalo en el WhatsApp de soporte") y un recuadro con el reporte, listo para copiar.
+- **El reporte trae todo lo necesario para revisarlo sin preguntar**: que paso, el mensaje tecnico (con codigo, detalle y pista cuando viene de Supabase, y las primeras lineas del rastro cuando es un error del codigo), usuario, base, pestana, fecha de trabajo, version, navegador, si habia internet, la hora y un codigo de referencia `ERR-XXXXXX` que tambien queda en la consola del navegador.
+- **Botones**: "Copiar error" (si el navegador no deja copiar solo, el texto queda seleccionado y se explica como copiarlo a mano) y "Cerrar". El usuario pega el error en el chat de soporte. Si se intenta cerrar sin haber copiado, la ventana lo recuerda **una vez** ("Cerrar sin copiar") antes de cerrarse.
+- **Errores de acciones del usuario abren la ventana directamente**: registrar, cambiar de estado o quitar a un conductor en Estados del personal, asignar conductor, cambiar carro de posicion, subir archivos de programacion, eliminar un dia, actualizar la programacion, generar el reporte de turnos, guardar documentos del parque automotor e iniciar la aplicacion. Reemplaza a los `alert()` que habia.
+- **Errores de cargas en segundo plano no tapan la pantalla**: siguen como aviso rojo (algunas cargas se repiten cada 15 segundos y abrir una ventana cada vez seria peor), pero ahora el aviso dura 9 segundos, dice "Toca aqui para ver y copiar el error" y al tocarlo abre el mismo reporte. La pildora roja del encabezado ("Error novedades", etc.) tambien se puede tocar para abrir el ultimo error. El guardado de turnos que queda pendiente para reintento tambien adjunta su error.
+- Si salen varios errores seguidos con la ventana abierta, se juntan en el mismo reporte (hasta 5) en vez de reemplazar al primero, que suele ser la causa de los demas.
+
+### Corregido
+- **"No se pudo guardar la novedad en Supabase. Unexpected end of JSON input"** (reportado en BASE 3, al arrastrar conductores a "Estados del personal" y al cambiar carros de posicion). El error **no venia de Supabase**: la novedad ni siquiera llegaba a enviarse. Cada arrastre lleva sus datos (que conductor o que vehiculo) como texto JSON dentro del propio arrastre, y cada destino los leia con `JSON.parse(getData(...))` sin comprobar nada. Cuando el navegador entregaba ese texto **vacio** al soltar, `JSON.parse("")` fallaba con "Unexpected end of JSON input" y, como la lectura estaba dentro del mismo bloque que el guardado, el aviso culpaba a Supabase.
+- **El arrastre ya no depende de que el navegador conserve los datos**: al empezar a arrastrar, la aplicacion guarda ademas una copia en memoria (`setDragPayload`). Origen y destino estan en la misma pagina, asi que si los datos llegan vacios se usa la copia y la accion se completa. La lectura (`readDragPayload`) ya no lanza errores: devuelve el conductor/vehiculo o nada. Aplica a los cinco destinos de arrastre: Estados del personal, casillas CONDUCTOR 1/2 y cambio de carro, en las dos tablas de turnos.
+- **Mensajes que dicen lo que paso**: si se suelta algo que no es un conductor ni un vehiculo de la aplicacion (texto seleccionado, un archivo), sale un aviso que explica como hacerlo, en lugar de "No se pudo guardar en Supabase". Ese aviso queda solo para errores reales de Supabase.
+
+### Notas
+- Sobre el arrastre: la copia en memoria **no** se usa si lo soltado trae otro texto o un archivo (viene de fuera de la app), se descarta al terminar cada arrastre y caduca a los 2 minutos, para que un arrastre viejo nunca pueda crear una novedad por error. Si vuelve a pasar, la consola del navegador (F12) deja una linea `[arrastre] ...` con los tipos de datos que llegaron.
+- La 2.9.5 (solo el arreglo del arrastre) no llego a publicarse: sale junto con esta version.
+- Actualizacion normal (no obligatoria): la version anterior no dana datos.
+
+---
+
 ## [2.9.4] - 2026-09-30
 
 ### Anadido

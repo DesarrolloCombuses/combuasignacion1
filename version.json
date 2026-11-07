@@ -1,7 +1,7 @@
 {
-  "version": "2.9.4",
+  "version": "2.10.0",
   "minVersion": "2.9.1",
-  "buildDate": "2026-09-30",
+  "buildDate": "2026-11-07",
   "channel": "stable",
-  "notes": "La carga de conductores ahora avisa de quien queda fuera. La aplicacion solo puede usar a un conductor si en la hoja esta habilitado Y tiene base escrita; quien no cumple las dos cosas se descartaba en silencio. El contador del encabezado pasa a decir cuantos quedaron sin base y se pone en ambar, y en la tarjeta de bases se puede desplegar la lista de nombres para corregir la hoja."
+  "notes": "Los errores ahora se pueden copiar: sale una ventana con el detalle y un boton 'Copiar error' para pegarlo en el WhatsApp de soporte. Ademas se arreglo el error 'Unexpected end of JSON input' al arrastrar conductores a Estados del personal y al cambiar carros de posicion."
 }

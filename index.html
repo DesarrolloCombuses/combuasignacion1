@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=2.9.4">
+<link rel="stylesheet" href="css/styles.css?v=2.10.0">
 <style>
   .parque-foto-link { font-size:12px; }
 
@@ -1071,6 +1071,31 @@
   </div>
 </div>
 
+<!-- Modal: reporte de error para enviar a soporte por WhatsApp -->
+<div id="errorReportModal" class="modal-backdrop errrep-backdrop hidden" role="alertdialog" aria-modal="true" aria-labelledby="errorReportTitle" aria-describedby="errorReportSub">
+  <div class="modal-card errrep-card">
+    <div class="errrep-head">
+      <span class="errrep-icon" aria-hidden="true">!</span>
+      <h3 id="errorReportTitle" class="modal-title">Ocurrio un error</h3>
+    </div>
+    <div class="modal-sub" id="errorReportSub">La accion no se completo.</div>
+    <div class="errrep-steps">
+      <strong>Ayudanos a revisarlo:</strong>
+      <ol>
+        <li>Toca <b>Copiar error</b>.</li>
+        <li>Pegalo en el <b>WhatsApp de soporte</b> y envialo.</li>
+      </ol>
+    </div>
+    <label class="errrep-label" for="errorReportText">Error a enviar</label>
+    <textarea id="errorReportText" class="errrep-text" readonly rows="9" spellcheck="false"></textarea>
+    <div id="errorReportStatus" class="errrep-status hidden" role="status" aria-live="polite"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btnErrorReportClose" type="button">Cerrar</button>
+      <button class="btn btn-primary" id="btnErrorReportCopy" type="button">Copiar error</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: editar documentos del parque automotor -->
 <div id="parqueDocModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="parqueDocTitle">
   <div class="modal-card">
@@ -1174,9 +1199,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=2.9.4"></script>
-<script src="js/main.js?v=2.9.4"></script>
-<script src="js/pwa.js?v=2.9.4"></script>
+<script src="js/functions.js?v=2.10.0"></script>
+<script src="js/main.js?v=2.10.0"></script>
+<script src="js/pwa.js?v=2.10.0"></script>
 </body>
 </html>
 
