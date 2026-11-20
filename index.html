@@ -12,122 +12,8 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-<script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=2.10.0">
-<style>
-  .parque-foto-link { font-size:12px; }
-
-  /* ===== Modal Documentos del vehiculo (rediseno) ===== */
-  #parqueDocModal .modal-card { max-width:560px; }
-  .pdoc-headchips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
-  .pdoc-chip {
-    display:inline-flex; align-items:center; gap:5px; padding:3px 10px;
-    border-radius:999px; background:#f1f5f9; color:#334155;
-    font-size:12px; font-weight:600; border:1px solid #e2e8f0;
-  }
-  .pdoc-chip strong { color:#0f172a; font-weight:700; }
-
-  .parque-doc-grid { display:grid; gap:14px; margin-top:14px; }
-  .pdoc {
-    position:relative; border:1px solid #e5e7eb; border-radius:14px;
-    padding:14px 16px; background:#fff; box-shadow:0 1px 2px rgba(16,24,40,.04);
-    border-left:4px solid #cbd5e1; transition:box-shadow .15s, border-color .15s;
-  }
-  .pdoc:hover { box-shadow:0 6px 18px rgba(16,24,40,.08); }
-  .pdoc.is-ok   { border-left-color:#16a34a; }
-  .pdoc.is-warn { border-left-color:#d97706; }
-  .pdoc.is-bad  { border-left-color:#dc2626; }
-  .pdoc.is-none { border-left-color:#cbd5e1; }
-
-  .pdoc-top { display:flex; align-items:center; gap:11px; margin-bottom:13px; }
-  .pdoc-ico {
-    width:40px; height:40px; flex:0 0 40px; border-radius:11px;
-    display:grid; place-items:center; background:#eff6ff; color:#1d4ed8;
-  }
-  .pdoc-ico svg { width:21px; height:21px; }
-  .pdoc-titles { flex:1; min-width:0; }
-  .pdoc-name { font-weight:700; font-size:14.5px; color:#0f172a; line-height:1.15; }
-  .pdoc-badge {
-    display:inline-flex; align-items:center; gap:5px; margin-top:5px;
-    padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700;
-    background:#f1f5f9; color:#64748b;
-  }
-  .pdoc-badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
-  .pdoc-badge.is-ok   { background:#f0fdf4; color:#15803d; }
-  .pdoc-badge.is-warn { background:#fffbeb; color:#b45309; }
-  .pdoc-badge.is-bad  { background:#fef2f2; color:#b91c1c; }
-  .pdoc-badge.is-none { background:#f1f5f9; color:#64748b; }
-
-  .pdoc-fields { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:end; }
-  .pdoc-flabel {
-    display:block; font-size:11px; font-weight:600; color:#64748b;
-    text-transform:uppercase; letter-spacing:.03em; margin-bottom:5px;
-  }
-  .pdoc input[type="date"] {
-    width:100%; padding:9px 11px; border:1px solid #d1d5db; border-radius:10px;
-    font-size:14px; color:#0f172a; background:#fff; box-sizing:border-box;
-  }
-  .pdoc input[type="date"]:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
-
-  .pdoc-photo { display:flex; align-items:center; gap:9px; }
-  .pdoc-thumb-link { display:none; }
-  .pdoc-thumb-link.show { display:inline-block; }
-  .pdoc-thumb { width:46px; height:46px; border-radius:10px; object-fit:cover; border:1px solid #e5e7eb; background:#f8fafc; display:block; }
-  .pdoc-upload {
-    display:inline-flex; align-items:center; gap:6px; cursor:pointer;
-    padding:9px 13px; border-radius:10px; border:1px dashed #cbd5e1;
-    background:#f8fafc; color:#334155; font-size:13px; font-weight:600;
-    white-space:nowrap; transition:background .15s, border-color .15s, color .15s;
-  }
-  .pdoc-upload:hover { background:#eef2ff; border-color:#93c5fd; color:#1d4ed8; }
-  .pdoc-upload svg { width:16px; height:16px; }
-  .pdoc-upload input[type="file"] { display:none; }
-
-  /* ===== Parque automotor: selector de vista y tablero de vencimientos ===== */
-  .parque-seg { display:inline-flex; gap:0; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:10px; padding:3px; }
-  .parque-seg-btn {
-    border:0; background:transparent; cursor:pointer; padding:7px 16px;
-    border-radius:8px; font-size:13.5px; font-weight:600; color:#475569; transition:all .15s;
-  }
-  .parque-seg-btn:hover { color:#1d4ed8; }
-  .parque-seg-btn.active { background:#fff; color:#0f172a; box-shadow:0 1px 3px rgba(16,24,40,.12); }
-
-  .parque-venc-ctrl { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
-  .parque-venc-ctrl select { padding:7px 10px; border:1px solid #d1d5db; border-radius:9px; font-size:13.5px; }
-
-  .parque-venc-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
-  .pv-card { border:1px solid #e5e7eb; border-radius:14px; background:#fff; box-shadow:0 1px 2px rgba(16,24,40,.04); overflow:hidden; }
-  .pv-head { display:flex; align-items:center; gap:10px; padding:13px 15px; border-bottom:1px solid #f1f5f9; }
-  .pv-ico { width:36px; height:36px; flex:0 0 36px; border-radius:10px; display:grid; place-items:center; background:#eff6ff; color:#1d4ed8; }
-  .pv-ico svg { width:19px; height:19px; }
-  .pv-title { font-weight:700; font-size:15px; color:#0f172a; flex:1; }
-  .pv-counts { display:flex; gap:6px; }
-  .pv-pill { display:inline-flex; align-items:center; gap:4px; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:700; }
-  .pv-pill.bad  { background:#fef2f2; color:#b91c1c; }
-  .pv-pill.warn { background:#fffbeb; color:#b45309; }
-
-  .pv-sect { padding:8px 15px 14px; }
-  .pv-sect-title { display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin:8px 0 8px; }
-  .pv-sect-title.bad  { color:#b91c1c; }
-  .pv-sect-title.warn { color:#b45309; }
-  .pv-sect-title::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
-
-  .pv-row { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:9px; margin-bottom:5px; }
-  .pv-row.bad  { background:#fef2f2; }
-  .pv-row.warn { background:#fffbeb; }
-  .pv-interno { font-weight:800; font-size:13.5px; color:#0f172a; min-width:42px; flex:0 0 auto; }
-  .pv-placa { font-size:12px; color:#64748b; min-width:60px; flex:0 0 auto; }
-  .pv-ruta { font-size:12px; color:#334155; font-weight:600; flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .pv-base { font-size:10.5px; color:#94a3b8; flex:0 0 auto; }
-  .pv-fecha { margin-left:6px; font-size:12px; font-weight:600; flex:0 0 auto; }
-  .pv-fecha.bad  { color:#b91c1c; }
-  .pv-fecha.warn { color:#b45309; }
-  .pv-dias { font-size:10.5px; color:#94a3b8; display:block; font-weight:500; text-align:right; }
-  .pv-empty { font-size:12.5px; color:#94a3b8; padding:6px 2px; }
-  .pv-allok { padding:18px 15px; text-align:center; color:#15803d; font-weight:600; font-size:13px; }
-</style>
+<link rel="stylesheet" href="css/styles.css?v=2.11.0">
 </head>
 <body>
 
@@ -296,17 +182,12 @@
           <div class="tab hidden" data-tab="novedades">Estados del personal</div>
           <div class="tab active" data-tab="programacion2">Turnos del dia</div>
           <div class="tab" data-tab="novedades2">Estados del personal</div>
+          <div class="tab hidden" data-tab="novedades-base">Mi base</div>
           <div class="tab hidden" data-tab="llegadas-aeropuerto">Llegadas Aeropuerto</div>
           <div class="tab hidden" data-tab="llegadas-san-diego">Llegadas San Diego</div>
           <div class="tab hidden" data-tab="llegadas-nutibara">Llegadas Nutibara</div>
-          <div class="tab" data-tab="llegadas-104">Planilla de enturnamiento aeropuerto</div>
-          <div class="tab" data-tab="mapa-aeropuerto">Mapa enturnamiento aeropuerto</div>
           <div class="tab hidden" data-tab="llegadas-novedades">Novedades Llegadas</div>
           <div class="tab" data-tab="despachos-realizados">Despachos en vivo</div>
-          <div class="tab" data-tab="asistencias">Asistencias</div>
-          <div class="tab" data-tab="parque-automotor">Parque automotor y documentacion de vehiculos</div>
-          <div class="tab hidden" data-tab="api-cliente">Datos compartidos con el cliente</div>
-          <div class="tab" data-tab="consulta">Consulta por fechas</div>
           <div class="tab" data-tab="visor">Visor Excel en linea</div>
           <div class="tab" data-tab="audit">Auditoria</div>
           <div class="tab" data-tab="debugsupabase">Diagnostico Supabase</div>
@@ -352,72 +233,6 @@
                 <!-- Se llena dinamicamente -->
               </tbody>
             </table>
-          </div>
-        </div>
-
-        <div id="tab-api-cliente" class="tab-content">
-          <div class="apisha-cab">
-            <h3>Que ve el cliente de esta base</h3>
-            <p>
-              Un sistema externo consulta de forma automatica la programacion de
-              esta base. Aqui puedes ver <strong>exactamente</strong> que
-              informacion sale y cual no.
-            </p>
-          </div>
-
-          <div class="apisha-aviso">
-            <strong>Lo que asignas se ve enseguida.</strong>
-            El cliente consulta cada pocos minutos, asi que la programacion que
-            armas durante el dia la va viendo segun avanzas. No espera a que
-            termines: por eso la consulta le indica siempre cuantos turnos
-            quedan por asignar, para que sepa distinguir un turno pendiente de
-            uno que va a quedar sin cubrir.
-          </div>
-
-          <div class="apisha-cols">
-            <div class="apisha-col apisha-si">
-              <div class="apisha-tit">Si se comparte</div>
-              <ul>
-                <li><strong>Turnos del dia</strong>: numero de puesto, vehiculo,
-                    hora de inicio y hora de fin.</li>
-                <li><strong>Nombre del conductor</strong> asignado a cada turno.</li>
-                <li><strong>Cuantos turnos faltan</strong> por asignar.</li>
-                <li><strong>Quien descansa</strong>, esta de vacaciones o en
-                    reconocimiento de ruta.</li>
-              </ul>
-            </div>
-            <div class="apisha-col apisha-no">
-              <div class="apisha-tit">No se comparte</div>
-              <ul>
-                <li><strong>Incapacidades, calamidades ni permisos.</strong>
-                    Salen agrupados como "ausencia", sin decir el motivo.</li>
-                <li><strong>Cedulas</strong> ni ningun otro dato personal
-                    aparte del nombre.</li>
-                <li><strong>Ninguna otra base.</strong> Solo esta.</li>
-                <li><strong>Novedades de otros dias</strong> fuera del rango
-                    consultado.</li>
-              </ul>
-            </div>
-          </div>
-
-          <div class="apisha-nota">
-            <p>
-              <strong>Por que se ocultan los motivos de ausencia.</strong>
-              Una incapacidad o una calamidad dicen algo sobre la salud o la
-              vida personal del trabajador. La ley los trata como
-              <em>datos sensibles</em> y exige permiso expreso de la persona
-              para compartirlos, asi que la consulta solo informa de que ese dia
-              no esta disponible.
-            </p>
-            <p>
-              <strong>Solo puede leer.</strong> El sistema del cliente no puede
-              modificar nada: ni asignar, ni borrar, ni cambiar un turno. Todas
-              sus consultas quedan registradas.
-            </p>
-            <p class="apisha-pie">
-              Si detectas algo que no deberia compartirse, avisa al area de
-              desarrollo.
-            </p>
           </div>
         </div>
 
@@ -490,6 +305,171 @@
                 <tr><td colspan="4" style="text-align:center;padding:20px" class="muted">Selecciona una fecha para comenzar.</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Contenido Mi base (v2.11.0): novedades (cada una la revisa la base), viaje a viaje y enturnamiento.
+             Los datos los dan las funciones afiliados_* de la base de datos: cada cuenta de base ve SOLO su base. -->
+        <div id="tab-novedades-base" class="tab-content">
+          <div class="nb-cabeza">
+            <div class="nb-titulo">
+              <h3 id="nbTitulo">Mi base</h3>
+              <div class="nb-sub" id="nbSub"></div>
+            </div>
+            <div class="nb-dia" id="nbDia" role="group" aria-label="Día">
+              <button class="btn btn-ghost nb-flecha" id="nbAnterior" type="button" title="Día anterior" aria-label="Día anterior">&#9664;</button>
+              <input id="nbFecha" type="date" aria-label="Día que quiere ver" />
+              <button class="btn btn-ghost nb-flecha" id="nbSiguiente" type="button" title="Día siguiente" aria-label="Día siguiente">&#9654;</button>
+              <button class="btn btn-ghost" id="nbHoy" type="button">Hoy</button>
+              <button class="btn btn-primary" id="nbActualizar" type="button">Actualizar</button>
+            </div>
+          </div>
+          <div class="nb-vistas" id="nbVistas" role="tablist" aria-label="Qué ver de la base">
+            <button type="button" class="nb-vista activa" data-vista="novedades" role="tab" aria-selected="true">Novedades <span class="nb-vista-n" id="nbNumRevisar"></span></button>
+            <button type="button" class="nb-vista" data-vista="viajes" role="tab" aria-selected="false">Viaje a viaje</button>
+            <button type="button" class="nb-vista" data-vista="fila" role="tab" aria-selected="false">Enturnamiento <span class="nb-vivo">en vivo</span></button>
+            <button type="button" class="nb-vista" data-vista="cambios" role="tab" aria-selected="false">Cambios <span class="nb-vista-n nb-vista-n-info" id="nbNumCambios"></span></button>
+            <span class="nb-vistas-sep" aria-hidden="true"></span>
+            <button type="button" class="nb-vista" data-vista="despachos" role="tab" aria-selected="false">Despachos en vivo</button>
+            <button type="button" class="nb-vista" data-vista="visor" role="tab" aria-selected="false">Visor Excel</button>
+          </div>
+          <div class="nb-estado" id="nbEstado" role="status">Abra esta pestaña para ver su base.</div>
+          <!-- v2.11.0: aquí se pasan #tab-despachos-realizados y #tab-visor para las cuentas que ven Mi base -->
+          <div id="nbVistaDespachos" class="nb-vista-cuerpo nb-externa hidden"></div>
+          <div id="nbVistaVisor" class="nb-vista-cuerpo nb-externa hidden"></div>
+
+          <div id="nbVistaNovedades" class="nb-vista-cuerpo">
+            <div class="nb-resumen" id="nbResumen"></div>
+            <div class="nb-personal" id="nbPersonal"></div>
+
+            <section class="nb-seccion nb-seccion-revisar" id="nbSecRevisar" aria-labelledby="nbH0">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbH0"><span class="nb-num nb-num-revisar">&#10003;</span> Por revisar <span class="nb-cuenta" id="nbCuentaRevisar"></span></h4>
+                <div class="nb-chips" id="nbChipsRevisar" role="group" aria-label="Qué novedades ver">
+                  <button type="button" class="nb-chip activo" data-r="pendientes">Sin revisar</button>
+                  <button type="button" class="nb-chip" data-r="todas">Todas</button>
+                </div>
+              </div>
+              <div class="nb-ayuda nb-ayuda-sola">Cada novedad la revisa la base: toque <b>Revisar</b> y escriba qué se hizo. Queda guardado quién y cuándo.</div>
+              <div id="nbRevisar"></div>
+            </section>
+
+            <section class="nb-seccion" id="nbSecEntradas" aria-labelledby="nbH1">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbH1"><span class="nb-num">1</span> Entradas del día <span class="nb-cuenta" id="nbCuentaEntradas"></span></h4>
+                <div class="nb-filtros">
+                  <input id="nbBuscar" type="search" placeholder="Buscar nombre, cédula o bus" aria-label="Buscar nombre, cédula o bus" />
+                  <div class="nb-chips" id="nbChips" role="group" aria-label="Filtrar por llegada">
+                    <button type="button" class="nb-chip activo" data-f="">Todas</button>
+                    <button type="button" class="nb-chip" data-f="temprano">Temprano</button>
+                    <button type="button" class="nb-chip" data-f="a_tiempo">A tiempo</button>
+                    <button type="button" class="nb-chip" data-f="tarde">Tarde</button>
+                    <button type="button" class="nb-chip" data-f="sin_programacion">Sin turno</button>
+                  </div>
+                </div>
+              </div>
+              <div id="nbEntradas" class="nb-lista"></div>
+            </section>
+
+            <section class="nb-seccion" id="nbSecMotivos" aria-labelledby="nbH2">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbH2"><span class="nb-num">2</span> Motivos escritos <span class="nb-cuenta" id="nbCuentaMotivos"></span></h4>
+                <div class="nb-ayuda">Lo que escribió el conductor al entrar más de 15 min antes, en otro turno o fuera de su horario.</div>
+              </div>
+              <div id="nbMotivos"></div>
+            </section>
+
+            <section class="nb-seccion" id="nbSecFaltan" aria-labelledby="nbH3">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbH3"><span class="nb-num">3</span> Los que faltan <span class="nb-cuenta" id="nbCuentaFaltan"></span></h4>
+                <div class="nb-ayuda">Programados que no han marcado entrada, los que entran pronto y los disponibles del día.</div>
+              </div>
+              <div id="nbFaltan"></div>
+            </section>
+
+            <section class="nb-seccion" id="nbSecSalidas" aria-labelledby="nbH4">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbH4"><span class="nb-num">4</span> Salidas y jornadas <span class="nb-cuenta" id="nbCuentaSalidas"></span></h4>
+                <div class="nb-ayuda">Turnos sin cerrar, jornadas de más de 16 horas (Buk las rechaza) y la salida de cada conductor.</div>
+              </div>
+              <div id="nbSalidas"></div>
+            </section>
+          </div>
+
+          <div id="nbVistaViajes" class="nb-vista-cuerpo hidden">
+            <div class="nb-barra" role="group" aria-label="Filtros de viaje a viaje">
+              <div class="nb-horas" role="group" aria-label="Horas de trabajo">
+                <span class="nb-horas-label">Horas</span>
+                <label class="nb-hora">Desde <input id="nbHoraDesde" type="time" step="300" /></label>
+                <label class="nb-hora">hasta <input id="nbHoraHasta" type="time" step="300" /></label>
+                <div class="nb-chips" id="nbHorasChips" role="group" aria-label="Atajos de horas">
+                  <button type="button" class="nb-chip activo" data-h="">Todo el día</button>
+                  <button type="button" class="nb-chip" data-h="02:30-12:00" title="De 02:30 a 12:00">Mañana</button>
+                  <button type="button" class="nb-chip" data-h="12:00-02:30" title="De 12:00 a 02:30">Tarde y noche</button>
+                </div>
+              </div>
+              <div class="nb-filtros">
+                <input id="nbViajesBuscar" type="search" placeholder="Buscar bus, conductor o ruta" aria-label="Buscar bus, conductor o ruta" />
+                <button class="btn btn-ghost" id="nbViajesAbrir" type="button">Abrir todos</button>
+              </div>
+            </div>
+            <div class="nb-resumen-grupos" id="nbViajesResumen"></div>
+            <section class="nb-seccion" aria-labelledby="nbHV">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHV">Viaje a viaje de sus carros <span class="nb-cuenta" id="nbCuentaViajes"></span></h4>
+                <div class="nb-ayuda">Toque un bus para ver cada viaje: la salida, la ruta, el conductor, los pasajeros, la cívica, los tiquetes y la plata.</div>
+              </div>
+              <div id="nbViajes"></div>
+              <details class="nb-como">
+                <summary>¿Cómo se calcula?</summary>
+                <ul>
+                  <li><b>Horas:</b> cuentan los viajes que salieron desde la primera hora y antes de la segunda. El día de la tarjeta va de 02:30 a 02:30.</li>
+                  <li><b>Plata:</b> pasajeros que pagan &times; pasaje. El personal de la empresa no paga.</li>
+                  <li><b>Según el conductor:</b> con los pasajeros que él escribió en la tarjeta; la diferencia solo cuenta los viajes que llenó.</li>
+                </ul>
+              </details>
+            </section>
+          </div>
+
+          <div id="nbVistaFila" class="nb-vista-cuerpo hidden">
+            <div id="nbFilaAviso"></div>
+            <section class="nb-seccion" aria-labelledby="nbHF">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHF">La fila en cada punto</h4>
+                <div class="nb-ayuda">La fila completa; sus buses salen resaltados. En el Aeropuerto el turno va por itinerario, como en la app del aeropuerto.</div>
+              </div>
+              <div id="nbFila" class="nb-fila-puntos"></div>
+            </section>
+            <section class="nb-seccion" aria-labelledby="nbHB">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHB">Todos sus buses ahora <span class="nb-cuenta" id="nbCuentaMisBuses"></span></h4>
+                <div class="nb-ayuda">Dónde está cada bus de la base: en la fila de un punto, en ruta o sin despacho.</div>
+              </div>
+              <div id="nbMisBuses"></div>
+            </section>
+          </div>
+
+          <div id="nbVistaCambios" class="nb-vista-cuerpo hidden">
+            <div class="nb-barra" role="group" aria-label="Filtros de cambios">
+              <div class="nb-chips" id="nbCambiosChips" role="group" aria-label="Qué cambios ver">
+                <button type="button" class="nb-chip activo" data-c="">Todos</button>
+                <button type="button" class="nb-chip" data-c="conductores">Conductores</button>
+                <button type="button" class="nb-chip" data-c="buses">Buses y horas</button>
+                <button type="button" class="nb-chip" data-c="filas">Filas agregadas o quitadas</button>
+                <button type="button" class="nb-chip" data-c="estados">Estados del personal</button>
+              </div>
+              <div class="nb-filtros">
+                <input id="nbCambiosBuscar" type="search" placeholder="Buscar bus, conductor o quién" aria-label="Buscar bus, conductor o quién" />
+              </div>
+            </div>
+            <div class="nb-resumen-grupos" id="nbCambiosResumen"></div>
+            <section class="nb-seccion" aria-labelledby="nbHC">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHC">Quién cambió qué <span class="nb-cuenta" id="nbCuentaCambios"></span></h4>
+                <div class="nb-ayuda">Cada cambio a la programación de este día y a los estados del personal: quién lo hizo, a qué hora, qué había antes y qué quedó. Lo anota la base de datos al guardar; nadie lo puede borrar ni cambiar.</div>
+              </div>
+              <div id="nbCambios"></div>
+            </section>
           </div>
         </div>
 
@@ -625,76 +605,6 @@
           </div>
         </div>
 
-        <!-- Contenido Planilla de enturnamiento aeropuerto -->
-        <div id="tab-llegadas-104" class="tab-content">
-          <div class="lleg104-toolbar">
-            <div class="lleg104-toolbar-left">
-              <span class="muted" style="font-weight:600">Actualizacion automatica en vivo (cada 15s)</span>
-            </div>
-            <div class="lleg104-toolbar-right">
-              <span class="muted" id="llegadas104Status">Sin cargar</span>
-              <button class="btn btn-ghost lleg104-toolbar-btn" id="btnDownloadLlegadas104">Descargar Excel</button>
-            </div>
-          </div>
-
-          <!-- Metricas: Total / Listos / Espera -->
-          <div class="lleg104-metrics">
-            <div class="lleg104-metric-card">
-              <div class="lleg104-metric-val" id="lleg104MetricTotal">0</div>
-              <div class="lleg104-metric-label">Total</div>
-            </div>
-            <div class="lleg104-metric-card lleg104-metric-listos">
-              <div class="lleg104-metric-val" id="lleg104MetricListos">0</div>
-              <div class="lleg104-metric-label">Listos</div>
-            </div>
-            <div class="lleg104-metric-card lleg104-metric-espera">
-              <div class="lleg104-metric-val" id="lleg104MetricEspera">0</div>
-              <div class="lleg104-metric-label">Espera</div>
-            </div>
-          </div>
-
-          <!-- Chips de itinerarios (se rellenan en JS) -->
-          <div class="lleg104-chips" id="lleg104Chips"></div>
-
-          <!-- Seccion: nombre del itinerario activo -->
-          <div class="lleg104-section">
-            <div class="lleg104-section-title">
-              <span id="lleg104SectionName">Todos</span>
-              <span class="lleg104-section-count" id="lleg104SectionCount">0</span>
-            </div>
-            <div style="overflow:auto;max-height:60vh">
-              <table id="llegadas104Table">
-                <thead>
-                  <tr>
-                    <th style="width:60px">Pos</th>
-                    <th>Hora</th>
-                    <th>Hace</th>
-                    <th>Bus</th>
-                    <th>Base</th>
-                  </tr>
-                </thead>
-                <tbody id="llegadas104Body">
-                  <tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- Contenido Mapa enturnamiento aeropuerto -->
-        <div id="tab-mapa-aeropuerto" class="tab-content">
-          <div class="row" style="margin-bottom:10px">
-            <h3 style="margin:0">Mapa enturnamiento aeropuerto</h3>
-            <button class="btn btn-ghost" id="btnRefreshMapaAeropuerto">Actualizar</button>
-            <span class="muted">Vehiculos: <strong id="mapaAeropuertoCount">0</strong></span>
-            <span class="muted" id="mapaAeropuertoStatus">Sin cargar</span>
-          </div>
-          <div class="muted" style="margin:0 0 10px 0">
-            Posiciones de los vehiculos de la planilla `llegadas_104`. Cada marcador muestra el numero interno; haz click para ver los detalles del vehiculo.
-          </div>
-          <div id="mapaAeropuerto" style="height:65vh;min-height:420px;border-radius:8px;border:1px solid var(--color-border,#e2e8f0);background:#f8fafc"></div>
-        </div>
-
         <!-- Contenido Novedades Llegadas -->
         <div id="tab-llegadas-novedades" class="tab-content">
           <div class="row" style="margin-bottom:10px">
@@ -775,173 +685,6 @@
           </div>
         </div>
 
-        <!-- Contenido Asistencias -->
-        <div id="tab-asistencias" class="tab-content">
-          <div class="row" style="margin-bottom:10px">
-            <h3 style="margin:0">Asistencias (entradas y salidas)</h3>
-            <button class="btn btn-ghost" id="btnRefreshAsistencias">Actualizar</button>
-            <label class="consulta-mini" for="asistenciasFrom">Desde</label>
-            <input id="asistenciasFrom" type="date" />
-            <label class="consulta-mini" for="asistenciasTo">Hasta</label>
-            <input id="asistenciasTo" type="date" />
-            <input id="asistenciasSearch" type="text" placeholder="Buscar colaborador, base..." />
-            <span class="muted" id="asistenciasBaseHint" style="font-weight:600"></span>
-            <select id="asistenciasSentido">
-              <option value="">Sentido: todos</option>
-              <option value="entrada">Entradas</option>
-              <option value="salida">Salidas</option>
-            </select>
-            <select id="asistenciasVista" title="Forma de ver las marcas">
-              <option value="pares" selected>Vista: entrada y salida</option>
-              <option value="detalle">Vista: detalle</option>
-            </select>
-            <button class="btn btn-success" id="btnDownloadAsistencias">Descargar Excel</button>
-            <span class="muted">Registros: <strong id="asistenciasCount">0</strong></span>
-            <span class="muted" id="asistenciasStatus">Sin cargar</span>
-          </div>
-          <div class="muted" style="margin:0 0 10px 0">
-            Marcas operativas con foto, geolocalizacion e integracion a Buk/Ctrlit. Solo lectura.
-          </div>
-          <div style="overflow:auto;max-height:60vh">
-            <table id="asistenciasTable">
-              <thead>
-                <tr id="asistenciasHead">
-                  <th>Fecha</th>
-                  <th>Colaborador</th>
-                  <th>Base</th>
-                  <th>Entrada</th>
-                  <th>Salida</th>
-                  <th>Horas</th>
-                </tr>
-              </thead>
-              <tbody id="asistenciasBody">
-                <tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Contenido Parque automotor -->
-        <div id="tab-parque-automotor" class="tab-content">
-          <div class="row" style="margin-bottom:10px">
-            <h3 style="margin:0">Parque automotor y documentacion de vehiculos</h3>
-            <button class="btn btn-ghost" id="btnRefreshParque">Actualizar</button>
-            <input id="parqueSearch" type="text" placeholder="Buscar placa, interno, marca..." style="min-width:240px" />
-            <select id="parqueBaseFilter">
-              <option value="">Base: todas</option>
-            </select>
-            <select id="parqueRutaFilter" style="min-width:200px">
-              <option value="">Ruta: todas</option>
-            </select>
-            <span class="muted" id="parqueBaseHint" style="font-weight:600"></span>
-            <button class="btn btn-success" id="btnDownloadParque">Descargar Excel</button>
-            <span class="muted">Vehiculos: <strong id="parqueCount">0</strong></span>
-            <span class="muted" id="parqueStatus">Sin cargar</span>
-          </div>
-          <div class="muted" style="margin:0 0 10px 0">
-            Vehiculos vinculados y el vencimiento de sus documentos (SOAT, Tecnomecanica y Tarjeta de operacion).
-            <span style="margin-left:8px">Estado del documento:
-              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;">vigente</span>
-              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#fffbeb;color:#b45309;border:1px solid #fde68a;">por vencer (&le;30d)</span>
-              <span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;">vencido</span>
-            </span>
-          </div>
-
-          <!-- Selector de vista: Listado / Por renovar -->
-          <div class="parque-seg" role="tablist" style="margin:0 0 12px 0">
-            <button type="button" class="parque-seg-btn active" id="parqueViewListBtn" data-view="list">Listado</button>
-            <button type="button" class="parque-seg-btn" id="parqueViewVencBtn" data-view="venc">Por renovar / Vencidos</button>
-          </div>
-
-          <!-- VISTA: Listado -->
-          <div id="parqueListWrap" style="overflow:auto;max-height:62vh">
-            <table id="parqueTable">
-              <thead>
-                <tr>
-                  <th>Interno</th>
-                  <th>Placa</th>
-                  <th>Marca</th>
-                  <th>Modelo</th>
-                  <th>Base</th>
-                  <th>Ruta</th>
-                  <th>SOAT</th>
-                  <th>Tecnomecanica</th>
-                  <th>T. Operacion</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody id="parqueBody">
-                <tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- VISTA: Por renovar / Vencidos -->
-          <div id="parqueVencWrap" class="hidden">
-            <div class="parque-venc-ctrl">
-              <label class="pdoc-flabel" for="parqueVencDias" style="margin:0">Avisar proximos a vencer dentro de</label>
-              <select id="parqueVencDias">
-                <option value="15">15 dias</option>
-                <option value="30" selected>30 dias</option>
-                <option value="45">45 dias</option>
-                <option value="60">60 dias</option>
-                <option value="90">90 dias</option>
-              </select>
-              <span class="muted" id="parqueVencResumen" style="margin-left:auto"></span>
-            </div>
-            <div class="parque-venc-grid" id="parqueVencBody"></div>
-          </div>
-        </div>
-
-        <!-- Contenido Consulta por fechas -->
-        <div id="tab-consulta" class="tab-content">
-          <div class="row" style="margin-bottom:10px">
-            <label class="consulta-mini" for="consultaFrom">Desde</label>
-            <input id="consultaFrom" type="date" />
-            <label class="consulta-mini" for="consultaTo">Hasta</label>
-            <input id="consultaTo" type="date" />
-            <button class="btn btn-ghost" id="btnApplyConsulta">Ver resumen</button>
-          </div>
-          <div class="stats-bar" id="consultaSummaryBar">
-            <span>Base: <strong id="consultaBaseLabel">-</strong></span>
-            <span>Programados: <strong id="consultaProgramadosCount">0</strong></span>
-            <span>Estados personal: <strong id="consultaEstadosCount">0</strong></span>
-          </div>
-          <div class="consulta-grid">
-            <div class="consulta-box">
-              <h4>Conductores programados</h4>
-              <div style="overflow:auto;max-height:46vh">
-                <table id="consultaProgramadosTable">
-                  <thead>
-                    <tr><th>Conductor</th><th>Turnos</th><th>Fechas</th></tr>
-                  </thead>
-                  <tbody id="consultaProgramadosBody">
-                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div class="consulta-box">
-              <h4>Estados del personal</h4>
-              <div style="overflow:auto;max-height:46vh">
-                <table id="consultaEstadosTable">
-                  <thead>
-                    <tr><th>Fecha</th><th>Conductor</th><th>Estado</th></tr>
-                  </thead>
-                  <tbody id="consultaEstadosBody">
-                    <tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin datos.</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-          <div class="gantt-wrap">
-            <h4 style="margin:0 0 8px">Vista operativa (timeline)</h4>
-            <div class="consulta-mini" style="margin-bottom:8px">Muestra vehiculo programado y destaca fichos de salida por fecha.</div>
-            <div id="consultaTimeline"></div>
-          </div>
-        </div>
-
         <!-- Contenido Visor Excel -->
         <div id="tab-visor" class="tab-content">
           <div class="row" style="margin-bottom:10px">
@@ -955,7 +698,8 @@
               <option value="base">Ver base logueada</option>
             </select>
             <button class="btn btn-ghost" id="btnRefreshVisor">Actualizar visor</button>
-            <button class="btn btn-success" id="btnExportVisor">Descargar visor Excel</button>
+            <button class="btn btn-success" id="btnExportVisor" title="El Excel sale protegido: se puede cambiar el formato, no lo escrito">Descargar visor Excel</button>
+            <span class="muted visor-protegido">El Excel sale protegido: se puede cambiar el formato (colores, letra, anchos), no lo escrito.</span>
             <span class="muted">Vista previa en tiempo real de como se va formando el formato operativo (todas las bases).</span>
           </div>
           <div id="liveExcelPreview" style="overflow:auto;max-height:60vh">
@@ -1034,6 +778,34 @@
   </div>
 </div>
 <div id="appToast" class="toast" aria-live="polite"></div>
+<!-- v2.11.0: la base revisa una novedad y escribe qué se hizo -->
+<div id="nbRevModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="nbRevTitulo">
+  <div class="modal-card nb-rev-card">
+    <h3 id="nbRevTitulo" class="modal-title">Revisar novedad</h3>
+    <div id="nbRevSub" class="modal-sub"></div>
+    <div id="nbRevQue" class="nb-rev-que"></div>
+    <label for="nbRevNota" class="nb-rev-label">¿Qué se hizo?</label>
+    <textarea id="nbRevNota" rows="3" maxlength="500" placeholder="Ej: se habló con el conductor; le entregaron el bus temprano"></textarea>
+    <div class="nb-rev-pie"><span id="nbRevError" class="nb-rev-error" role="alert"></span><span id="nbRevCuenta">0/500</span></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="nbRevCancelar" type="button">Cancelar</button>
+      <button class="btn btn-primary" id="nbRevGuardar" type="button">Guardar revisión</button>
+    </div>
+  </div>
+</div>
+
+<!-- v2.11.0: detalle de una marca en Mi base (fotos de entrada y salida) -->
+<div id="nbModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="nbModalTitulo">
+  <div class="modal-card nb-modal-card">
+    <h3 id="nbModalTitulo" class="modal-title"></h3>
+    <div id="nbModalSub" class="modal-sub"></div>
+    <div id="nbModalCuerpo"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="nbModalCerrar" type="button">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="swapModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="swapModalTitle">
   <div class="modal-card">
     <h3 id="swapModalTitle" class="modal-title">Confirmar cambio de carro</h3>
@@ -1096,97 +868,6 @@
   </div>
 </div>
 
-<!-- Modal: editar documentos del parque automotor -->
-<div id="parqueDocModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="parqueDocTitle">
-  <div class="modal-card">
-    <h3 id="parqueDocTitle" class="modal-title">Documentos del vehiculo</h3>
-    <div class="pdoc-headchips" id="parqueDocSub"></div>
-
-    <div class="parque-doc-grid">
-      <!-- SOAT -->
-      <div class="pdoc is-none" id="pdocSoat">
-        <div class="pdoc-top">
-          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
-          <div class="pdoc-titles">
-            <div class="pdoc-name">SOAT</div>
-            <span class="pdoc-badge is-none" id="docSoatBadge">sin fecha</span>
-          </div>
-        </div>
-        <div class="pdoc-fields">
-          <div>
-            <label class="pdoc-flabel" for="docSoatFecha">Fecha de vencimiento</label>
-            <input type="date" id="docSoatFecha" />
-          </div>
-          <div class="pdoc-photo">
-            <a id="docSoatLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docSoatThumb" class="pdoc-thumb" alt="Foto SOAT" /></a>
-            <label class="pdoc-upload">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-              <span>Foto</span>
-              <input type="file" id="docSoatFoto" accept="image/*" />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tecnomecanica -->
-      <div class="pdoc is-none" id="pdocTecno">
-        <div class="pdoc-top">
-          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
-          <div class="pdoc-titles">
-            <div class="pdoc-name">Tecnomecanica</div>
-            <span class="pdoc-badge is-none" id="docTecnoBadge">sin fecha</span>
-          </div>
-        </div>
-        <div class="pdoc-fields">
-          <div>
-            <label class="pdoc-flabel" for="docTecnoFecha">Fecha de vencimiento</label>
-            <input type="date" id="docTecnoFecha" />
-          </div>
-          <div class="pdoc-photo">
-            <a id="docTecnoLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docTecnoThumb" class="pdoc-thumb" alt="Foto Tecnomecanica" /></a>
-            <label class="pdoc-upload">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-              <span>Foto</span>
-              <input type="file" id="docTecnoFoto" accept="image/*" />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tarjeta de operacion -->
-      <div class="pdoc is-none" id="pdocOper">
-        <div class="pdoc-top">
-          <span class="pdoc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 14h6"/><path d="M16 14h2"/></svg></span>
-          <div class="pdoc-titles">
-            <div class="pdoc-name">Tarjeta de operacion</div>
-            <span class="pdoc-badge is-none" id="docOperBadge">sin fecha</span>
-          </div>
-        </div>
-        <div class="pdoc-fields">
-          <div>
-            <label class="pdoc-flabel" for="docOperFecha">Fecha de vencimiento</label>
-            <input type="date" id="docOperFecha" />
-          </div>
-          <div class="pdoc-photo">
-            <a id="docOperLink" class="pdoc-thumb-link" href="#" target="_blank" rel="noopener" title="Ver foto actual"><img id="docOperThumb" class="pdoc-thumb" alt="Foto Tarjeta de operacion" /></a>
-            <label class="pdoc-upload">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-              <span>Foto</span>
-              <input type="file" id="docOperFoto" accept="image/*" />
-            </label>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="muted" id="parqueDocStatus" style="margin-top:10px"></div>
-    <div class="modal-actions" style="margin-top:12px">
-      <button class="btn btn-ghost" id="parqueDocCancel">Cancelar</button>
-      <button class="btn btn-primary" id="parqueDocSave">Guardar</button>
-    </div>
-  </div>
-</div>
-
 <!-- Banner de actualizacion de PWA -->
 <div id="pwaUpdateBanner" class="pwa-update-banner hidden" role="status" aria-live="polite" aria-hidden="true">
   <div class="pwa-update-text">
@@ -1199,9 +880,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=2.10.0"></script>
-<script src="js/main.js?v=2.10.0"></script>
-<script src="js/pwa.js?v=2.10.0"></script>
+<script src="js/functions.js?v=2.11.0"></script>
+<script src="js/main.js?v=2.11.0"></script>
+<script src="js/pwa.js?v=2.11.0"></script>
 </body>
 </html>
 

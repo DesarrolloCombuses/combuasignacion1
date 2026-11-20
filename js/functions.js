@@ -354,7 +354,6 @@ async function refreshFromSupabaseIfSafe(){
     renderNovedades();
     refreshVisorDateOptions();
     renderLiveExcelPreview();
-    renderConsultaBaseView();
     if (!AUDIT_DISABLED && isSuperAdmin()) renderAuditLog();
   } catch (refreshError) {
     console.error("No se pudo refrescar desde Supabase:", refreshError);
@@ -820,36 +819,6 @@ function isSuperAdmin(){
 
 function canExportXlsx(){
   return isSuperAdmin();
-}
-
-// Bases cuya programacion se comparte con un sistema externo. La pestana que
-// lo explica solo aparece para ellas. Sumar una base aqui es el unico cambio
-// necesario si manana se comparte otra.
-const API_SHARING_BASES = ["3"];
-
-function canSeeApiSharingTab(){
-  if (isSuperAdmin()) return true;
-  const base = isBaseOperator() ? currentUserBase : currentBase;
-  return API_SHARING_BASES.includes(getBaseCanonical(base));
-}
-
-// Se llama al aplicar permisos y tambien al abrir una base: un administrador
-// puede pasar de una base a otra sin volver a iniciar sesion.
-function updateApiSharingTabVisibility(){
-  const tab = document.querySelector('.tab[data-tab="api-cliente"]');
-  if (!tab) return;
-  const visible = canSeeApiSharingTab();
-  tab.classList.toggle("hidden", !visible);
-  // Si estaba abierta y deja de corresponder, se vuelve a Turnos del dia.
-  if (!visible) {
-    const contenido = document.getElementById("tab-api-cliente");
-    if (contenido?.classList.contains("active")) {
-      contenido.classList.remove("active");
-      tab.classList.remove("active");
-      document.querySelector('.tab[data-tab="programacion2"]')?.classList.add("active");
-      document.getElementById("tab-programacion2")?.classList.add("active");
-    }
-  }
 }
 
 function canSwapVehiclePositions(){
@@ -2594,15 +2563,6 @@ const stepSelectDate = document.getElementById("stepSelectDate");
 const stepAssignDrivers = document.getElementById("stepAssignDrivers");
 const stepRegisterStates = document.getElementById("stepRegisterStates");
 const workflowNote = document.getElementById("workflowNote");
-const consultaFrom = document.getElementById("consultaFrom");
-const consultaTo = document.getElementById("consultaTo");
-const btnApplyConsulta = document.getElementById("btnApplyConsulta");
-const consultaBaseLabel = document.getElementById("consultaBaseLabel");
-const consultaProgramadosCount = document.getElementById("consultaProgramadosCount");
-const consultaEstadosCount = document.getElementById("consultaEstadosCount");
-const consultaProgramadosBody = document.getElementById("consultaProgramadosBody");
-const consultaEstadosBody = document.getElementById("consultaEstadosBody");
-const consultaTimeline = document.getElementById("consultaTimeline");
 const adminComplianceCard = document.getElementById("adminComplianceCard");
 const adminComplianceDate = document.getElementById("adminComplianceDate");
 const adminComplianceBody = document.getElementById("adminComplianceBody");
@@ -2822,7 +2782,7 @@ function applyRoleRestrictions(){
     if (getBaseCanonical(currentBase) !== getBaseCanonical(currentUserBase)) {
       enterBase(currentUserBase);
     }
-    updateApiSharingTabVisibility();
+    if (typeof updateNovedadesBaseTabVisibility === "function") updateNovedadesBaseTabVisibility();
     updateExportAccess();
     return;
   }
@@ -2851,7 +2811,7 @@ function applyRoleRestrictions(){
     migrationOutput.textContent = "Migracion manual disponible solo para el super administrador.";
   }
   if (operativoTitle) operativoTitle.textContent = operativoViewMode === "llegadas" ? "Panel de llegadas vehiculos" : "Panel de operacion";
-  updateApiSharingTabVisibility();
+  if (typeof updateNovedadesBaseTabVisibility === "function") updateNovedadesBaseTabVisibility();
   updateExportAccess();
   renderAdminComplianceDashboard();
 }
@@ -3651,10 +3611,13 @@ function renderTable2(){
 
   filtered.forEach(r => {
     const tr = document.createElement("tr");
+    // Para marcar quien cambio cada celda (modulo Mi base: cambios): la misma clave con que se guarda la fila.
+    try { tr.dataset.rowKey = buildProgramacionRowKey(r); } catch (_) { /* sin clave: no se marca */ }
     const isFichoRow = isFichoRowByContent(r);
     if (isFichoRow) tr.classList.add("ficho-sandiego");
     headers.forEach(k => {
       const td = document.createElement("td");
+      td.dataset.campo = k;
       let v = r[k];
       if (norm(k) === "FECHA") v = excelDateToReadable(v);
       if (isTimeColumnKey(k)) v = excelTimeToHHMM(v);
@@ -3978,6 +3941,7 @@ function renderTable2(){
   });
   rebuildAssigned();
   renderDrivers();
+  if (typeof window.combuasignaMarcarCambios === "function") window.combuasignaMarcarCambios();
 }
 
 function getBaseKeyFromRows(inputRows){
@@ -6020,227 +5984,8 @@ function getAllBasesInProgramacion(sourceRows = rows){
   return Array.from(bases).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
 }
 
-function ensureConsultaDateDefaults(){
-  if (!consultaFrom || !consultaTo) return;
-  const dates = getAvailableDatesForCurrentBase();
-  if (!dates.length) {
-    consultaFrom.value = "";
-    consultaTo.value = "";
-    return;
-  }
-  if (!consultaFrom.value || !dates.includes(consultaFrom.value)) consultaFrom.value = dates[0];
-  if (!consultaTo.value || !dates.includes(consultaTo.value)) consultaTo.value = dates[dates.length - 1];
-  if (consultaFrom.value > consultaTo.value) {
-    const tmp = consultaFrom.value;
-    consultaFrom.value = consultaTo.value;
-    consultaTo.value = tmp;
-  }
-}
-
-function renderConsultaBaseView(){
-  if (!consultaProgramadosBody || !consultaEstadosBody) return;
-  const base = getBaseCanonical(currentBase);
-  consultaProgramadosBody.innerHTML = "";
-  consultaEstadosBody.innerHTML = "";
-  consultaBaseLabel.textContent = base ? formatBaseLabel(base) : "-";
-  if (!base) {
-    consultaProgramadosBody.innerHTML = `<tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Selecciona una base.</td></tr>`;
-    consultaEstadosBody.innerHTML = `<tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Selecciona una base.</td></tr>`;
-    if (consultaTimeline) consultaTimeline.innerHTML = `<div class="gantt-empty">Selecciona una base para visualizar el timeline.</div>`;
-    consultaProgramadosCount.textContent = "0";
-    consultaEstadosCount.textContent = "0";
-    return;
-  }
-
-  ensureConsultaDateDefaults();
-  const fromIso = normalizeDateToISO(consultaFrom?.value || "");
-  const toIso = normalizeDateToISO(consultaTo?.value || "");
-  const isInRange = (iso) => {
-    if (!iso) return false;
-    if (fromIso && iso < fromIso) return false;
-    if (toIso && iso > toIso) return false;
-    return true;
-  };
-
-  const baseKey = getBaseKey();
-  const fechaKey = getFechaKey();
-  const numeroKey = getHeaderKeyByNorm(["#"]);
-  const puestoKey = getHeaderKeyByNorm(["PUESTO"]);
-  const vehiculoKey = getHeaderKeyByNorm(["VEH", "VEHICULO", "VEHÍCULO", "MOVIL", "MÓVIL"]);
-  const horaFinKey = getHeaderKeyByNorm(["HORA FIN", "HORA FINAL"]);
-  const headerSet = new Set();
-  rows.slice(0, 200).forEach(r => Object.keys(r || {}).forEach(k => headerSet.add(k)));
-  const { key1: horaInicio1Key, key2: horaInicio2Key } = inferInicioKeysFromList(Array.from(headerSet));
-  const { key1, key2 } = getConductorKeysFromRows();
-  const programmedMap = new Map(); // name -> { turns, dates:Set }
-  rows.forEach(r => {
-    const rowBase = getRowCanonicalBase(r, baseKey);
-    if (rowBase !== base) return;
-    const rowDate = normalizeDateToISO(fechaKey ? r[fechaKey] : "");
-    if (!isInRange(rowDate)) return;
-    if (isFichoRowByContent(r)) return;
-    [key1, key2].forEach(k => {
-      if (!k) return;
-      const name = extractConductorName(r[k] || "");
-      if (!name) return;
-      const keyName = norm(name);
-      const item = programmedMap.get(keyName) || { name, turns: 0, dates: new Set() };
-      item.turns += 1;
-      if (rowDate) item.dates.add(rowDate);
-      programmedMap.set(keyName, item);
-    });
-  });
-
-  const programados = Array.from(programmedMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  if (!programados.length) {
-    consultaProgramadosBody.innerHTML = `<tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin conductores programados en el rango.</td></tr>`;
-  } else {
-    programados.forEach(p => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${p.name}</td>
-        <td style="text-align:center">${p.turns}</td>
-        <td>${Array.from(p.dates).sort().map(excelDateToReadable).join(", ")}</td>
-      `;
-      consultaProgramadosBody.appendChild(tr);
-    });
-  }
-
-  const estados = (novedades || [])
-    .filter(n => sameBase(n.base, base) && isInRange(normalizeDateToISO(n.fecha)))
-    .sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || String(a.nombre || "").localeCompare(String(b.nombre || "")));
-  if (!estados.length) {
-    consultaEstadosBody.innerHTML = `<tr><td colspan="3" class="muted" style="text-align:center;padding:12px">Sin estados del personal en el rango.</td></tr>`;
-  } else {
-    estados.forEach(n => {
-      const st = NOVEDADES[n.estado] || NOVEDADES.PENDIENTE;
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${excelDateToReadable(normalizeDateToISO(n.fecha || ""))}</td>
-        <td>${n.nombre || "-"}</td>
-        <td><span class="estado-tag tag-${st.class}">${n.estado || "-"}</span></td>
-      `;
-      consultaEstadosBody.appendChild(tr);
-    });
-  }
-
-  consultaProgramadosCount.textContent = String(programados.length);
-  consultaEstadosCount.textContent = String(estados.length);
-
-  // ===== Timeline / Gantt =====
-  if (!consultaTimeline) return;
-  const parseOpMinutes = (val) => {
-    if (val === null || val === undefined || val === "") return null;
-    if (typeof val === "number" && !Number.isNaN(val)) {
-      // Excel fraccion de dia (0..n)
-      return Math.round(val * 24 * 60);
-    }
-    const m = String(val).trim().match(/^(\d{1,2}):(\d{1,2})$/);
-    if (!m) return null;
-    const hh = parseInt(m[1], 10);
-    const mm = parseInt(m[2], 10);
-    if (Number.isNaN(hh) || Number.isNaN(mm) || mm < 0 || mm > 59) return null;
-    return (hh * 60) + mm;
-  };
-  const fmtOp = (mins) => {
-    if (mins === null || mins === undefined || Number.isNaN(mins)) return "--:--";
-    const hh = Math.floor(mins / 60) % 24;
-    const mm = Math.abs(mins % 60);
-    return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
-  };
-  const timelineItems = [];
-  rows.forEach(r => {
-    const rowBase = getRowCanonicalBase(r, baseKey);
-    if (rowBase !== base) return;
-    const rowDate = normalizeDateToISO(fechaKey ? r[fechaKey] : "");
-    if (!isInRange(rowDate)) return;
-    const numeroRaw = String(numeroKey ? (r[numeroKey] || "") : "").trim();
-    const puestoRaw = String(puestoKey ? (r[puestoKey] || "") : "").trim();
-    const vehRaw = String(vehiculoKey ? (r[vehiculoKey] || "") : "").trim();
-    const isFicho = norm(numeroRaw).includes("FICHO");
-    const s1 = parseOpMinutes(horaInicio1Key ? r[horaInicio1Key] : null);
-    const s2 = parseOpMinutes(horaInicio2Key ? r[horaInicio2Key] : null);
-    const c1 = extractConductorName(key1 ? r[key1] : "") || UNASSIGNED_LABEL;
-    const c2 = extractConductorName(key2 ? r[key2] : "") || UNASSIGNED_LABEL;
-    let start = s1;
-    if ((start === null || start === undefined) && s2 !== null) start = s2;
-    if (start !== null && s2 !== null) start = Math.min(start, s2);
-    let end = parseOpMinutes(horaFinKey ? r[horaFinKey] : null);
-    if (start !== null && end !== null && end < start) end += 24 * 60;
-    timelineItems.push({
-      date: rowDate,
-      numero: numeroRaw || "-",
-      puesto: puestoRaw || "-",
-      veh: vehRaw || "-",
-      c1,
-      c2,
-      isFicho,
-      start,
-      end,
-      s1,
-      s2
-    });
-  });
-
-  if (!timelineItems.length) {
-    consultaTimeline.innerHTML = `<div class="gantt-empty">Sin programacion para el rango seleccionado.</div>`;
-    return;
-  }
-
-  const domainMin = 0;
-  const domainMax = 30 * 60; // hasta 30:00 operativo
-  const dayMap = new Map();
-  timelineItems
-    .sort((a,b) => (a.date || "").localeCompare(b.date || "") || (a.start ?? 99999) - (b.start ?? 99999))
-    .forEach(item => {
-      if (!dayMap.has(item.date)) dayMap.set(item.date, []);
-      dayMap.get(item.date).push(item);
-    });
-
-  consultaTimeline.innerHTML = "";
-  Array.from(dayMap.keys()).sort((a,b)=>a.localeCompare(b)).forEach(dayIso => {
-    const dayBlock = document.createElement("div");
-    dayBlock.className = "gantt-day";
-    dayBlock.innerHTML = `<div class="gantt-day-title">${excelDateToReadable(dayIso)}</div>`;
-    const items = dayMap.get(dayIso) || [];
-    items.forEach(it => {
-      const row = document.createElement("div");
-      row.className = "gantt-row";
-      const left = document.createElement("div");
-      left.className = "gantt-label";
-      const c1Hora = fmtOp(it.s1);
-      const c2Hora = fmtOp(it.s2);
-      const finHora = fmtOp(it.end);
-      const finExtra = (it.end !== null && it.end >= (24 * 60)) ? " (+1 dia)" : "";
-      left.innerHTML = `
-        <strong>${it.numero}</strong> | VEH ${it.veh} | ${it.puesto}<br>
-        <span class="consulta-mini"><strong>C1 ${c1Hora}:</strong> ${it.c1}</span><br>
-        <span class="consulta-mini"><strong>C2 ${c2Hora}:</strong> ${it.c2}</span><br>
-        <span class="consulta-mini"><strong>FIN:</strong> ${finHora}${finExtra}</span>
-      `;
-
-      const track = document.createElement("div");
-      track.className = "gantt-track";
-      const bar = document.createElement("div");
-      bar.className = `gantt-bar ${it.isFicho ? "ficho" : ""}`;
-      const effectiveStart = it.start ?? 0;
-      let effectiveEnd = it.end ?? (it.start !== null ? it.start + 30 : 60);
-      if (effectiveEnd <= effectiveStart) effectiveEnd = effectiveStart + 30;
-      const leftPct = Math.max(0, Math.min(100, ((effectiveStart - domainMin) / (domainMax - domainMin)) * 100));
-      const widthPct = Math.max(2, Math.min(100 - leftPct, ((effectiveEnd - effectiveStart) / (domainMax - domainMin)) * 100));
-      bar.style.left = `${leftPct}%`;
-      bar.style.width = `${widthPct}%`;
-      bar.textContent = it.isFicho
-        ? `FICHO salida | C1 ${c1Hora} | C2 ${c2Hora} | FIN ${finHora}${finExtra}`
-        : `C1 ${c1Hora} | C2 ${c2Hora} | FIN ${finHora}${finExtra}`;
-      track.appendChild(bar);
-      row.appendChild(left);
-      row.appendChild(track);
-      dayBlock.appendChild(row);
-    });
-    consultaTimeline.appendChild(dayBlock);
-  });
-}
+// v2.11.0 (19-nov-2026): se quitó la pestaña "Consulta por fechas" (ensureConsultaDateDefaults y
+// renderConsultaBaseView, con su línea de tiempo). En Supabase no se tocó nada.
 
 async function renderAdminComplianceDashboard(){
   if (!adminComplianceCard || !adminComplianceBody || !adminComplianceDate || !adminComplianceSummary) return;
@@ -7754,7 +7499,24 @@ async function renderLiveExcelPreview(){
   liveExcelPreview.innerHTML = html;
 }
 
-function exportLiveExcelPreviewTable(){
+// El Excel del visor sale PROTEGIDO (18-nov-2026, pedido del usuario: "que se deje editar solo lo visual, no lo que
+// esta escrito, para evitar discrepancias"): igual al visor (colores, celdas unidas, anchos) y con la hoja bloqueada con
+// una clave al azar que no se guarda ni se muestra. Se puede cambiar el formato (colores, letra, anchos, altos); lo
+// escrito no. Para corregir algo se corrige en CombuAsigna y se descarga de nuevo.
+function colorArgbDesdeCss(css){
+  const m = String(css || "").match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+  if (!m) return null;
+  if (m[4] !== undefined && Number(m[4]) === 0) return null;
+  return "FF" + [m[1], m[2], m[3]].map(n => Number(n).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function claveAlAzarExcel(){
+  const a = new Uint8Array(24);
+  window.crypto.getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function exportLiveExcelPreviewTable(){
   if (!liveExcelPreview) {
     showToast("Visor no disponible.", "warn");
     return;
@@ -7764,16 +7526,81 @@ function exportLiveExcelPreviewTable(){
     showToast("No hay tabla en el visor para exportar.", "warn");
     return;
   }
-  if (!window.XLSX || !XLSX.utils || !XLSX.writeFile) {
-    showToast("No se pudo cargar XLSX para exportar.", "err");
+  if (!window.ExcelJS) {
+    showToast("No se pudo cargar ExcelJS para exportar el visor.", "err");
     return;
   }
-  const wb = XLSX.utils.table_to_book(table, { sheet: "Visor" });
   const visorDate = normalizeDateToISO(visorDateSelect?.value || "");
   const scopeMode = String(visorScopeSelect?.value || "all");
   const scopeText = scopeMode === "base" ? "base" : "todo";
   const fileDate = visorDate || "sin_fecha";
-  XLSX.writeFile(wb, `visor_excel_${fileDate}_${scopeText}.xlsx`);
+  try {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "CombuAsigna";
+    wb.created = new Date();
+    const ws = wb.addWorksheet("Visor", { views: [{ showGridLines: false }] });
+    const anchos = Array.from(table.querySelectorAll("colgroup col")).map(c => parseFloat(c.style.width) || 8);
+    if (anchos.length) ws.columns = anchos.map(p => ({ width: Math.max(3, Math.round(p * 1.7)) }));
+    const borde = { style: "thin", color: { argb: "FFBFBFBF" } };
+    const ocupada = new Set();
+    let ultimaFila = 0;
+    Array.from(table.rows).forEach((tr, ri) => {
+      let ci = 0;
+      let lineas = 1;
+      Array.from(tr.cells).forEach(td => {
+        while (ocupada.has(`${ri}:${ci}`)) ci++;
+        const cs = Math.max(1, td.colSpan || 1);
+        const rs = Math.max(1, td.rowSpan || 1);
+        const texto = String(td.innerText || td.textContent || "").replace(/\r/g, "").trim();
+        const est = getComputedStyle(td);
+        const cell = ws.getCell(ri + 1, ci + 1);
+        cell.value = texto;   // como texto: lo mismo que se ve en el visor
+        const fondo = colorArgbDesdeCss(est.backgroundColor);
+        if (fondo && fondo !== "FFFFFFFF") cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo } };
+        const letra = colorArgbDesdeCss(est.color);
+        const peso = parseInt(est.fontWeight, 10) || 400;
+        const px = parseFloat(est.fontSize) || 13;
+        cell.font = { name: "Calibri", size: Math.max(8, Math.round(px * 0.75)), bold: peso >= 600, ...(letra ? { color: { argb: letra } } : {}) };
+        const horiz = est.textAlign === "center" ? "center" : (est.textAlign === "right" || est.textAlign === "end") ? "right" : "left";
+        cell.alignment = { horizontal: horiz, vertical: "middle", wrapText: true };
+        cell.border = { top: borde, left: borde, bottom: borde, right: borde };
+        lineas = Math.max(lineas, texto.split("\n").length);
+        if (cs > 1 || rs > 1) ws.mergeCells(ri + 1, ci + 1, ri + rs, ci + cs);
+        for (let r = 0; r < rs; r++) for (let c = 0; c < cs; c++) ocupada.add(`${ri + r}:${ci + c}`);
+        ci += cs;
+      });
+      ws.getRow(ri + 1).height = Math.max(18, lineas * 15);
+      ultimaFila = ri + 1;
+    });
+    const nota = ws.getCell(ultimaFila + 2, 1);
+    nota.value = `Archivo de solo lectura de CombuAsigna (${new Date().toLocaleString("es-CO")}): lo escrito no se puede cambiar; `
+      + "el formato sí (colores, letra, anchos). Para corregir algo, corríjalo en CombuAsigna y descargue el visor de nuevo.";
+    nota.font = { italic: true, size: 9, color: { argb: "FF64748B" } };
+    nota.alignment = { wrapText: true, vertical: "top" };
+    ws.mergeCells(ultimaFila + 2, 1, ultimaFila + 2, Math.max(1, anchos.length || 11));
+    ws.getRow(ultimaFila + 2).height = 30;
+    // Protegida: se puede seleccionar y cambiar el formato; nada mas (ni escribir, ni insertar, ni borrar, ni ordenar).
+    await ws.protect(claveAlAzarExcel(), {
+      selectLockedCells: true, selectUnlockedCells: true,
+      formatCells: true, formatColumns: true, formatRows: true,
+      insertColumns: false, insertRows: false, insertHyperlinks: false,
+      deleteColumns: false, deleteRows: false, sort: false, autoFilter: false, pivotTables: false
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `visor_excel_${fileDate}_${scopeText}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast("Visor descargado: el Excel sale protegido (se puede cambiar el formato, no lo escrito).", "ok");
+  } catch (error) {
+    console.error("No se pudo descargar el visor:", error);
+    showToast(`No se pudo descargar el visor: ${error?.message || error}`, "err");
+  }
 }
 
 /* ===================== TABLA PROGRAMACION ===================== */
@@ -8244,7 +8071,6 @@ function renderTable(){
 
   renderDrivers();
   renderAdminComplianceDashboard();
-  renderConsultaBaseView();
   renderLiveExcelPreview();
   renderTable2();
 }
@@ -9131,12 +8957,6 @@ function startRealtimeSubscriptions(){
   realtimeStarted = true;
 
   // Recargas con debounce: agrupan rafagas de eventos (p.ej. posiciones GPS).
-  const reloadLlegadas104 = makeDebounced(() => {
-    if (document.hidden) return;
-    if (!(isTabActive("llegadas-104") || isTabActive("mapa-aeropuerto"))) return;
-    if (typeof window.__reloadLlegadas104 === "function") window.__reloadLlegadas104();
-  }, 800);
-
   const reloadPlanilla = makeDebounced(() => {
     if (document.hidden) return;
     if (!(isTabActive("llegadas-aeropuerto") || isTabActive("llegadas-san-diego") || isTabActive("llegadas-nutibara") || isTabActive("llegadas-novedades"))) return;
@@ -9150,7 +8970,6 @@ function startRealtimeSubscriptions(){
   }, 800);
 
   const subs = [
-    { table: "llegadas_104", handler: reloadLlegadas104 },
     // planilla_afiliados_2 solo si las Llegadas NO estan en pausa.
     ...(LLEGADAS_PAUSED ? [] : [{ table: "planilla_afiliados_2", handler: reloadPlanilla }]),
     { table: "despachos_realizados", handler: reloadDespachos }
@@ -9248,7 +9067,6 @@ document.querySelectorAll('.tab').forEach(tab => {
       loadDespachosPage({ resetPage: !despachosLoadedOnce });
     }
     if (tabId === 'consulta') {
-      renderConsultaBaseView();
     }
     if (tabId === 'visor') {
       refreshVisorDateOptions()
@@ -9453,7 +9271,6 @@ function enterBase(base){
 
   rebuildAssigned();
   updateWorkflowGuide();
-  updateApiSharingTabVisibility();
   if (usingTargetView) {
     const selectedDate2 = normalizeDateToISO(filterDate2?.value || "");
     if (selectedDate2) {
@@ -9786,7 +9603,6 @@ async function handleLoadHistoryProgramacionClick(){
   }
   await applyProgramacionRecord(rec);
   renderAdminComplianceDashboard();
-  renderConsultaBaseView();
   showToast(`Historial cargado: ${rec.file_name || rec.id}`, "ok");
 }
 
@@ -10015,9 +9831,6 @@ function bindUIEvents(){
   if (btnReloadDrivers) btnReloadDrivers.addEventListener("click", loadDriversFromCSV);
   if (btnRefreshCompliance) btnRefreshCompliance.addEventListener("click", renderAdminComplianceDashboard);
   if (adminComplianceDate) adminComplianceDate.addEventListener("change", renderAdminComplianceDashboard);
-  if (btnApplyConsulta) btnApplyConsulta.addEventListener("click", renderConsultaBaseView);
-  if (consultaFrom) consultaFrom.addEventListener("change", renderConsultaBaseView);
-  if (consultaTo) consultaTo.addEventListener("change", renderConsultaBaseView);
 
   const btnLoadHistoryProgramacion = document.getElementById("btnLoadHistoryProgramacion");
   if (btnLoadHistoryProgramacion) {
@@ -10246,7 +10059,6 @@ async function initializeApp(){
     }
   }
   renderTable2();
-  renderConsultaBaseView();
   if (isSuperAdmin()) {
     try {
       await renderMigrationStatus();
@@ -10362,1463 +10174,1783 @@ function bindWindowEvents(){
 }
 
 
+/* v2.11.0 (19-nov-2026): se quitó la pestaña "Asistencias" (módulo bootstrapAsistencias). Las marcas de cada base
+   y sus novedades se ven en Mi base. En Supabase no se tocó nada. */
+/* v2.11.0 (19-nov-2026): se quitaron las pestañas "Planilla de enturnamiento aeropuerto" y "Mapa enturnamiento
+   aeropuerto" (módulo Llegadas 104, su canal en vivo de llegadas_104 y Leaflet) y "Datos compartidos con el cliente".
+   La fila del aeropuerto se ve en Mi base -> Enturnamiento en vivo. En Supabase no se tocó nada. */
+/* v2.11.0 (19-nov-2026): se quitó la pestaña "Parque automotor y documentacion de vehiculos". Los vehículos y sus
+   documentos los maneja el Kardex, que además cerró la tabla parque_automotor a las demás cuentas. Las tablas
+   parque_automotor y parque_documentos y el bucket parque-docs siguen en Supabase, sin cambios. */
 /* =====================================================================
-   MODULO: Asistencias (entradas/salidas con foto, geolocalizacion y Buk)
-   Solo lectura. Lee de la tabla `asistencias` y embebe `colaboradores`/`obras`.
+   MODULO: Mi base (v2.11.0, 18-nov-2026)
+   Pestana para las cuentas de base (y el administrador), en 3 partes:
+     A. Novedades del dia: entradas contra el turno, motivos escritos, los que
+        faltan y salidas/jornadas. Cada novedad la REVISA la base: escribe que
+        se hizo y queda quien y cuando ("Por revisar").
+     B. Viaje a viaje de sus carros, con la plata (misma vista que Control).
+     C. El nuevo enturnamiento: la fila de cada punto con sus buses resaltados
+        y donde esta cada bus suyo.
+   Los datos los dan las funciones afiliados_* y es la BASE DE DATOS la que
+   decide la base: una cuenta baseN@ ve solo la BASE N aunque alguien cambie
+   este codigo; solo ella revisa. El administrador ve la base que abra.
+   Las fotos estan en un bucket privado y se firman por 10 minutos.
    ===================================================================== */
-(function bootstrapAsistencias(){
-  const ASIST_TABLE = "asistencias";
-  const ASIST_FETCH_LIMIT = 20000;
+(function bootstrapMiBase(){
+  const RPC_NOVEDADES = "afiliados_novedades_base";
+  const RPC_REVISAR = "afiliados_revisar_novedad";
+  const RPC_VIAJES = "afiliados_viajes_base";
+  const RPC_FILA = "afiliados_fila_base";
+  const RPC_CAMBIOS = "combuasigna_cambios_dia";
+  const FOTO_BUCKET = "asistencia-fotos";
+  const FOTO_SEG = 600;            // vigencia de cada foto firmada
+  const FOTO_DIAS = 15;            // el biometrico borra las fotos a los 15 dias
+  const SIN_CERRAR_H = 12;         // una entrada sin salida de mas de 12 h es un turno sin cerrar
+  const DIAS_ATRAS = 62;           // las funciones aceptan hasta 2 meses atras
+  const FILA_VIEJA_MS = 3 * 60 * 1000;
+  // Cada cuanto se actualiza sola cada parte (solo con la pestana abierta y la pantalla a la vista).
+  const CADA_MS = { novedades: 60 * 1000, viajes: 2 * 60 * 1000, fila: 30 * 1000, cambios: 60 * 1000 };
+  // Los cambios se pueden ver hasta 7 dias adelante: las bases arman la programacion de manana.
+  const DIAS_ADELANTE_CAMBIOS = 7;
+  const PUNTOS_FILA = ["Aeropuerto", "Almacentro", "Nutibara", "Terminal Norte"];
+  const PUNTO_POR_ITINERARIO = "Aeropuerto";
+  // El dia de la tarjeta (viaje a viaje) va de 02:30 a 02:30, como en Control.
+  const INICIO_TARJETA = "02:30";
+  // Orden de los grupos de "Por revisar": primero lo mas grave.
+  // Novedades por página en Por revisar (window.NB_REV_POR_PAGINA solo para las pruebas).
+  const REV_POR_PAGINA = Math.max(1, Number(window.NB_REV_POR_PAGINA) || 10);
+  const ORDEN_REVISAR = ["No ha entrado", "No entró", "Turno sin cerrar", "Jornada de más de 16 h", "Llegó tarde",
+    "Revisar el tipo de marca", "Cambio de turno", "Entrada fuera de horario", "Salida fuera de horario",
+    "Entró antes de tiempo", "Salida manual", "Motivo"];
+  // Como se agrupan "Sus buses ahora".
+  const LUGARES = [
+    { k: "fila", txt: "En la fila", cls: "ok" },
+    { k: "ruta", txt: "En ruta", cls: "info" },
+    { k: "quieto", txt: "GPS sin reportar", cls: "warn" },
+    { k: "sin", txt: "Sin despacho", cls: "mut" }
+  ];
 
-  // SELECT con embed defensivo: si la FK esta definida, trae el colaborador.
-  // El alias singular es estandar PostgREST.
-  const SELECT_WITH_EMBED = "*, colaborador:colaboradores(*)";
-  const SELECT_PLAIN = "*";
-
-  const state = {
-    rows: [],
-    loading: false,
-    loadedOnce: false,
-    embedAvailable: true
+  const ORIGEN = {
+    admin_form: "Biométrico",
+    movil: "Celular",
+    manual: "Manual (administración)",
+    cierre_declarado: "Cierre declarado",
+    web: "Web"
+  };
+  const LLEGADA = {
+    a_tiempo: { txt: "A tiempo", cls: "ok" },
+    temprano: { txt: "Temprano", cls: "warn" },
+    tarde: { txt: "Tarde", cls: "err" },
+    sin_programacion: { txt: "Sin turno", cls: "mut" }
   };
 
-  // Indice memoizado: nombre normalizado -> numero de base (segun CSV Google Sheets).
-  let _baseByName = null;
+  const st = {
+    vista: "novedades",
+    fecha: "",
+    datos: null,          // novedades
+    viajes: null,
+    fila: null,
+    cambios: null,
+    cambiosFiltro: "",
+    cambiosBuscar: "",
+    cargando: { novedades: false, viajes: false, fila: false, cambios: false },
+    pedido: { novedades: 0, viajes: 0, fila: 0, cambios: 0 },
+    cargadoEn: { novedades: 0, viajes: 0, fila: 0, cambios: 0 },
+    filtro: "",
+    buscar: "",
+    revFiltro: "pendientes",
+    buscarViajes: "",
+    horasDesde: "",       // filtro de horas de viaje a viaje ("HH:MM"; vacio = todo el dia)
+    horasHasta: "",
+    viajesAbiertos: false,
+    revItem: null,
+    urls: new Map()       // ruta de la foto -> { url, vence }
+  };
 
-  function normalizeName(s){
-    return String(s == null ? "" : s)
-      .toUpperCase()
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+  const el = (id) => document.getElementById(id);
+  const esc = (v) => (typeof escapeHtml === "function")
+    ? escapeHtml(v == null ? "" : String(v))
+    : String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  /* ---------- fechas, numeros y textos ---------- */
+  function hoy(){
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    } catch (_) {
+      return new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+    }
+  }
+  function masDias(iso, n){
+    const d = new Date(`${iso}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  function diasEntre(a, b){
+    return Math.round((new Date(`${b}T12:00:00Z`) - new Date(`${a}T12:00:00Z`)) / 86400000);
+  }
+  function fechaLarga(iso){
+    try {
+      const t = new Date(`${iso}T12:00:00Z`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+      return t.charAt(0).toUpperCase() + t.slice(1);
+    } catch (_) {
+      return iso;
+    }
+  }
+  function fechaCorta(iso){
+    try {
+      return new Date(`${iso}T12:00:00Z`).toLocaleDateString("es-CO", { day: "numeric", month: "short", timeZone: "UTC" }).replace(".", "");
+    } catch (_) {
+      return iso;
+    }
+  }
+  // La base de datos manda las horas como "2026-11-18T18:22:12+00" (la zona sin los minutos)
+  // y el navegador no las entiende asi: se completa a "+00:00" antes de leerlas.
+  function tsMs(isoTs){
+    if (!isoTs) return NaN;
+    let t = String(isoTs).trim().replace(" ", "T");
+    if (/[+-]\d{2}$/.test(t)) t += ":00";
+    return Date.parse(t);
+  }
+  function horaDe(isoTs){
+    const ms = tsMs(isoTs);
+    if (isNaN(ms)) return "";
+    return new Date(ms).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "America/Bogota" });
+  }
+  function minutosDesde(isoTs){
+    const t = tsMs(isoTs);
+    return isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 60000));
+  }
+  function horasTxt(n){
+    return n == null ? "" : `${Number(n).toLocaleString("es-CO", { maximumFractionDigits: 1 })} h`;
+  }
+  function minutosTxt(m){
+    const a = Math.abs(Math.round(Number(m) || 0));
+    if (a < 60) return `${a} min`;
+    const h = Math.floor(a / 60);
+    const r = a % 60;
+    return r ? `${h} h ${r} min` : `${h} h`;
+  }
+  function numero(n){
+    return Number(n || 0).toLocaleString("es-CO");
+  }
+  function plata(n){
+    if (n == null || n === "") return "—";
+    try {
+      return Number(n).toLocaleString("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
+    } catch (_) {
+      return `$ ${numero(n)}`;
+    }
+  }
+  function cedula(dni){
+    const s = String(dni || "").trim();
+    if (!s) return "";
+    return /^\d+$/.test(s) ? `CC ${Number(s).toLocaleString("es-CO")}` : `CC ${s}`;
+  }
+  function sinTildes(s){
+    return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  }
+  // "703 - NNN123" -> { num: "703", resto: "NNN123" }
+  function partirBus(bus){
+    const s = String(bus || "").trim();
+    if (!s) return { num: "", resto: "" };
+    const p = s.split(/\s*-\s*/);
+    return { num: p[0], resto: p.slice(1).join(" - ") };
+  }
+  function plural(n, uno, varios){
+    return `${n} ${n === 1 ? uno : varios}`;
+  }
+  function numBus(v){
+    const n = parseInt(String(v || "").replace(/\D/g, ""), 10);
+    return isNaN(n) ? 1e9 : n;
   }
 
-  function buildBaseByNameIndex(){
-    _baseByName = new Map();
-    const dbb = (typeof driversByBase === "object" && driversByBase) ? driversByBase : {};
-    Object.keys(dbb).forEach(baseKey => {
-      const list = Array.isArray(dbb[baseKey]) ? dbb[baseKey] : [];
-      list.forEach(name => {
-        const k = normalizeName(name);
-        if (k && !_baseByName.has(k)) _baseByName.set(k, String(baseKey));
-      });
+  /* ---------- quien puede ver y que base ---------- */
+  function puedeVer(){
+    try {
+      return (typeof isSuperAdmin === "function" && isSuperAdmin())
+        || (typeof isBaseOperator === "function" && isBaseOperator());
+    } catch (_) {
+      return false;
+    }
+  }
+  function baseActiva(){
+    try {
+      if (typeof isBaseOperator === "function" && isBaseOperator()) return currentUserBase || "";
+      return (typeof currentBase !== "undefined" && currentBase) ? currentBase : "";
+    } catch (_) {
+      return "";
+    }
+  }
+  function etiquetaBase(b){
+    return (typeof formatBaseLabel === "function") ? formatBaseLabel(b) : String(b || "");
+  }
+  function tabActiva(){
+    const c = el("tab-novedades-base");
+    return !!(c && c.classList.contains("active"));
+  }
+  function cliente(){
+    return (typeof planillaSupabaseClient !== "undefined" && planillaSupabaseClient) ? planillaSupabaseClient : null;
+  }
+
+  // Se llama desde applyRoleRestrictions: la pestana solo existe para las cuentas
+  // de base y el administrador.
+  function actualizarVisibilidad(){
+    const tab = document.querySelector('.tab[data-tab="novedades-base"]');
+    if (!tab) return;
+    const ver = puedeVer();
+    tab.classList.toggle("hidden", !ver);
+    meterPestanas(ver);   // v2.11.0: Despachos en vivo y Visor Excel van dentro de Mi base
+    if (!ver) {
+      olvidar();
+      const cont = el("tab-novedades-base");
+      if (cont && cont.classList.contains("active")) {
+        cont.classList.remove("active");
+        tab.classList.remove("active");
+        document.querySelector('.tab[data-tab="programacion2"]')?.classList.add("active");
+        el("tab-programacion2")?.classList.add("active");
+      }
+    }
+  }
+  window.updateNovedadesBaseTabVisibility = actualizarVisibilidad;
+
+  /* ---------- estado y errores ---------- */
+  function setEstado(txt, tipo){
+    const e = el("nbEstado");
+    if (!e) return;
+    e.textContent = txt;
+    e.className = `nb-estado${tipo ? ` nb-estado-${tipo}` : ""}`;
+  }
+  function errorEsperado(err){
+    const c = String(err?.code || "");
+    return c === "42501" || c === "22023" || c === "PGRST202";
+  }
+  function mensajeError(err, que){
+    const c = String(err?.code || "");
+    const m = String(err?.message || err || "");
+    if (c === "PGRST202") return "Esta parte todavía no está activa en la base de datos.";
+    if (c === "42501" || c === "22023") return m;
+    if (!navigator.onLine || /fetch|network|Failed to fetch|NetworkError|abort/i.test(m)) {
+      return "Sin conexión a internet. Se vuelve a intentar sola en un minuto.";
+    }
+    return `No se pudo cargar ${que}: ${m}`;
+  }
+
+  function olvidar(){
+    ["novedades", "viajes", "fila", "cambios"].forEach((k) => {
+      st.pedido[k]++;
+      st.cargando[k] = false;
+      st.cargadoEn[k] = 0;
     });
+    st.datos = null;
+    st.viajes = null;
+    st.fila = null;
+    st.cambios = null;
+    st.urls.clear();
+    ["nbResumen", "nbPersonal", "nbRevisar", "nbEntradas", "nbMotivos", "nbFaltan", "nbSalidas",
+      "nbViajesResumen", "nbViajes", "nbFilaAviso", "nbMisBuses", "nbFila", "nbCambiosResumen", "nbCambios"].forEach((id) => {
+      const e = el(id);
+      if (e) e.innerHTML = "";
+    });
+    ["nbCuentaRevisar", "nbCuentaEntradas", "nbCuentaMotivos", "nbCuentaFaltan", "nbCuentaSalidas",
+      "nbCuentaViajes", "nbCuentaMisBuses", "nbNumRevisar", "nbCuentaCambios", "nbNumCambios"].forEach((id) => {
+      const e = el(id);
+      if (e) e.textContent = "";
+    });
+    setEstado("Abra esta pestaña para ver su base.");
   }
 
-  function getBaseDesdeCsv(nombre){
-    if (!_baseByName) buildBaseByNameIndex();
-    const k = normalizeName(nombre);
-    if (!k) return "";
-    return _baseByName.get(k) || "";
+  // Hasta que dia se puede ir: hoy (novedades y viajes) o hasta 7 dias adelante (cambios a la programacion).
+  function diaMaximo(){
+    return st.vista === "cambios" ? masDias(hoy(), DIAS_ADELANTE_CAMBIOS) : hoy();
   }
 
-  // Base activa para filtrar asistencias:
-  //   - Operador de base (login con email base{N}@) -> fija a currentUserBase
-  //   - Admin -> usa currentBase (la "abierta" desde el selector). Vacio = sin filtro.
-  function getActiveBase(){
-    const canon = (typeof getBaseCanonical === "function") ? getBaseCanonical : (v) => String(v || "");
-    if (typeof isBaseOperator === "function" && isBaseOperator()){
-      return String(canon(currentUserBase) || "");
+  function pintarCabeza(base){
+    const t = el("nbTitulo");
+    const s = el("nbSub");
+    const f = el("nbFecha");
+    const h = hoy();
+    if (t) t.textContent = base ? `Mi base · ${etiquetaBase(base)}` : "Mi base";
+    if (s) {
+      s.textContent = EXTERNAS[st.vista] ? EXTERNAS[st.vista].nombre : st.vista === "fila"
+        ? "Enturnamiento en vivo"
+        : (st.fecha ? `${fechaLarga(st.fecha)}${st.fecha === h ? " · hoy" : ""}` : "");
     }
-    return String(canon(currentBase) || "");
-  }
-
-  function setBaseHint(){
-    const el = $("asistenciasBaseHint");
-    if (!el) return;
-    el.textContent = "Mostrando todas las bases";
-  }
-
-  const $ = (id) => document.getElementById(id);
-
-  function setStatus(msg, isErr = false){
-    const el = $("asistenciasStatus");
-    if (!el) return;
-    el.textContent = msg;
-    el.style.color = isErr ? "var(--color-danger, #b91c1c)" : "";
-  }
-
-  function setCount(n){
-    const el = $("asistenciasCount");
-    if (el) el.textContent = String(n);
-  }
-
-  function getColaboradorNombre(row){
-    const c = row && row.colaborador;
-    if (c && typeof c === "object"){
-      const candidate =
-        c.nombre_completo ||
-        c.nombre ||
-        c.nombres ||
-        (c.nombres && c.apellidos ? `${c.nombres} ${c.apellidos}` : null) ||
-        c.full_name ||
-        c.name ||
-        c.display_name;
-      if (candidate) return String(candidate);
-      if (c.id) return shortId(c.id);
+    const maxDia = diaMaximo();
+    if (f) {
+      f.max = maxDia;
+      f.min = masDias(h, -DIAS_ATRAS);
+      if (st.fecha && f.value !== st.fecha) f.value = st.fecha;
     }
-    return shortId(row && row.colaborador_id);
+    const sig = el("nbSiguiente");
+    if (sig) sig.disabled = !st.fecha || st.fecha >= maxDia;
+    const ant = el("nbAnterior");
+    if (ant) ant.disabled = !st.fecha || st.fecha <= masDias(h, -DIAS_ATRAS);
+    // La fila es en vivo: no tiene dia para escoger.
+    el("nbDia")?.classList.toggle("nb-dia-vivo", st.vista === "fila");
   }
 
-  function shortId(id){
-    if (!id) return "";
-    const str = String(id);
-    return str.length > 8 ? str.slice(0, 8) + "..." : str;
-  }
+  /* ---------- carga ---------- */
+  const QUE = {
+    novedades: { rpc: RPC_NOVEDADES, txt: "las novedades", conFecha: true },
+    viajes: { rpc: RPC_VIAJES, txt: "el viaje a viaje", conFecha: true },
+    fila: { rpc: RPC_FILA, txt: "la fila", conFecha: false },
+    cambios: { rpc: RPC_CAMBIOS, txt: "los cambios", conFecha: true }
+  };
 
-  function formatHora(value){
-    if (!value) return "";
-    const str = String(value);
-    // "06:22:25.366914" -> "06:22:25"
-    const dot = str.indexOf(".");
-    return dot >= 0 ? str.slice(0, dot) : str;
-  }
-
-  async function loadAsistencias(){
-    if (state.loading) return;
-    if (typeof planillaSupabaseClient === "undefined" || !planillaSupabaseClient){
-      setStatus("Cliente Supabase no inicializado.", true);
+  async function cargar(opc = {}){
+    if (!puedeVer()) return;
+    const vista = opc.vista || st.vista;
+    const q = QUE[vista];
+    if (!q) return;   // Despachos y Visor se cargan solos
+    if (!st.fecha) st.fecha = hoy();
+    const base = baseActiva();
+    pintarCabeza(base);
+    if (!base) {
+      olvidar();
+      setEstado("Abra una base arriba (Abrir base) para ver sus novedades.", "info");
       return;
     }
-    state.loading = true;
-    setStatus("Cargando...");
+    const cli = cliente();
+    if (!cli) {
+      setEstado("No hay conexión con la base de datos.", "err");
+      return;
+    }
+    const pedido = ++st.pedido[vista];
+    st.cargando[vista] = true;
+    const btn = el("nbActualizar");
+    if (btn && vista === st.vista) btn.disabled = true;
+    if (!opc.silencioso && vista === st.vista) setEstado(`Cargando ${q.txt}…`, "cargando");
     try {
-      const desde = $("asistenciasFrom") && $("asistenciasFrom").value;
-      const hasta = $("asistenciasTo") && $("asistenciasTo").value;
-
-      // PostgREST limita cada respuesta (tipicamente 1000 filas). Por eso paginamos
-      // por bloques con .range() hasta completar todo o alcanzar ASIST_FETCH_LIMIT.
-      const PAGE = 1000;
-      const buildQuery = (selectStr, from, to) => {
-        let q = planillaSupabaseClient
-          .from(ASIST_TABLE)
-          .select(selectStr)
-          .order("fecha", { ascending: false, nullsFirst: false })
-          .order("hora",  { ascending: false, nullsFirst: false })
-          .range(from, to);
-        if (desde) q = q.gte("fecha", desde);
-        if (hasta) q = q.lte("fecha", hasta);
-        return q;
-      };
-
-      let selectStr = state.embedAvailable ? SELECT_WITH_EMBED : SELECT_PLAIN;
-      const all = [];
-      let from = 0;
-      while (from < ASIST_FETCH_LIMIT){
-        const to = Math.min(from + PAGE, ASIST_FETCH_LIMIT) - 1;
-        const expected = to - from + 1;
-        let { data, error } = await buildQuery(selectStr, from, to);
-
-        // Si falla el embed por FK ausente, cambio a select plano y reintento este bloque.
-        if (error && state.embedAvailable){
-          const msg = (error.message || "").toLowerCase();
-          const isEmbedErr = msg.includes("relationship") || msg.includes("could not find") || msg.includes("schema cache");
-          if (isEmbedErr){
-            state.embedAvailable = false;
-            selectStr = SELECT_PLAIN;
-            console.warn("[asistencias] Embed no disponible, usando select plano:", error.message);
-            ({ data, error } = await buildQuery(selectStr, from, to));
-          }
-        }
-
-        if (error) throw error;
-
-        const batch = Array.isArray(data) ? data : [];
-        all.push(...batch);
-        setStatus(`Cargando... ${all.length}`);
-        if (batch.length < expected) break; // bloque incompleto = no hay mas registros
-        from += PAGE;
+      const args = q.conFecha ? { p_fecha: st.fecha, p_base: etiquetaBase(base) } : { p_base: etiquetaBase(base) };
+      const { data, error } = await cli.rpc(q.rpc, args);
+      if (pedido !== st.pedido[vista]) return;   // ya se pidio otro dia u otra base
+      if (error) throw error;
+      if (!data || !data.ok) throw new Error("La base de datos no devolvió los datos.");
+      if (vista === "novedades") st.datos = data;
+      else if (vista === "viajes") st.viajes = data;
+      else if (vista === "cambios") st.cambios = data;
+      else st.fila = data;
+      st.cargadoEn[vista] = Date.now();
+      if (vista === st.vista) {
+        pintarVista(vista);
+        const h = new Date().toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
+        const vivo = vista === "fila" || data.es_hoy;
+        const cada = vista === "fila" ? "30 segundos" : vista === "viajes" ? "2 minutos" : "minuto";
+        if (vista === "cambios") setEstado(`Actualizado a las ${h}${data.es_hoy ? " · se actualiza solo cada minuto" : ""}`, "ok");
+        if (vista !== "cambios") setEstado(`Actualizado a las ${h}${vivo ? ` · se actualiza solo cada ${cada}` : ""}`, "ok");
       }
-
-      state.rows = all;
-      state.loadedOnce = true;
-      // Reconstruir indice base-por-nombre con el CSV actual (driversByBase puede
-      // haber cambiado entre cargas).
-      _baseByName = null;
-      setStatus(`Cargadas ${state.rows.length} (limite ${ASIST_FETCH_LIMIT}).`);
-      render();
-    } catch (err){
-      console.error("[asistencias] error de carga:", err);
-      setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudieron cargar las asistencias.", "err", err);
+      if (vista === "novedades") firmarFotos().catch((e) => console.warn("[mi-base] fotos:", e));
+    } catch (err) {
+      if (pedido !== st.pedido[vista]) return;
+      if (vista === st.vista) setEstado(mensajeError(err, q.txt), "err");
+      if (!opc.silencioso && !errorEsperado(err) && typeof reportError === "function" && navigator.onLine) {
+        reportError(`No se pudo cargar ${q.txt} de la base`, err, {
+          hint: "Toque Actualizar. Si vuelve a salir, envíe este error."
+        });
+      }
     } finally {
-      state.loading = false;
+      if (pedido === st.pedido[vista]) {
+        st.cargando[vista] = false;
+        if (btn && vista === st.vista) btn.disabled = false;
+      }
     }
   }
 
-  function getFilteredRows(){
-    let rows = state.rows.slice();
+  function pintarVista(vista){
+    if (vista === "novedades") pintar();
+    else if (vista === "viajes") pintarViajes();
+    else if (vista === "cambios") pintarCambios();
+    else pintarFila();
+  }
 
-    // Sin filtro por base: la vista de asistencias muestra todas las bases.
+  // v2.11.0 (19-nov-2026): "Despachos en vivo" y "Visor Excel" van DENTRO de Mi base (pedido del usuario). Su contenido
+  // (#tab-despachos-realizados, #tab-visor) se pasa a Mi base solo para las cuentas que ven Mi base; para las demás sigue
+  // siendo una pestaña. Se cargan igual que al abrir su pestaña, y isTabActive() sigue sirviendo: su contenido lleva la
+  // clase "active" mientras se ve.
+  const EXTERNAS = {
+    despachos: { tab: "despachos-realizados", caja: "nbVistaDespachos", nombre: "Despachos en vivo" },
+    visor: { tab: "visor", caja: "nbVistaVisor", nombre: "Visor Excel en línea" }
+  };
+  const EXT_ORIGEN = {};
 
-    const sentido = ($("asistenciasSentido") && $("asistenciasSentido").value || "").trim().toLowerCase();
-    // En vista "entrada y salida" no aplicamos el filtro de sentido (necesitamos ambos para emparejar).
-    if (sentido && getVista() !== "pares") rows = rows.filter(r => (r.sentido || "").toLowerCase() === sentido);
+  function meterPestanas(dentro){
+    Object.keys(EXTERNAS).forEach((k) => {
+      const x = EXTERNAS[k];
+      const c = el("tab-" + x.tab);
+      const t = document.querySelector(`.tab[data-tab="${x.tab}"]`);
+      const caja = el(x.caja);
+      if (!c || !caja) return;
+      if (!EXT_ORIGEN[k]) EXT_ORIGEN[k] = { padre: c.parentNode, sig: c.nextSibling };
+      if (dentro) {
+        const estaba = !!(t && t.classList.contains("active"));
+        if (c.parentNode !== caja) caja.appendChild(c);
+        if (t) { t.classList.add("mb-dentro"); t.classList.remove("active"); }
+        if (estaba) {   // estaba abierta como pestaña: se sigue viendo, ahora dentro de Mi base
+          document.querySelectorAll(".tab-content").forEach((n) => n.classList.remove("active"));
+          document.querySelector('.tab[data-tab="novedades-base"]')?.classList.add("active");
+          el("tab-novedades-base")?.classList.add("active");
+          mostrarExterna(k);
+        }
+      } else {
+        if (c.parentNode === caja) EXT_ORIGEN[k].padre.insertBefore(c, EXT_ORIGEN[k].sig);
+        if (t) t.classList.remove("mb-dentro");
+        caja.classList.add("hidden");
+        if (st.vista === k) st.vista = "novedades";
+      }
+    });
+  }
 
-    const term = ($("asistenciasSearch") && $("asistenciasSearch").value || "").trim().toLowerCase();
-    if (term){
-      rows = rows.filter(r => {
-        const nombre = getColaboradorNombre(r);
-        const baseCsv = getBaseDesdeCsv(nombre);
-        const haystack = [
-          nombre,
-          baseCsv ? `BASE ${baseCsv}` : "",
-          r.base_operativa,
-          r.fecha,
-          r.hora
-        ].filter(Boolean).map(v => String(v).toLowerCase()).join(" | ");
-        return haystack.includes(term);
+  function mostrarExterna(v){
+    st.vista = v;
+    el("nbVistas")?.querySelectorAll(".nb-vista").forEach((b) => {
+      const on = b.dataset.vista === v;
+      b.classList.toggle("activa", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    ["nbVistaNovedades", "nbVistaViajes", "nbVistaFila", "nbVistaCambios"].forEach((id) => el(id)?.classList.add("hidden"));
+    Object.keys(EXTERNAS).forEach((k) => {
+      const on = k === v;
+      el(EXTERNAS[k].caja)?.classList.toggle("hidden", !on);
+      el("tab-" + EXTERNAS[k].tab)?.classList.toggle("active", on && tabActiva());
+    });
+    el("nbDia")?.classList.add("hidden");      // tienen su propio filtro de fechas
+    el("nbEstado")?.classList.add("hidden");
+    pintarCabeza(baseActiva());
+    if (!tabActiva()) return;
+    if (v === "despachos" && typeof loadDespachosPage === "function") loadDespachosPage({ resetPage: !despachosLoadedOnce });
+    if (v === "visor" && typeof refreshVisorDateOptions === "function") {
+      refreshVisorDateOptions()
+        .then(() => renderLiveExcelPreview())
+        .catch((err) => {
+          console.error("No se pudo actualizar el visor:", err);
+          renderLiveExcelPreview();
+        });
+    }
+    if (typeof adjustDynamicTableViewport === "function") adjustDynamicTableViewport();
+  }
+
+  function ocultarExternas(){
+    Object.keys(EXTERNAS).forEach((k) => {
+      el(EXTERNAS[k].caja)?.classList.add("hidden");
+      el("tab-" + EXTERNAS[k].tab)?.classList.remove("active");
+    });
+    el("nbDia")?.classList.remove("hidden");
+    el("nbEstado")?.classList.remove("hidden");
+  }
+
+  function cambiarVista(v){
+    if (EXTERNAS[v]) { mostrarExterna(v); return; }
+    if (!QUE[v]) return;
+    ocultarExternas();
+    st.vista = v;
+    if (st.fecha && st.fecha > diaMaximo()) {   // de Cambios (un dia futuro) a Novedades o Viaje a viaje: hoy
+      st.fecha = hoy();
+      st.datos = null;
+      st.viajes = null;
+    }
+    el("nbVistas")?.querySelectorAll(".nb-vista").forEach((b) => {
+      const on = b.dataset.vista === v;
+      b.classList.toggle("activa", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    el("nbVistaNovedades")?.classList.toggle("hidden", v !== "novedades");
+    el("nbVistaViajes")?.classList.toggle("hidden", v !== "viajes");
+    el("nbVistaFila")?.classList.toggle("hidden", v !== "fila");
+    el("nbVistaCambios")?.classList.toggle("hidden", v !== "cambios");
+    pintarCabeza(baseActiva());
+    const d = v === "novedades" ? st.datos : v === "viajes" ? st.viajes : v === "cambios" ? st.cambios : st.fila;
+    const mismoDia = !QUE[v].conFecha || (d && d.fecha === st.fecha);
+    if (d && mismoDia) {
+      pintarVista(v);
+      if (Date.now() - st.cargadoEn[v] > CADA_MS[v]) cargar({ silencioso: true });
+    } else {
+      cargar();
+    }
+  }
+
+  /* ---------- fotos (bucket privado, firmadas por 10 min) ---------- */
+  function fotoVigente(p){
+    const f = st.urls.get(p);
+    return !!f && f.vence > Date.now();
+  }
+  async function firmar(paths){
+    const faltan = [...new Set((paths || []).filter((p) => p && !fotoVigente(p)))];
+    const cli = cliente();
+    if (!faltan.length || !cli) return;
+    for (let i = 0; i < faltan.length; i += 100) {
+      const lote = faltan.slice(i, i + 100);
+      const { data, error } = await cli.storage.from(FOTO_BUCKET).createSignedUrls(lote, FOTO_SEG);
+      if (error || !Array.isArray(data)) continue;
+      const vence = Date.now() + (FOTO_SEG - 60) * 1000;
+      data.forEach((r) => {
+        if (r && r.path) st.urls.set(r.path, { url: r.signedUrl || "", vence });
       });
     }
-    return rows;
   }
-
-  function getVista(){
-    const v = ($("asistenciasVista") && $("asistenciasVista").value) || "detalle";
-    return v === "pares" ? "pares" : "detalle";
+  function fotosBorradas(){
+    return !!st.datos && diasEntre(st.datos.fecha, hoy()) > FOTO_DIAS;
   }
-
-  function setHead(vista){
-    const head = $("asistenciasHead");
-    if (!head) return;
-    head.innerHTML = (vista === "pares")
-      ? "<th>Fecha</th><th>Colaborador</th><th>Base</th><th>Entrada</th><th>Salida</th><th>Horas</th>"
-      : "<th>Fecha</th><th>Hora</th><th>Jornada</th><th>Sentido</th><th>Colaborador</th><th>Base</th>";
-  }
-
-  function hhmmssToSec(h){
-    const m = String(h || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-    if (!m) return null;
-    return (+m[1]) * 3600 + (+m[2]) * 60 + (+(m[3] || 0));
-  }
-  function secToHHMM(s){
-    if (s == null) return "";
-    if (s < 0) s += 86400; // turno que cruza medianoche
-    const h = Math.floor(s / 3600), mn = Math.floor((s % 3600) / 60);
-    return `${String(h).padStart(2, "0")}:${String(mn).padStart(2, "0")}`;
-  }
-
-  // Agrupa las marcas por colaborador + jornada -> { fecha, nombre, base, entrada, salida }.
-  function buildPares(rows){
-    const groups = new Map();
-    rows.forEach(r => {
-      const nombre = getColaboradorNombre(r);
-      const personKey = String(r.colaborador_id || nombre || "").trim();
-      const jornada = String(r.jornada || r.fecha || "").trim();
-      const key = `${personKey}|${jornada}`;
-      let g = groups.get(key);
-      if (!g){
-        const bcsv = getBaseDesdeCsv(nombre);
-        g = { fecha: r.fecha || jornada, jornada, nombre, base: bcsv ? `BASE ${bcsv}` : (r.base_operativa || ""), entrada: null, salida: null };
-        groups.set(key, g);
-      }
-      const hora = formatHora(r.hora);
-      const s = String(r.sentido || "").toLowerCase();
-      if (s === "entrada"){ if (!g.entrada || hora < g.entrada) g.entrada = hora; }
-      else if (s === "salida"){ if (!g.salida || hora > g.salida) g.salida = hora; }
+  async function firmarFotos(){
+    const d = st.datos;
+    if (!d || fotosBorradas()) return;
+    // las de entrada, y las de salida que salen en Motivos escritos y en Por revisar
+    const fotos = [];
+    (d.entradas || []).forEach((e) => {
+      fotos.push(e.foto);
+      if (e.salida && ((e.salida.motivos && e.salida.motivos.length) || e.jornada_excedida)) fotos.push(e.salida.foto);
     });
-    const out = Array.from(groups.values());
-    out.sort((a, b) => String(b.jornada).localeCompare(String(a.jornada)) || String(a.nombre).localeCompare(String(b.nombre), "es"));
+    await firmar(fotos);
+    if (d === st.datos) pintarFotos();
+  }
+  function fotoHtml(path, grande){
+    const cls = `nb-foto${grande ? " nb-foto-grande" : ""}`;
+    if (!path) return `<span class="${cls} sin" title="Sin foto"></span>`;
+    const f = st.urls.get(path);
+    const src = f && f.url ? ` src="${esc(f.url)}"` : "";
+    const sin = (f && !f.url) || fotosBorradas() ? " sin" : "";
+    return `<span class="${cls}${sin}"><img data-foto="${esc(path)}"${src} alt="Foto de la marca" loading="lazy" /></span>`;
+  }
+  function pintarFotos(){
+    document.querySelectorAll("#tab-novedades-base img[data-foto], #nbModal img[data-foto]").forEach((img) => {
+      const f = st.urls.get(img.dataset.foto);
+      if (!f) return;
+      if (f.url) {
+        if (img.getAttribute("src") !== f.url) img.src = f.url;
+        img.parentElement?.classList.remove("sin");
+      } else {
+        img.parentElement?.classList.add("sin");
+      }
+    });
+  }
+
+  /* ---------- lectura de los motivos ---------- */
+  function leerMotivo(m){
+    const t = String(m || "").trim();
+    const partir = (s) => {
+      const k = String(s).match(/^(.*?\))\s*:\s*([\s\S]+)$/);
+      return k ? [k[1].trim(), k[2].trim()] : ["", String(s).trim()];
+    };
+    const limpiar = (d) => d
+      .replace(/\bvs programada\b/i, "· turno de las")
+      .replace(/\bvs su turno (\d+) de las\b/i, "· su turno $1 es a las");
+    let r;
+    if ((r = t.match(/^ENTRADA ANTES DE TIEMPO:\s*([\s\S]*)$/i))) {
+      const [d, x] = partir(r[1]);
+      return { tipo: "Entró antes de tiempo", cls: "warn", det: limpiar(d), txt: x };
+    }
+    if ((r = t.match(/^CAMBIO DE TURNO:\s*([\s\S]*)$/i))) {
+      const [d, x] = partir(r[1]);
+      return { tipo: "Cambio de turno", cls: "info", det: limpiar(d), txt: x };
+    }
+    if (/^(ENTRADA|SALIDA) \d{1,2}:\d{2} vs programada/i.test(t)) {
+      const [d, x] = partir(t);
+      return { tipo: /^SALIDA/i.test(t) ? "Salida fuera de horario" : "Entrada fuera de horario", cls: "warn", det: limpiar(d), txt: x };
+    }
+    if (/^Jornada de/i.test(t)) {
+      const [d, x] = partir(t);
+      return { tipo: "Jornada de más de 16 h", cls: "err", det: d, txt: x };
+    }
+    if ((r = t.match(/^Salida manual\.?\s*Motivo:\s*([\s\S]*)$/i))) {
+      return { tipo: "Salida manual", cls: "mut", det: "", txt: r[1].trim() };
+    }
+    if (/^⚠/.test(t)) {
+      return { tipo: "Revisar el tipo de marca", cls: "err", det: "", txt: t.replace(/^⚠\s*/, "") };
+    }
+    return { tipo: "Motivo", cls: "warn", det: "", txt: t };
+  }
+
+  // El motivo de una jornada de mas de 16 h: el de la tabla jornadas_excedidas o, si
+  // todavia no llego ahi, el que quedo escrito en la marca de salida.
+  function motivoJornada(e){
+    if (e.jornada_excedida && e.jornada_excedida.motivo) return e.jornada_excedida.motivo;
+    const m = ((e.salida && e.salida.motivos) || []).find((t) => /^Jornada de/i.test(String(t)));
+    return m ? leerMotivo(m).txt : "";
+  }
+
+  /* =====================================================================
+     A. NOVEDADES
+     ===================================================================== */
+  function entradaPorId(id){
+    return ((st.datos && st.datos.entradas) || []).find((x) => String(x.id) === String(id)) || null;
+  }
+  function programadoDe(it){
+    const partes = String(it.clave || "").split("|");
+    const dni = partes[0];
+    const turno = partes[2];
+    return ((st.datos && st.datos.programados) || [])
+      .find((p) => String(p.dni) === dni && String(p.turno ?? "") === String(turno ?? "")) || null;
+  }
+
+  // Lo que se muestra de cada novedad por revisar: tipo, hora, quien, que paso y la foto.
+  function describir(it){
+    const e = it.ref ? entradaPorId(it.ref) : null;
+    const base = { tipo: "Novedad", cls: "warn", hora: "", nombre: it.nombre || "", dni: it.dni || "", bus: "", det: "", txt: "", foto: "", ref: it.ref };
+    if (it.tipo === "motivo" && e) {
+      const marca = it.de === "salida" ? e.salida : e;
+      const ms = (marca && marca.motivos) || [];
+      const r = leerMotivo(ms[0]);
+      return {
+        ...base, tipo: r.tipo, cls: r.cls, hora: `${it.de === "salida" ? "Salida" : "Entrada"} ${marca ? marca.hora : ""}`,
+        bus: partirBus(e.bus).num, det: ms.map((m) => leerMotivo(m).det).filter(Boolean).join(" · "),
+        txt: ms.map((m) => leerMotivo(m).txt).join(" / "), foto: marca ? marca.foto : ""
+      };
+    }
+    if (it.tipo === "tarde" && e) {
+      return {
+        ...base, tipo: "Llegó tarde", cls: "err", hora: `Entrada ${e.hora}`, bus: partirBus(e.bus).num,
+        det: `Su turno ${e.turno || ""} era a las ${e.hora_prog || "—"}: llegó ${minutosTxt(e.dif)} tarde. No escribió motivo.`, foto: e.foto
+      };
+    }
+    if (it.tipo === "no_entro") {
+      const p = programadoDe(it);
+      const sigue = !!p && p.estado === "tarde";
+      return {
+        ...base, tipo: sigue ? "No ha entrado" : "No entró", cls: "err", hora: p ? `Turno ${p.turno} · ${p.hora_entrada}` : "",
+        bus: p ? partirBus(p.bus).num : "",
+        det: p ? (sigue ? `Debía entrar a las ${p.hora_entrada} y no ha marcado: van ${minutosTxt(p.minutos)}.`
+          : `Debía entrar a las ${p.hora_entrada} y no marcó entrada.`) : ""
+      };
+    }
+    if (it.tipo === "sin_cerrar" && e) {
+      return {
+        ...base, tipo: "Turno sin cerrar", cls: "err", hora: `Entrada ${e.hora}`, bus: partirBus(e.bus).num,
+        det: `Entró a las ${e.hora} y no ha marcado la salida: van ${horasTxt(e.abierta_horas)}.`, foto: e.foto
+      };
+    }
+    if (it.tipo === "jornada_larga" && e) {
+      const mj = motivoJornada(e);
+      const horas = (e.jornada_excedida && e.jornada_excedida.horas) || e.horas;
+      return {
+        ...base, tipo: "Jornada de más de 16 h", cls: "err", hora: `Entrada ${e.hora}${e.salida ? ` · Salida ${e.salida.hora}` : ""}`,
+        bus: partirBus(e.bus).num, det: `Trabajó ${horasTxt(horas)}; Buk rechaza las de más de 16 h.${mj ? "" : " Sin explicar."}`,
+        txt: mj, foto: e.salida ? e.salida.foto : e.foto
+      };
+    }
+    return base;
+  }
+
+  function revisionTxt(r){
+    if (!r) return "";
+    const cuando = r.en ? `${fechaCorta(r.en.slice(0, 10))} ${r.en.slice(11, 16)}` : "";
+    const veces = Number(r.veces) || 1;
+    return `Revisada por ${r.por || ""}${cuando ? ` el ${cuando}` : ""}${veces > 1 ? ` (nota cambiada ${veces - 1} ${veces === 2 ? "vez" : "veces"})` : ""}`;
+  }
+
+  function pendientes(d){
+    return ((d && d.por_revisar) || []).filter((r) => !r.revision);
+  }
+
+  function pintarRevisar(d){
+    const box = el("nbRevisar");
+    const todas = d.por_revisar || [];
+    const pend = pendientes(d);
+    el("nbCuentaRevisar").textContent = todas.length ? `${pend.length} de ${todas.length} sin revisar` : "";
+    el("nbNumRevisar").textContent = pend.length ? String(pend.length) : "";
+    const icono = document.querySelector("#nbH0 .nb-num-revisar");
+    if (icono) {
+      icono.textContent = pend.length ? "!" : "✓";
+      icono.classList.toggle("nb-num-pendiente", pend.length > 0);
+    }
+    if (!todas.length) {
+      box.innerHTML = `<div class="nb-vacio nb-vacio-ok">No hay novedades por revisar${d.es_hoy ? " hoy" : " ese día"}.</div>`;
+      return;
+    }
+    const lista = st.revFiltro === "todas" ? todas : pend;
+    if (!lista.length) {
+      box.innerHTML = `<div class="nb-vacio nb-vacio-ok">Todas las novedades${d.es_hoy ? " de hoy" : " de ese día"} ya están revisadas.</div>`;
+      return;
+    }
+    const puede = !!d.puede_revisar;
+    // v2.11.0 (19-nov-2026): lo más grave primero (no entró, sin cerrar, tarde...) y al final las entradas antes de
+    // tiempo; dentro de cada tipo, por hora. Arriba, un filtro por tipo con cuántas hay; abajo, páginas.
+    const pos = (k) => { const i = ORDEN_REVISAR.indexOf(k); return i < 0 ? 50 : i; };
+    const items = lista.map((it, i) => ({ it, x: describir(it), i }))
+      .sort((a, b) => pos(a.x.tipo) - pos(b.x.tipo) || a.i - b.i);
+    const tipos = [];
+    const porTipo = {};
+    items.forEach((o) => {
+      if (!porTipo[o.x.tipo]) { porTipo[o.x.tipo] = { n: 0, cls: o.x.cls }; tipos.push(o.x.tipo); }
+      porTipo[o.x.tipo].n++;
+    });
+    if (st.revTipo && !porTipo[st.revTipo]) st.revTipo = "";
+    const firma = `${d.fecha}|${st.revFiltro}|${st.revTipo || ""}`;
+    if (st.revFirma !== firma) { st.revFirma = firma; st.revPagina = 1; }
+    const vis = st.revTipo ? items.filter((o) => o.x.tipo === st.revTipo) : items;
+    const paginas = Math.max(1, Math.ceil(vis.length / REV_POR_PAGINA));
+    st.revPagina = Math.min(Math.max(1, st.revPagina || 1), paginas);
+    const desde = (st.revPagina - 1) * REV_POR_PAGINA;
+    const pagina = vis.slice(desde, desde + REV_POR_PAGINA);
+    const filtros = tipos.length > 1
+      ? `<div class="nb-rev-filtros" role="group" aria-label="Ver por tipo">`
+        + `<button type="button" class="nb-rev-tipo${st.revTipo ? "" : " activo"}" data-t="">Todas <b>${items.length}</b></button>`
+        + tipos.map((k) => `<button type="button" class="nb-rev-tipo${st.revTipo === k ? " activo" : ""}" data-t="${esc(k)}">`
+          + `<i class="nb-rev-punto ${porTipo[k].cls}"></i>${esc(k)} <b>${porTipo[k].n}</b></button>`).join("")
+        + `</div>`
+      : "";
+    box.innerHTML = (puede ? "" : `<div class="nb-vacio">Las revisa la cuenta de la base; aquí se ve lo que lleva.</div>`)
+      + filtros
+      + `<div class="nb-rev-lista">${pagina.map((o) => tarjetaRevisar(o.it, o.x, puede)).join("")}</div>`
+      + paginador(vis.length, desde, pagina.length, paginas);
+  }
+
+  // "1–10 de 31" y los botones de página (en el celular solo Anterior, la actual y Siguiente).
+  function paginador(total, desde, n, paginas){
+    const txt = `<span class="nb-pag-txt">${total ? `${desde + 1}–${desde + n} de ${total}` : "0"}</span>`;
+    if (paginas <= 1) return `<div class="nb-pag">${txt}</div>`;
+    const p = st.revPagina;
+    const nums = [];
+    for (let i = 1; i <= paginas; i++) {
+      if (i === 1 || i === paginas || Math.abs(i - p) <= 1) nums.push(i);
+      else if (nums[nums.length - 1] !== "…") nums.push("…");
+    }
+    return `<div class="nb-pag" role="navigation" aria-label="Páginas de Por revisar">${txt}<div class="nb-pag-btns">`
+      + `<button type="button" class="nb-pag-btn" data-pag="prev"${p <= 1 ? " disabled" : ""}>‹ Anterior</button>`
+      + nums.map((x) => (x === "…" ? `<span class="nb-pag-gap">…</span>`
+        : `<button type="button" class="nb-pag-btn nb-pag-num${x === p ? " activo" : ""}" data-pag="${x}"${x === p ? ' aria-current="page"' : ""}>${x}</button>`)).join("")
+      + `<button type="button" class="nb-pag-btn" data-pag="next"${p >= paginas ? " disabled" : ""}>Siguiente ›</button>`
+      + `</div></div>`;
+  }
+
+  // Una novedad: su tipo, la hora, quién y qué pasó.
+  function tarjetaRevisar(it, x, puede){
+    const hecha = !!it.revision;
+    const accion = puede
+      ? `<button type="button" class="btn ${hecha ? "btn-ghost" : "btn-primary"} nb-btn-revisar" data-tipo="${esc(it.tipo)}" data-clave="${esc(it.clave)}">${hecha ? "Cambiar nota" : "Revisar"}</button>`
+      : (hecha ? "" : `<span class="nb-badge warn">Sin revisar</span>`);
+    const abrir = x.ref ? ` data-id="${esc(x.ref)}" role="button" tabindex="0"` : "";
+    return `<div class="nb-rev nb-m-${x.cls}${hecha ? " nb-rev-hecha" : ""}"${abrir}>`
+      + `<span class="nb-motivo-foto">${x.foto ? fotoHtml(x.foto) : `<span class="nb-foto sin nb-foto-vacia"></span>`}</span>`
+      + `<span class="nb-motivo-cuerpo">`
+      + `<span class="nb-motivo-top"><span class="nb-badge ${x.cls}">${esc(x.tipo)}</span>${x.hora ? `<strong>${esc(x.hora)}</strong>` : ""}`
+      + `<span class="nb-rev-quien">${esc(x.nombre)}</span>`
+      + `<span class="nb-mut">${esc(cedula(x.dni))}${x.bus ? ` · Bus <b>${esc(x.bus)}</b>` : ""}</span></span>`
+      + (x.det ? `<span class="nb-motivo-det">${esc(x.det)}</span>` : "")
+      + (x.txt ? `<span class="nb-motivo-txt">“${esc(x.txt)}”</span>` : "")
+      + (hecha ? `<span class="nb-rev-nota"><b>✔ ${esc(revisionTxt(it.revision))}:</b> ${esc(it.revision.nota)}</span>` : "")
+      + `</span><span class="nb-rev-accion">${accion}</span></div>`;
+  }
+
+  function pintar(){
+    const d = st.datos;
+    if (!d) return;
+    const x = derivar(d);
+    pintarCabeza(d.base);
+    pintarResumen(d, x);
+    pintarPersonal(d);
+    pintarRevisar(d);
+    pintarEntradas();
+    pintarMotivos(x);
+    pintarFaltan(d, x);
+    pintarSalidas(d, x);
+  }
+
+  function derivar(d){
+    const E = Array.isArray(d.entradas) ? d.entradas : [];
+    const P = Array.isArray(d.programados) ? d.programados : [];
+    const turnos = P.filter((p) => p.puesto !== "DISPONIBLE");
+    const disp = P.filter((p) => p.puesto === "DISPONIBLE");
+    const motivos = [];
+    E.forEach((e) => {
+      (e.motivos || []).forEach((m) => motivos.push({ e, m, de: "entrada", hora: e.hora }));
+      ((e.salida && e.salida.motivos) || []).forEach((m) => motivos.push({ e, m, de: "salida", hora: e.salida.hora }));
+    });
+    const abiertas = E.filter((e) => !e.salida);
+    return {
+      E,
+      P,
+      turnos,
+      disp,
+      motivos,
+      conSalida: E.filter((e) => e.salida),
+      sinCerrar: abiertas.filter((e) => Number(e.abierta_horas || 0) > SIN_CERRAR_H),
+      enTurno: d.es_hoy ? abiertas.filter((e) => Number(e.abierta_horas || 0) <= SIN_CERRAR_H) : [],
+      largas: E.filter((e) => e.jornada_excedida),
+      tarde: turnos.filter((p) => p.estado === "tarde"),
+      noEntro: turnos.filter((p) => p.estado === "no_entro"),
+      proximos: turnos.filter((p) => p.estado === "proximo"),
+      despues: turnos.filter((p) => p.estado === "despues"),
+      cuenta: (k) => E.filter((e) => e.puntualidad === k).length
+    };
+  }
+
+  function tile(num, titulo, sub, cls, destino){
+    return `<button type="button" class="nb-tile${cls ? ` nb-tile-${cls}` : ""}${destino ? "" : " nb-tile-quieto"}"${destino ? ` data-ir="${destino}"` : ""}>`
+      + `<span class="nb-tile-num">${esc(num)}</span>`
+      + `<span class="nb-tile-tit">${esc(titulo)}</span>`
+      + (sub ? `<span class="nb-tile-sub">${esc(sub)}</span>` : "")
+      + `</button>`;
+  }
+
+  function pintarResumen(d, x){
+    const faltan = x.tarde.length + x.noEntro.length;
+    const pend = pendientes(d).length;
+    const t = [];
+    t.push(tile(pend, "Sin revisar", plural((d.por_revisar || []).length, "novedad", "novedades"), pend ? "err" : "ok", "nbSecRevisar"));
+    t.push(tile(x.turnos.length, "Programados", x.disp.length ? plural(x.disp.length, "disponible", "disponibles") : "", "", "nbSecFaltan"));
+    t.push(tile(x.E.length, "Entraron",
+      `${x.cuenta("a_tiempo")} a tiempo · ${x.cuenta("temprano")} temprano · ${x.cuenta("tarde")} tarde`, "", "nbSecEntradas"));
+    t.push(tile(faltan, d.es_hoy ? "Ya debían entrar" : "No entraron", "", faltan ? "err" : "ok", "nbSecFaltan"));
+    if (d.es_hoy) t.push(tile(x.proximos.length, "Entran en la próxima hora", "", x.proximos.length ? "info" : "", "nbSecFaltan"));
+    t.push(tile(x.motivos.length, "Con motivo escrito", "", x.motivos.length ? "warn" : "", "nbSecMotivos"));
+    if (d.es_hoy) t.push(tile(x.enTurno.length, "En turno ahora", "", "", "nbSecSalidas"));
+    t.push(tile(x.sinCerrar.length, "Sin cerrar", `más de ${SIN_CERRAR_H} h sin salida`, x.sinCerrar.length ? "err" : "", "nbSecSalidas"));
+    t.push(tile(x.largas.length, "Más de 16 horas", "Buk las rechaza", x.largas.length ? "err" : "", "nbSecSalidas"));
+    el("nbResumen").innerHTML = t.join("");
+  }
+
+  function pintarPersonal(d){
+    const box = el("nbPersonal");
+    const L = Array.isArray(d.estados_personal) ? d.estados_personal : [];
+    if (!L.length) {
+      box.innerHTML = `<div class="nb-personal-vacio">No hay estados del personal registrados para este día.</div>`;
+      return;
+    }
+    const grupos = new Map();
+    L.forEach((n) => {
+      const k = n.estado || "OTRO";
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k).push(n.nombre || "");
+    });
+    const nombreEstado = (k) => k.charAt(0) + k.slice(1).toLowerCase();
+    const chips = [...grupos.entries()].map(([k, v]) => `<span class="nb-pchip">${esc(nombreEstado(k))} <b>${v.length}</b></span>`).join("");
+    const lista = [...grupos.entries()].map(([k, v]) =>
+      `<div class="nb-pgrupo"><strong>${esc(nombreEstado(k))}</strong><span>${v.map(esc).join(" · ")}</span></div>`).join("");
+    box.innerHTML = `<details class="nb-personal-det"><summary><span class="nb-personal-tit">Estados del personal</span>${chips}<span class="nb-ver">ver nombres</span></summary>`
+      + `<div class="nb-personal-lista">${lista}</div></details>`;
+  }
+
+  function badgeLlegada(e){
+    const p = LLEGADA[e.puntualidad] || LLEGADA.sin_programacion;
+    if (e.puntualidad === "temprano" && e.dif != null) return `<span class="nb-badge warn">${esc(minutosTxt(e.dif))} antes</span>`;
+    if (e.puntualidad === "tarde" && e.dif != null) return `<span class="nb-badge err">${esc(minutosTxt(e.dif))} tarde</span>`;
+    if (e.puntualidad === "a_tiempo") {
+      const det = e.dif ? `${minutosTxt(e.dif)} ${e.dif < 0 ? "antes" : "después"}` : "en punto";
+      return `<span class="nb-badge ok">A tiempo</span><small>${esc(det)}</small>`;
+    }
+    return `<span class="nb-badge ${p.cls}">${esc(p.txt)}</span>`;
+  }
+
+  function celdaSalida(e){
+    if (e.salida) {
+      const otroDia = e.salida.fecha && e.salida.fecha !== e.fecha ? ` <small>(${esc(fechaCorta(e.salida.fecha))})</small>` : "";
+      return `<span class="nb-sal"><strong>${esc(e.salida.hora)}</strong>${otroDia}</span><small>${esc(horasTxt(e.horas))}</small>`;
+    }
+    const h = Number(e.abierta_horas || 0);
+    if (h > SIN_CERRAR_H) return `<span class="nb-badge err">Sin cerrar</span><small>van ${esc(horasTxt(h))}</small>`;
+    if (st.datos && st.datos.es_hoy) return `<span class="nb-badge info">En turno</span><small>van ${esc(horasTxt(h))}</small>`;
+    return `<span class="nb-badge mut">Sin salida</span>`;
+  }
+
+  function busHtml(e){
+    const b = partirBus(e.bus);
+    const prog = partirBus(e.bus_prog);
+    if (!b.num && !prog.num) return `<span class="nb-mut">—</span>`;
+    let h = `<span class="nb-bus">${esc(b.num || prog.num)}</span>`;
+    if (b.resto) h += `<small>${esc(b.resto)}</small>`;
+    if (b.num && prog.num && b.num !== prog.num) h += `<small class="nb-aviso">programado ${esc(prog.num)}</small>`;
+    return h;
+  }
+
+  function pintarEntradas(){
+    const box = el("nbEntradas");
+    const d = st.datos;
+    if (!box || !d) return;
+    const E = Array.isArray(d.entradas) ? d.entradas : [];
+    const q = sinTildes(st.buscar).trim();
+    const lista = E.filter((e) => {
+      if (st.filtro && e.puntualidad !== st.filtro) return false;
+      if (!q) return true;
+      return sinTildes(`${e.nombre} ${e.dni} ${e.bus} ${e.bus_prog}`).includes(q);
+    });
+    el("nbCuentaEntradas").textContent = E.length ? `${lista.length === E.length ? E.length : `${lista.length} de ${E.length}`}` : "";
+    if (!E.length) {
+      box.innerHTML = `<div class="nb-vacio">${d.es_hoy ? "Todavía no ha entrado ningún conductor de la base hoy." : "Ese día no entró ningún conductor de la base."}</div>`;
+      return;
+    }
+    if (!lista.length) {
+      box.innerHTML = `<div class="nb-vacio">Ninguna entrada coincide con el filtro.</div>`;
+      return;
+    }
+    const cab = `<div class="nb-fila nb-fila-cab" aria-hidden="true"><span></span><span>Entró</span><span>Conductor</span><span>Bus</span><span>Llegó</span><span>Marcó en</span><span>Salida</span></div>`;
+    box.innerHTML = cab + lista.map((e) => {
+      const turno = e.turno ? `Turno ${e.turno} · ${e.hora_prog || ""}` : "Sin turno";
+      const motivo = (e.motivos && e.motivos.length) || (e.salida && e.salida.motivos && e.salida.motivos.length)
+        ? `<span class="nb-tiene-motivo" title="Tiene motivo escrito">motivo</span>` : "";
+      return `<div class="nb-fila" data-id="${esc(e.id)}" role="button" tabindex="0" aria-label="Ver detalle de ${esc(e.nombre)}">`
+        + `<span class="nb-c nb-c-foto">${fotoHtml(e.foto)}</span>`
+        + `<span class="nb-c nb-c-hora"><strong>${esc(e.hora)}</strong><small>${esc(turno)}</small></span>`
+        + `<span class="nb-c nb-c-quien"><strong>${esc(e.nombre)}</strong><small>${esc(cedula(e.dni))}</small>${motivo}</span>`
+        + `<span class="nb-c nb-c-bus" data-l="Bus">${busHtml(e)}</span>`
+        + `<span class="nb-c nb-c-llego" data-l="Llegó">${badgeLlegada(e)}</span>`
+        + `<span class="nb-c nb-c-donde" data-l="Marcó en"><span>${esc(ORIGEN[e.origen] || e.origen || "—")}</span><small>${esc(e.punto || "")}</small></span>`
+        + `<span class="nb-c nb-c-salida" data-l="Salida">${celdaSalida(e)}</span>`
+        + `</div>`;
+    }).join("");
+  }
+
+  function pintarMotivos(x){
+    const box = el("nbMotivos");
+    el("nbCuentaMotivos").textContent = x.motivos.length ? String(x.motivos.length) : "";
+    if (!x.motivos.length) {
+      box.innerHTML = `<div class="nb-vacio">Nadie tuvo que escribir un motivo${st.datos.es_hoy ? " hoy" : " ese día"}.</div>`;
+      return;
+    }
+    const orden = x.motivos.slice().sort((a, b) => String(b.hora).localeCompare(String(a.hora)));
+    box.innerHTML = orden.map(({ e, m, de }) => {
+      const r = leerMotivo(m);
+      const foto = de === "salida" ? (e.salida && e.salida.foto) : e.foto;
+      const hora = de === "salida" ? e.salida.hora : e.hora;
+      const bus = partirBus(e.bus).num;
+      return `<div class="nb-motivo nb-m-${r.cls}" data-id="${esc(e.id)}" role="button" tabindex="0" aria-label="Ver detalle de ${esc(e.nombre)}">`
+        + `<span class="nb-motivo-foto">${fotoHtml(foto)}</span>`
+        + `<span class="nb-motivo-cuerpo">`
+        + `<span class="nb-motivo-top"><span class="nb-badge ${r.cls}">${esc(r.tipo)}</span>`
+        + `<strong>${esc(de === "salida" ? "Salida" : "Entrada")} ${esc(hora)}</strong>`
+        + `<span class="nb-mut">${esc(e.nombre)} · ${esc(cedula(e.dni))}${bus ? ` · Bus ${esc(bus)}` : ""}</span></span>`
+        + (r.det ? `<span class="nb-motivo-det">${esc(r.det)}</span>` : "")
+        + `<span class="nb-motivo-txt">“${esc(r.txt)}”</span>`
+        + `</span></div>`;
+    }).join("");
+  }
+
+  function item(p, badge){
+    const bus = partirBus(p.bus).num;
+    return `<div class="nb-item">`
+      + `<span class="nb-item-quien"><strong>${esc(p.nombre || "")}</strong><small>${esc(cedula(p.dni))}</small></span>`
+      + `<span class="nb-item-dato">${bus ? `Bus <b>${esc(bus)}</b>` : `<span class="nb-mut">Sin bus</span>`}</span>`
+      + `<span class="nb-item-dato">${p.puesto === "DISPONIBLE" ? "Disponible" : `Turno ${esc(p.turno)}`} · ${esc(p.hora_entrada || "")}${p.puesto && p.puesto !== "DISPONIBLE" ? ` <small>${esc(p.puesto.toLowerCase())}</small>` : ""}</span>`
+      + `<span class="nb-item-badge">${badge}</span>`
+      + `</div>`;
+  }
+
+  function grupo(titulo, cls, n, cuerpo, abierto){
+    if (!n) return "";
+    return `<details class="nb-grupo nb-grupo-${cls}"${abierto ? " open" : ""}><summary><span class="nb-grupo-tit">${esc(titulo)}</span><span class="nb-grupo-n">${n}</span></summary>`
+      + `<div class="nb-grupo-cuerpo">${cuerpo}</div></details>`;
+  }
+
+  function pintarFaltan(d, x){
+    const box = el("nbFaltan");
+    const partes = [];
+    partes.push(grupo("Ya debían entrar", "err", x.tarde.length,
+      x.tarde.map((p) => item(p, `<span class="nb-badge err">van ${esc(minutosTxt(p.minutos))}</span>`)).join(""), true));
+    partes.push(grupo(d.es_hoy ? "No entraron (pasaron más de 6 h)" : "No entraron", "err", x.noEntro.length,
+      x.noEntro.map((p) => item(p, `<span class="nb-badge err">no marcó</span>`)).join(""), true));
+    partes.push(grupo("Entran en la próxima hora", "info", x.proximos.length,
+      x.proximos.map((p) => item(p, `<span class="nb-badge info">en ${esc(minutosTxt(p.minutos))}</span>`)).join(""), true));
+    const dispTxt = (p) => {
+      if (p.estado === "entro") return `<span class="nb-badge ok">Entró ${esc(p.entrada_hora || "")}</span>`;
+      return `<span class="nb-badge mut">${d.es_hoy ? "No ha marcado" : "No marcó"}</span>`;
+    };
+    partes.push(grupo("Disponibles del día (turno de 2:00 a 9:00)", "mut", x.disp.length, x.disp.map((p) => item(p, dispTxt(p))).join(""), true));
+    partes.push(grupo("Entran más tarde", "mut", x.despues.length,
+      x.despues.map((p) => item(p, `<span class="nb-badge mut">a las ${esc(p.hora_entrada || "")}</span>`)).join(""), false));
+    const cuerpo = partes.filter(Boolean).join("");
+    const faltan = x.tarde.length + x.noEntro.length;
+    el("nbCuentaFaltan").textContent = faltan ? String(faltan) : "";
+    if (cuerpo) {
+      box.innerHTML = (faltan ? "" : `<div class="nb-vacio nb-vacio-ok">${x.turnos.length ? "Todos los programados que ya debían entrar, entraron." : "No hay programación de la base para este día."}</div>`) + cuerpo;
+    } else {
+      box.innerHTML = `<div class="nb-vacio">${x.turnos.length ? "Todos los programados entraron." : "No hay programación de la base para este día."}</div>`;
+    }
+  }
+
+  function filaSalida(e, badge){
+    const bus = partirBus(e.bus).num;
+    const sal = e.salida
+      ? `${esc(e.salida.hora)}${e.salida.fecha && e.salida.fecha !== e.fecha ? ` <small>(${esc(fechaCorta(e.salida.fecha))})</small>` : ""}`
+      : "—";
+    return `<div class="nb-item nb-item-click" data-id="${esc(e.id)}" role="button" tabindex="0">`
+      + `<span class="nb-item-quien"><strong>${esc(e.nombre || "")}</strong><small>${esc(cedula(e.dni))}</small></span>`
+      + `<span class="nb-item-dato">${bus ? `Bus <b>${esc(bus)}</b>` : `<span class="nb-mut">Sin bus</span>`}</span>`
+      + `<span class="nb-item-dato">Entró <b>${esc(e.hora)}</b> · Salió <b>${sal}</b></span>`
+      + `<span class="nb-item-badge">${badge}</span>`
+      + `</div>`;
+  }
+
+  function pintarSalidas(d, x){
+    const box = el("nbSalidas");
+    const partes = [];
+    partes.push(grupo("Sin cerrar", "err", x.sinCerrar.length,
+      x.sinCerrar.map((e) => filaSalida(e, `<span class="nb-badge err">van ${esc(horasTxt(e.abierta_horas))}</span>`)).join(""), true));
+    partes.push(grupo("Jornadas de más de 16 horas", "err", x.largas.length,
+      x.largas.map((e) => {
+        const je = e.jornada_excedida || {};
+        const mj = motivoJornada(e);
+        const motivo = mj ? `<span class="nb-motivo-txt nb-motivo-chico">“${esc(mj)}”</span>` : `<span class="nb-badge err">Sin explicar</span>`;
+        return filaSalida(e, `<span class="nb-badge err">${esc(horasTxt(je.horas || e.horas))}</span>`) + `<div class="nb-item-extra">${motivo}</div>`;
+      }).join(""), true));
+    if (d.es_hoy) {
+      partes.push(grupo("En turno ahora", "info", x.enTurno.length,
+        x.enTurno.map((e) => filaSalida(e, `<span class="nb-badge info">van ${esc(horasTxt(e.abierta_horas))}</span>`)).join(""), false));
+    }
+    const ordenSal = x.conSalida.slice().sort((a, b) => `${b.salida.fecha} ${b.salida.hora}`.localeCompare(`${a.salida.fecha} ${a.salida.hora}`));
+    partes.push(grupo("Salidas del día", "ok", ordenSal.length,
+      ordenSal.map((e) => filaSalida(e, `<span class="nb-badge ${e.jornada_excedida ? "err" : "ok"}">${esc(horasTxt(e.horas))}</span>`)).join(""), true));
+    const malas = x.sinCerrar.length + x.largas.length;
+    el("nbCuentaSalidas").textContent = malas ? String(malas) : "";
+    const cuerpo = partes.filter(Boolean).join("");
+    box.innerHTML = cuerpo || `<div class="nb-vacio">${d.es_hoy ? "Todavía no ha salido nadie." : "No hubo salidas ese día."}</div>`;
+  }
+
+  /* ---------- detalle de una marca ---------- */
+  function bloqueMarca(titulo, m, fechaEntrada){
+    if (!m) return "";
+    const otroDia = m.fecha && fechaEntrada && m.fecha !== fechaEntrada ? ` (${fechaCorta(m.fecha)})` : "";
+    const motivos = (m.motivos || []).map((t) => {
+      const r = leerMotivo(t);
+      return `<div class="nb-det-motivo"><span class="nb-badge ${r.cls}">${esc(r.tipo)}</span>${r.det ? `<small>${esc(r.det)}</small>` : ""}<span class="nb-motivo-txt">“${esc(r.txt)}”</span></div>`;
+    }).join("");
+    return `<div class="nb-det-col"><h5>${esc(titulo)} · ${esc(m.hora)}${esc(otroDia)}</h5>${fotoHtml(m.foto, true)}`
+      + `<div class="nb-det-datos"><span>${esc(ORIGEN[m.origen] || m.origen || "")}</span>${m.punto ? `<span>${esc(m.punto)}</span>` : ""}</div>`
+      + motivos + `</div>`;
+  }
+
+  function abrirDetalle(id){
+    const d = st.datos;
+    const e = d && (d.entradas || []).find((x) => String(x.id) === String(id));
+    if (!e) return;
+    const bus = partirBus(e.bus);
+    el("nbModalTitulo").textContent = e.nombre || "Conductor";
+    el("nbModalSub").textContent = [
+      cedula(e.dni),
+      bus.num ? `Bus ${bus.num}${bus.resto ? ` (${bus.resto})` : ""}` : "",
+      e.turno ? `Turno ${e.turno} a las ${e.hora_prog || ""}` : "Sin turno programado",
+      fechaLarga(e.fecha)
+    ].filter(Boolean).join(" · ");
+    const llegada = `<div class="nb-det-llegada">${badgeLlegada(e)}</div>`;
+    const salida = e.salida
+      ? bloqueMarca("Salida", e.salida, e.fecha)
+      : `<div class="nb-det-col"><h5>Salida</h5><div class="nb-det-vacio">${celdaSalida(e)}</div></div>`;
+    const mj = motivoJornada(e);
+    const je = e.jornada_excedida
+      ? `<div class="nb-det-jornada"><span class="nb-badge err">Jornada de ${esc(horasTxt(e.jornada_excedida.horas))}</span> ${mj ? `<span class="nb-motivo-txt">“${esc(mj)}”</span>` : "<b>Sin explicar</b>"}</div>`
+      : (e.horas != null ? `<div class="nb-det-jornada">Jornada de <b>${esc(horasTxt(e.horas))}</b></div>` : "");
+    const revs = (d.por_revisar || []).filter((r) => String(r.ref) === String(e.id) && r.revision);
+    const notas = revs.map((r) => `<div class="nb-rev-nota"><b>✔ ${esc(revisionTxt(r.revision))}:</b> ${esc(r.revision.nota)}</div>`).join("");
+    const nota = fotosBorradas() ? `<div class="nb-det-nota">Las fotos se guardan ${FOTO_DIAS} días; las de este día ya se borraron.</div>` : "";
+    el("nbModalCuerpo").innerHTML = llegada + `<div class="nb-det">${bloqueMarca("Entrada", e, e.fecha)}${salida}</div>` + je + notas + nota;
+    el("nbModal").classList.remove("hidden");
+    el("nbModalCerrar")?.focus();
+    if (!fotosBorradas()) firmar([e.foto, e.salida && e.salida.foto]).then(pintarFotos).catch(() => {});
+  }
+  function cerrarDetalle(){
+    el("nbModal")?.classList.add("hidden");
+  }
+
+  /* ---------- revisar una novedad ---------- */
+  function abrirRevisar(tipo, clave){
+    const d = st.datos;
+    const it = d && (d.por_revisar || []).find((r) => r.tipo === tipo && r.clave === clave);
+    if (!it || !d.puede_revisar) return;
+    st.revItem = it;
+    const x = describir(it);
+    el("nbRevTitulo").textContent = it.revision ? "Cambiar la nota de la revisión" : "Revisar novedad";
+    el("nbRevSub").textContent = [x.nombre, cedula(x.dni), x.bus ? `Bus ${x.bus}` : "", fechaLarga(d.fecha)].filter(Boolean).join(" · ");
+    el("nbRevQue").innerHTML = `<span class="nb-badge ${x.cls}">${esc(x.tipo)}</span>${x.hora ? ` <strong>${esc(x.hora)}</strong>` : ""}`
+      + (x.det ? `<div class="nb-motivo-det">${esc(x.det)}</div>` : "")
+      + (x.txt ? `<div class="nb-motivo-txt">“${esc(x.txt)}”</div>` : "")
+      + (it.revision ? `<div class="nb-rev-nota">${esc(revisionTxt(it.revision))}</div>` : "");
+    const ta = el("nbRevNota");
+    ta.value = it.revision ? it.revision.nota : "";
+    el("nbRevError").textContent = "";
+    el("nbRevCuenta").textContent = `${ta.value.length}/500`;
+    el("nbRevGuardar").disabled = false;
+    el("nbRevModal").classList.remove("hidden");
+    setTimeout(() => ta.focus(), 30);
+  }
+  function cerrarRevisar(){
+    el("nbRevModal")?.classList.add("hidden");
+    st.revItem = null;
+  }
+  async function guardarRevision(){
+    const it = st.revItem;
+    const d = st.datos;
+    const cli = cliente();
+    if (!it || !d || !cli) return;
+    const nota = String(el("nbRevNota").value || "").replace(/\s+/g, " ").trim();
+    if (nota.length < 5) {
+      el("nbRevError").textContent = "Escriba qué se hizo (mínimo 5 letras).";
+      el("nbRevNota").focus();
+      return;
+    }
+    const btn = el("nbRevGuardar");
+    btn.disabled = true;
+    el("nbRevError").textContent = "";
+    try {
+      const { data, error } = await cli.rpc(RPC_REVISAR, { p_fecha: d.fecha, p_tipo: it.tipo, p_clave: it.clave, p_nota: nota });
+      if (error) throw error;
+      if (!data || !data.ok) throw new Error("No se guardó la revisión.");
+      // La base de datos devuelve la revision guardada: se pinta sin esperar la proxima carga.
+      (d.por_revisar || []).forEach((r) => {
+        if (r.tipo === it.tipo && r.clave === it.clave) r.revision = data.revision;
+      });
+      cerrarRevisar();
+      pintar();
+      if (typeof showToast === "function") showToast("Revisión guardada.", "ok");
+    } catch (err) {
+      const c = String(err?.code || "");
+      el("nbRevError").textContent = (c === "42501" || c === "22023")
+        ? String(err.message || "")
+        : (!navigator.onLine ? "Sin conexión: no se guardó. Intente de nuevo." : `No se guardó: ${String(err?.message || err)}`);
+      btn.disabled = false;
+    }
+  }
+
+  /* =====================================================================
+     B. VIAJE A VIAJE
+     ===================================================================== */
+  // Filtro de horas: cuenta el viaje que SALIO desde "desde" y antes de "hasta". El dia de la tarjeta va de 02:30 a
+  // 02:30, asi que un rango como 18:00 a 02:00 pasa la medianoche (y "hasta" vacio es el fin del dia de la tarjeta).
+  function minutosHora(t){
+    const m = String(t || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+  }
+  function filtroHoras(){
+    if (!st.horasDesde && !st.horasHasta) return null;
+    return { desde: st.horasDesde || INICIO_TARJETA, hasta: st.horasHasta || INICIO_TARJETA };
+  }
+  function enHoras(x, f){
+    if (!f) return true;
+    const m = minutosHora(x.salida || x.arranco);
+    if (isNaN(m)) return false;
+    const a = minutosHora(f.desde);
+    const b = minutosHora(f.hasta);
+    if (a === b) return true;
+    return a < b ? (m >= a && m < b) : (m >= a || m < b);
+  }
+  function pintarHoras(){
+    const d = el("nbHoraDesde");
+    const h = el("nbHoraHasta");
+    if (d && document.activeElement !== d) d.value = st.horasDesde;
+    if (h && document.activeElement !== h) h.value = st.horasHasta;
+    const actual = st.horasDesde || st.horasHasta ? `${st.horasDesde}-${st.horasHasta}` : "";
+    el("nbHorasChips")?.querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", (c.dataset.h || "") === actual));
+  }
+
+  function pintarViajes(){
+    const v = st.viajes;
+    if (!v) return;
+    pintarCabeza(v.base);
+    pintarHoras();
+    const todos = Array.isArray(v.viajes) ? v.viajes : [];
+    const fh = filtroHoras();
+    const V = todos.filter((x) => enHoras(x, fh));
+    const buses = Array.isArray(v.buses) ? v.buses.map(String) : [];
+    const porBus = new Map();
+    V.forEach((x) => {
+      const k = String(x.interno || "");
+      if (!porBus.has(k)) porBus.set(k, []);
+      porBus.get(k).push(x);
+    });
+    const suma = (L, k) => L.reduce((a, x) => a + (Number(x[k]) || 0), 0);
+    const llenos = V.filter((x) => x.pasajeros_conductor != null);
+    const sinViaje = buses.filter((b) => !porBus.has(b)).length;
+    const dif = suma(llenos, "diferencia_plata");
+    const t = [];
+    t.push(tile(`${porBus.size} de ${buses.length}`, "Buses con viajes", sinViaje ? `${sinViaje} sin viajes${fh ? " en esas horas" : ""}` : "", "", ""));
+    t.push(tile(numero(V.length), "Viajes", fh ? `de ${fh.desde} a ${fh.hasta} · ${numero(todos.length)} en el día` : "", "", ""));
+    t.push(tile(numero(suma(V, "pasajeros_sensor")), "Pasajeros (sensor)", "", "", ""));
+    t.push(tile(`${llenos.length} de ${V.length}`, "Viajes que llenó el conductor", llenos.length ? `dijo ${numero(suma(llenos, "pasajeros_conductor"))} pasajeros` : "", llenos.length < V.length ? "warn" : "ok", ""));
+    t.push(tile(plata(suma(V, "plata_sensor")), "Plata según el sensor", "", "", ""));
+    t.push(tile(plata(suma(llenos, "plata_conductor")), "Plata según el conductor", llenos.length ? `en ${plural(llenos.length, "viaje", "viajes")}` : "", "", ""));
+    t.push(tile(plata(dif), "Diferencia conductor − sensor", "solo los viajes que llenó", dif < 0 ? "err" : "", ""));
+    // Los totales en tres grupos con titulo: lo que se movio, lo que lleno el conductor y la plata.
+    const grupo = (tit, tiles) => `<div class="nb-rgrupo"><div class="nb-rgrupo-tit">${esc(tit)}</div>`
+      + `<div class="nb-rgrupo-tiles">${tiles.join("")}</div></div>`;
+    el("nbViajesResumen").innerHTML = grupo("Buses y viajes", t.slice(0, 3)) + grupo("Tarjeta del conductor", t.slice(3, 4))
+      + grupo("Plata", t.slice(4));
+
+    const q = sinTildes(st.buscarViajes).trim();
+    const orden = [...new Set([...buses, ...porBus.keys()])].sort((a, b) => numBus(a) - numBus(b));
+    const visibles = orden.filter((bus) => {
+      if (!q) return true;
+      const L = porBus.get(bus) || [];
+      return sinTildes(`${bus} ${L.map((x) => `${x.placa} ${x.conductor} ${x.ruta}`).join(" ")}`).includes(q);
+    });
+    el("nbCuentaViajes").textContent = !todos.length ? ""
+      : fh ? `${numero(V.length)} de ${plural(todos.length, "viaje", "viajes")} · de ${fh.desde} a ${fh.hasta}` : plural(V.length, "viaje", "viajes");
+    const box = el("nbViajes");
+    if (!todos.length) {
+      box.innerHTML = `<div class="nb-vacio">${v.es_hoy ? "Todavía no hay viajes de sus carros hoy." : "Ese día sus carros no tienen viajes."}</div>`;
+      return;
+    }
+    if (!V.length) {
+      box.innerHTML = `<div class="nb-vacio">Ningún viaje de sus carros salió de ${esc(fh.desde)} a ${esc(fh.hasta)}.</div>`;
+      return;
+    }
+    const conViajes = visibles.filter((b) => porBus.has(b));
+    const sinViajes = visibles.filter((b) => !porBus.has(b));
+    const cabeza = conViajes.length ? `<div class="nb-buses-cab" aria-hidden="true"><span class="nb-bf-bus">Bus</span>`
+      + `<span class="nb-bf-n">Viajes</span><span class="nb-bf-n">Pasajeros</span><span class="nb-bf-n">Llenó el conductor</span>`
+      + `<span class="nb-bf-n">Plata (sensor)</span><span class="nb-bf-n">Último</span></div>` : "";
+    box.innerHTML = cabeza + conViajes.map((bus) => {
+      const L = porBus.get(bus);
+      const placa = (L.find((x) => x.placa) || {}).placa || "";
+      const filas = L.map((x) => {
+        const avisos = [
+          x.sin_despacho ? `<span class="nb-badge warn">Sin despacho</span>` : "",
+          x.salio_cancelado ? `<span class="nb-badge err">Cancelado en Sonar</span>` : "",
+          x.estado && x.estado !== "definitivo" ? `<span class="nb-badge info">En curso</span>` : ""
+        ].join("");
+        const dijo = x.pasajeros_conductor == null ? `<span class="nb-mut">no llenó</span>` : esc(x.pasajeros_conductor);
+        const difP = x.pasajeros_conductor == null || x.diferencia == null || Number(x.diferencia) === 0 ? ""
+          : ` <small class="${Number(x.diferencia) < 0 ? "nb-neg" : "nb-pos"}">(${Number(x.diferencia) > 0 ? "+" : ""}${esc(x.diferencia)})</small>`;
+        return `<tr>`
+          + `<td class="n">${esc(x.viaje ?? "")}</td>`
+          + `<td class="nb-col-hora"><b>${esc(x.salida || "—")}</b>${x.llego ? `<small> → ${esc(x.llego)}</small>` : ""}</td>`
+          + `<td class="nb-col-ruta">${esc(x.ruta || "")}${avisos ? `<div class="nb-avisos">${avisos}</div>` : ""}</td>`
+          + `<td class="nb-col-cond">${esc(x.conductor || "")}</td>`
+          + `<td class="n">${esc(x.pasajeros_sensor ?? "—")}${Number(x.personal) > 0 ? `<small> (${esc(x.personal)} personal)</small>` : ""}</td>`
+          + `<td class="n">${dijo}${difP}</td>`
+          + `<td class="n">${esc(x.civicas ?? "—")}</td>`
+          + `<td class="n">${esc(x.tiquetes ?? "—")}</td>`
+          + `<td class="n">${esc(plata(x.plata_sensor))}</td>`
+          + `<td class="n">${x.plata_conductor == null ? `<span class="nb-mut">—</span>` : esc(plata(x.plata_conductor))}</td>`
+          + `</tr>`;
+      }).join("");
+      // El ultimo viaje del dia de la tarjeta (despues de medianoche cuenta como mas tarde).
+      const ordenTarjeta = (h) => { const m = minutosHora(h); return isNaN(m) ? -1 : (m < minutosHora(INICIO_TARJETA) ? m + 1440 : m); };
+      const ultimo = L.map((x) => x.salida).filter(Boolean).sort((a, b) => ordenTarjeta(a) - ordenTarjeta(b)).pop();
+      const lleno = L.filter((x) => x.pasajeros_conductor != null).length;
+      return `<details class="nb-bus-viajes"${st.viajesAbiertos ? " open" : ""}><summary class="nb-bus-fila">`
+        + `<span class="nb-bf-bus"><span class="nb-bus">${esc(bus)}</span> <small>${esc(placa)}</small></span>`
+        + `<span class="nb-bf-n" data-l="Viajes">${esc(numero(L.length))}</span>`
+        + `<span class="nb-bf-n" data-l="Pasajeros">${esc(numero(suma(L, "pasajeros_sensor")))}</span>`
+        + `<span class="nb-bf-n${lleno < L.length ? " nb-bf-falta" : ""}" data-l="Llenó el conductor">${esc(`${lleno} de ${L.length}`)}</span>`
+        + `<span class="nb-bf-n nb-bf-plata" data-l="Plata">${esc(plata(suma(L, "plata_sensor")))}</span>`
+        + `<span class="nb-bf-n" data-l="Último">${esc(ultimo || "—")}</span></summary>`
+        + `<div class="nb-tabla-caja"><table class="nb-tabla nb-tabla-viajes"><thead><tr><th class="n">#</th><th>Salió</th><th>Ruta</th><th>Conductor</th>`
+        + `<th class="n">Pasajeros sensor</th><th class="n">Dijo el conductor</th><th class="n">Cívicas</th><th class="n">Tiquetes</th>`
+        + `<th class="n">Plata sensor</th><th class="n">Plata conductor</th></tr></thead><tbody>${filas}</tbody></table></div></details>`;
+    }).join("") + (sinViajes.length ? `<div class="nb-vacio">${fh ? "Sin viajes en esas horas" : "Sin viajes este día"}: ${sinViajes.map((b) => `<b>${esc(b)}</b>`).join(", ")}</div>` : "")
+      + (!conViajes.length && !sinViajes.length ? `<div class="nb-vacio">Ningún bus coincide con la búsqueda.</div>` : "");
+  }
+
+  /* =====================================================================
+     C. ENTURNAMIENTO (fila en vivo)
+     ===================================================================== */
+  // Como entro a la fila: solo se marca lo que no es lo normal (llegar con despacho).
+  function comoEntro(r){
+    if (r.llegada_tipo === "a_mano") return ` <span class="nb-badge info" title="Lo metieron a mano desde el Portal de Control">A mano</span>`;
+    if (r.llegada_tipo === "vigilante") return r.itinerario_id ? ` <span class="nb-badge warn">Vigilante</span>` : ` <span class="nb-badge warn" title="Parqueado sin despacho: lo metió el vigilante de la fila">Parqueado</span>`;
+    return "";
+  }
+
+  // La fila de cada punto ya ordenada como se muestra; en el Aeropuerto, por itinerario.
+  function filaPorPunto(f){
+    const porPunto = {};
+    (f.filas || []).forEach((r) => { (porPunto[r.punto] || (porPunto[r.punto] = [])).push(r); });
+    const puntos = PUNTOS_FILA.concat(Object.keys(porPunto).filter((p) => PUNTOS_FILA.indexOf(p) < 0).sort());
+    const orden = (a, b) => (a.pos == null) - (b.pos == null) || (a.pos || 0) - (b.pos || 0)
+      || (tsMs(a.llego_en) || 0) - (tsMs(b.llego_en) || 0);
+    return puntos.map((p) => {
+      const lista = (porPunto[p] || []).slice().sort(orden);
+      let grupos;
+      if (p === PUNTO_POR_ITINERARIO) {
+        const g = {};
+        lista.forEach((r) => { const k = r.itinerario || "Sin itinerario"; (g[k] || (g[k] = [])).push(r); });
+        grupos = Object.keys(g).sort((a, b) => (a === "Sin itinerario") - (b === "Sin itinerario") || a.localeCompare(b, "es"))
+          .map((k) => ({ nombre: k, filas: g[k] }));
+      } else {
+        grupos = lista.length ? [{ nombre: "", filas: lista }] : [];
+      }
+      return { punto: p, total: lista.length, mios: lista.filter((r) => r.mio).length, grupos };
+    });
+  }
+
+  function pintarFila(){
+    const f = st.fila;
+    if (!f) return;
+    pintarCabeza(f.base);
+    const pub = tsMs(f.publicada_en);
+    const vieja = isNaN(pub) || Date.now() - pub > FILA_VIEJA_MS;
+    el("nbFilaAviso").innerHTML = vieja
+      ? `<div class="nb-vacio nb-vacio-err">El programa de la fila no publica desde ${isNaN(pub) ? "hace rato" : `las ${esc(horaDe(f.publicada_en))}`}: la lista puede estar vieja.</div>`
+      : `<div class="nb-fila-pub">Fila al día: publicada a las <b>${esc(horaDe(f.publicada_en))}</b>. Se actualiza sola cada 30 segundos.</div>`;
+
+    const puntos = filaPorPunto(f);
+    // Donde esta cada bus suyo en la fila: el mismo turno que sale en la tabla de su punto.
+    const enFila = new Map();
+    puntos.forEach((p) => p.grupos.forEach((g) => g.filas.forEach((r, i) => {
+      if (r.mio) enFila.set(String(r.interno), { punto: p.punto, turno: i + 1, de: g.filas.length, grupo: g.nombre, r });
+    })));
+
+    // Sus buses ahora. La fila manda: si el bus esta en una fila, sale ahi aunque ya tenga su
+    // siguiente despacho. Si a un bus le cambiaron el GPS sale dos veces: se queda el del GPS mas nuevo.
+    const por = new Map();
+    (f.mis_buses || []).forEach((b) => {
+      const k = String(b.interno || "");
+      const prev = por.get(k);
+      if (!prev || (tsMs(b.gps_en) || 0) > (tsMs(prev.gps_en) || 0)) por.set(k, b);
+    });
+    enFila.forEach((x, k) => { if (!por.has(k)) por.set(k, { interno: k, conductor: x.r.conductor }); });
+    const lugarDe = (b) => enFila.has(String(b.interno)) ? "fila"
+      : b.estado === "despachado" ? "ruta" : b.estado === "quieto" ? "quieto" : "sin";
+    const ordenPunto = (p) => { const i = PUNTOS_FILA.indexOf(p); return i < 0 ? 99 : i; };
+    const mis = [...por.values()];
+    const cuenta = {};
+    mis.forEach((b) => { const l = lugarDe(b); cuenta[l] = (cuenta[l] || 0) + 1; });
+    el("nbCuentaMisBuses").textContent = mis.length
+      ? `${plural(mis.length, "bus", "buses")} · ${LUGARES.filter((l) => cuenta[l.k]).map((l) => `${cuenta[l.k]} ${l.txt.toLowerCase()}`).join(" · ")}` : "";
+    const filaBus = (b) => {
+      const fi = enFila.get(String(b.interno));
+      let donde;
+      if (fi) donde = `<b>${esc(fi.punto)}</b> · turno <b>${fi.turno}</b> de ${fi.de}${fi.grupo ? ` <small>${esc(fi.grupo)}</small>` : ""}`;
+      else if (b.estado === "despachado") donde = b.itinerario ? esc(b.itinerario) : "Con despacho";
+      else donde = b.punto ? esc(b.punto) : `<span class="nb-mut">—</span>`;
+      const gps = minutosDesde(b.gps_en);
+      const gpsTxt = gps == null ? `<span class="nb-badge err">Sin GPS</span>`
+        : gps > 15 ? `<span class="nb-badge warn">hace ${esc(minutosTxt(gps))}</span>` : `<span class="nb-mut">hace ${esc(minutosTxt(gps))}</span>`;
+      return `<tr${fi ? ` class="nb-mio"` : ""}><td class="nb-td-bus"><span class="nb-bus">${esc(b.interno)}</span> <small>${esc(b.placa || "")}</small>${b.conductor ? `<div class="nb-mut nb-chico">${esc(b.conductor)}</div>` : ""}</td>`
+        + `<td class="nb-td-donde">${donde}</td><td class="n" data-l="Viajes hoy">${esc(b.viajes_hoy ?? 0)}</td><td class="n" data-l="Pasajeros hoy">${esc(numero(b.movilizados_hoy))}</td>`
+        + `<td data-l="Último viaje">${esc(horaDe(b.ultimo_viaje) || "—")}</td><td data-l="GPS">${gpsTxt}</td></tr>`;
+    };
+    el("nbMisBuses").innerHTML = mis.length ? `<div class="nb-tabla-caja"><table class="nb-tabla nb-tabla-buses"><thead><tr><th>Bus</th><th>Dónde está</th><th class="n">Viajes hoy</th><th class="n">Pasajeros hoy</th><th>Último viaje</th><th>GPS</th></tr></thead><tbody>`
+      + LUGARES.filter((l) => cuenta[l.k]).map((l) => {
+        const lista = mis.filter((b) => lugarDe(b) === l.k).sort(l.k === "fila"
+          ? (a, b) => {
+            const x = enFila.get(String(a.interno));
+            const y = enFila.get(String(b.interno));
+            return ordenPunto(x.punto) - ordenPunto(y.punto) || String(x.grupo).localeCompare(String(y.grupo), "es") || x.turno - y.turno;
+          }
+          : (a, b) => numBus(a.interno) - numBus(b.interno));
+        return `<tr class="nb-fila-grupo nb-grupo-${l.k}"><th colspan="6"><span class="nb-badge ${l.cls}">${esc(l.txt)}</span> <small>${plural(lista.length, "bus", "buses")}</small></th></tr>`
+          + lista.map(filaBus).join("");
+      }).join("") + `</tbody></table></div>` : `<div class="nb-vacio">No se encontraron buses de la base en la flota.</div>`;
+
+    // La fila de cada punto, como Control y la app del aeropuerto.
+    const renglon = (r, i) => {
+      const espera = minutosDesde(r.llego_en);
+      return `<tr class="${r.mio ? "nb-mio" : ""}"><td class="n"><b>${i + 1}</b></td>`
+        + `<td><span class="nb-bus">${esc(r.interno)}</span>${r.mio ? ` <span class="nb-badge ok">Suyo</span>` : ""}${comoEntro(r)}${r.mio && r.conductor ? `<div class="nb-mut nb-chico">${esc(r.conductor)}</div>` : ""}</td>`
+        + `<td>${esc(horaDe(r.llego_en) || "—")}</td><td class="n">${espera == null ? "—" : esc(minutosTxt(espera))}</td></tr>`;
+    };
+    const cab = `<thead><tr><th class="n">Turno</th><th>Bus</th><th>Llegó</th><th class="n">Espera</th></tr></thead>`;
+    el("nbFila").innerHTML = puntos.map((p) => {
+      const cuerpo = !p.total ? `<p class="nb-mut nb-fila-vacia">Nadie esperando.</p>`
+        : `<table class="nb-tabla">${cab}<tbody>` + p.grupos.map((g) =>
+          (g.nombre ? `<tr class="nb-fila-grupo"><th colspan="4">${esc(g.nombre)} <small>${plural(g.filas.length, "bus", "buses")}</small></th></tr>` : "")
+          + g.filas.map(renglon).join("")).join("") + `</tbody></table>`;
+      return `<section class="nb-punto${p.mios ? " nb-punto-mio" : ""}${p.total ? "" : " nb-punto-vacio"}"><h5>${esc(p.punto)} <small>${plural(p.total, "bus", "buses")}${p.mios ? ` · <b>${p.mios} ${p.mios === 1 ? "suyo" : "suyos"}</b>` : ""}</small></h5>`
+        + `<div class="nb-tabla-caja">${cuerpo}</div></section>`;
+    }).join("");
+  }
+
+
+  /* =====================================================================
+     D. CAMBIOS: quien cambio que (lo anota la base de datos al guardar)
+     ===================================================================== */
+  const CAMPO_TXT = {
+    "VEH": "Bus", "PUESTO": "Puesto", "INICIA": "Inicia", "CONDUCTOR 1": "Conductor 1", "INICIA 2": "Inicia 2",
+    "CONDUCTOR 2": "Conductor 2", "HORA FIN": "Hora fin", "__NOTE__CONDUCTOR 1": "Nota del conductor 1",
+    "__NOTE__CONDUCTOR 2": "Nota del conductor 2", "ESTADO": "Estado"
+  };
+  function normCampo(c){
+    return sinTildes(String(c || "")).toUpperCase().replace(/\s+/g, " ").trim();
+  }
+  // Quien hizo el cambio: la cuenta de base, el administrador, el sistema u otra cuenta (su correo).
+  function quienTxt(q){
+    const e = String(q || "").trim().toLowerCase();
+    const m = e.match(/^base\s*(\d+)@/);
+    if (m) return { txt: `BASE ${m[1]}`, cls: "ok" };
+    if (!e || e === "sistema") return { txt: "Sistema", cls: "mut" };
+    try {
+      if (typeof SUPER_ADMIN_EMAIL !== "undefined" && e === String(SUPER_ADMIN_EMAIL).toLowerCase()) return { txt: "Administrador", cls: "info" };
+    } catch (_) { /* sin admin definido */ }
+    return { txt: e, cls: "warn" };
+  }
+  function tipoCambio(c){
+    if (c.origen === "estados") return "estados";
+    if (c.accion !== "cambio") return "filas";
+    const k = normCampo(c.campo);
+    return /^CONDUCTOR [12]$/.test(k) || /^__NOTE__/.test(k) ? "conductores" : "buses";
+  }
+  // "2026-11-18T10:32:05" -> "10:32" (y el dia si no es el de la programacion)
+  function cuandoTxt(en, fecha){
+    const s = String(en || "");
+    const hora = s.slice(11, 16);
+    const dia = s.slice(0, 10);
+    return dia && fecha && dia !== fecha ? `${fechaCorta(dia)} ${hora}` : hora;
+  }
+  function valorTxt(v){
+    return v == null || v === "" ? `<span class="nb-mut">(vacío)</span>` : `<b>${esc(v)}</b>`;
+  }
+  function dondeTxt(c){
+    if (c.origen === "estados") return c.persona ? `<b>${esc(c.persona)}</b>` : "";
+    return [c.vehiculo ? `Bus <b>${esc(c.vehiculo)}</b>` : "", c.puesto ? esc(c.puesto) : "",
+      c.inicia ? `inicia ${esc(c.inicia)}` : ""].filter(Boolean).join(" · ");
+  }
+  function queTxt(c){
+    if (c.accion === "cambio") {
+      const campo = CAMPO_TXT[normCampo(c.campo)] || esc(c.campo || "");
+      return `<span class="nb-cambio-campo">${campo}:</span> <span class="nb-cambio-antes">${valorTxt(c.antes)}</span> → ${valorTxt(c.despues)}`;
+    }
+    if (c.origen === "estados") {
+      return c.accion === "agregada" ? `Le puso el estado ${valorTxt(c.despues)}` : `Le quitó el estado ${valorTxt(c.antes)}`;
+    }
+    return c.accion === "agregada" ? `Agregó la fila <small>${esc(c.despues || "")}</small>` : `Quitó la fila <small>${esc(c.antes || "")}</small>`;
+  }
+  // Una carga de programacion son muchas filas agregadas (o quitadas) por la misma cuenta en el mismo minuto:
+  // se muestran juntas en un renglon que se abre.
+  function agruparCargas(lista){
+    const out = [];
+    for (let i = 0; i < lista.length; i++) {
+      const c = lista[i];
+      if (c.origen === "turnos" && c.accion !== "cambio") {
+        let j = i;
+        while (j + 1 < lista.length && lista[j + 1].origen === "turnos" && lista[j + 1].accion === c.accion
+          && lista[j + 1].quien === c.quien && String(lista[j + 1].en).slice(0, 16) === String(c.en).slice(0, 16)) j++;
+        if (j - i + 1 >= 3) {
+          out.push({ grupo: true, accion: c.accion, quien: c.quien, en: c.en, filas: lista.slice(i, j + 1) });
+          i = j;
+          continue;
+        }
+      }
+      out.push(c);
+    }
     return out;
   }
 
-  function render(){
-    const tbody = $("asistenciasBody");
-    if (!tbody) return;
-    setBaseHint();
-    const vista = getVista();
-    setHead(vista);
-    const rows = getFilteredRows();
+  function pintarCambios(){
+    const d = st.cambios;
+    if (!d) return;
+    pintarCabeza(d.base);
+    const todos = Array.isArray(d.cambios) ? d.cambios : [];
+    const n = el("nbNumCambios");
+    if (n) n.textContent = todos.length ? String(todos.length) : "";
+    const cuenta = (t) => todos.filter((c) => tipoCambio(c) === t).length;
+    const porQuien = new Map();
+    todos.forEach((c) => {
+      const q = quienTxt(c.quien);
+      const k = `${q.cls}|${q.txt}`;
+      porQuien.set(k, (porQuien.get(k) || 0) + 1);
+    });
+    const t = [
+      tile(numero(todos.length), "Cambios", d.es_hoy ? "en la programación de hoy" : `en la programación del ${fechaCorta(d.fecha)}`, "", ""),
+      tile(numero(cuenta("conductores")), "De conductores", "", cuenta("conductores") ? "info" : "", ""),
+      tile(numero(cuenta("buses")), "De buses y horas", "", "", ""),
+      tile(numero(cuenta("filas")), "Filas agregadas o quitadas", "", "", ""),
+      tile(numero(cuenta("estados")), "Estados del personal", "", "", "")
+    ];
+    const quienes = [...porQuien.entries()].sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => { const [cls, txt] = k.split("|"); return `<span class="nb-badge ${cls}">${esc(txt)} · ${numero(v)}</span>`; }).join(" ");
+    el("nbCambiosResumen").innerHTML = `<div class="nb-rgrupo"><div class="nb-rgrupo-tit">Cambios del día</div><div class="nb-rgrupo-tiles">${t.join("")}</div></div>`
+      + (quienes ? `<div class="nb-quienes"><span class="nb-rgrupo-tit">Los hizo</span> ${quienes}</div>` : "");
 
-    if (!state.loadedOnce){
-      setCount(rows.length);
-      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
+    const q = sinTildes(st.cambiosBuscar).trim();
+    const lista = todos.filter((c) => {
+      if (st.cambiosFiltro && tipoCambio(c) !== st.cambiosFiltro) return false;
+      if (!q) return true;
+      return sinTildes(`${c.vehiculo || ""} ${c.persona || ""} ${c.antes || ""} ${c.despues || ""} ${quienTxt(c.quien).txt} ${c.puesto || ""}`).includes(q);
+    });
+    el("nbCuentaCambios").textContent = todos.length ? (lista.length === todos.length ? plural(todos.length, "cambio", "cambios")
+      : `${numero(lista.length)} de ${plural(todos.length, "cambio", "cambios")}`) : "";
+    const box = el("nbCambios");
+    if (!todos.length) {
+      box.innerHTML = `<div class="nb-vacio nb-vacio-ok">Nadie ha cambiado nada en la programación ni en los estados del personal de este día.</div>`;
       return;
     }
-    if (!rows.length){
-      setCount(0);
-      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
+    if (!lista.length) {
+      box.innerHTML = `<div class="nb-vacio">Ningún cambio coincide con el filtro.</div>`;
       return;
     }
-
-    const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
-
-    if (vista === "pares"){
-      const pares = buildPares(rows);
-      setCount(pares.length);
-      tbody.innerHTML = pares.map(g => {
-        const segs = (g.entrada != null && g.salida != null) ? (hhmmssToSec(g.salida) - hhmmssToSec(g.entrada)) : null;
-        const horas = (segs == null) ? "-" : secToHHMM(segs);
-        const ent = g.entrada ? `<span class="estado-tag tag-disponible" style="white-space:nowrap">${esc(g.entrada)}</span>` : '<span class="muted">-</span>';
-        const sal = g.salida ? `<span class="estado-tag tag-vacaciones" style="white-space:nowrap">${esc(g.salida)}</span>` : '<span class="muted">-</span>';
-        return `<tr>
-          <td>${esc(g.fecha || "")}</td>
-          <td>${esc(g.nombre)}</td>
-          <td style="white-space:nowrap">${esc(g.base)}</td>
-          <td style="text-align:center">${ent}</td>
-          <td style="text-align:center">${sal}</td>
-          <td style="text-align:center">${esc(horas)}</td>
-        </tr>`;
-      }).join("");
-      return;
-    }
-
-    setCount(rows.length);
-    tbody.innerHTML = rows.map(r => {
-      const sentidoCls = (r.sentido === "entrada") ? "tag-disponible" : (r.sentido === "salida" ? "tag-vacaciones" : "tag-pendiente");
-      const nombre = getColaboradorNombre(r);
-      const baseCsv = getBaseDesdeCsv(nombre);
-      const baseLabel = baseCsv ? `BASE ${baseCsv}` : (r.base_operativa || "");
-      return `<tr>
-        <td>${esc(r.fecha || "")}</td>
-        <td>${esc(formatHora(r.hora))}</td>
-        <td>${esc(r.jornada || "")}</td>
-        <td><span class="estado-tag ${sentidoCls}" style="white-space:nowrap">${esc(r.sentido || "")}</span></td>
-        <td>${esc(nombre)}</td>
-        <td style="white-space:nowrap">${esc(baseLabel)}</td>
-      </tr>`;
-    }).join("");
-  }
-
-  function exportToExcel(){
-    if (typeof XLSX === "undefined"){
-      if (typeof showToast === "function") showToast("XLSX no disponible.", "err");
-      return;
-    }
-    const rows = getFilteredRows();
-    if (!rows.length){
-      if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn");
-      return;
-    }
-    let data;
-    if (getVista() === "pares"){
-      data = buildPares(rows).map(g => {
-        const segs = (g.entrada != null && g.salida != null) ? (hhmmssToSec(g.salida) - hhmmssToSec(g.entrada)) : null;
-        return {
-          Fecha: g.fecha || "",
-          Colaborador: g.nombre,
-          Base: g.base || "",
-          Entrada: g.entrada || "",
-          Salida: g.salida || "",
-          Horas: (segs == null) ? "" : secToHHMM(segs)
-        };
-      });
-    } else {
-      data = rows.map(r => {
-        const nombre = getColaboradorNombre(r);
-        const baseCsv = getBaseDesdeCsv(nombre);
-        const baseLabel = baseCsv ? `BASE ${baseCsv}` : (r.base_operativa || "");
-        return {
-          Fecha: r.fecha || "",
-          Hora: formatHora(r.hora),
-          Jornada: r.jornada || "",
-          Sentido: r.sentido || "",
-          Colaborador: nombre,
-          ColaboradorId: r.colaborador_id || "",
-          Base: baseLabel,
-          Latitud: r.latitud == null ? "" : r.latitud,
-          Longitud: r.longitud == null ? "" : r.longitud,
-          PrecisionM: r.ubicacion_precision_m == null ? "" : r.ubicacion_precision_m,
-          CreatedAt: r.created_at || ""
-        };
-      });
-    }
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Asistencias");
-    const fname = (typeof safeFileName === "function" ? safeFileName : (s) => s)(
-      `asistencias_${new Date().toISOString().slice(0,10)}.xlsx`
-    );
-    XLSX.writeFile(wb, fname);
-  }
-
-  function bind(){
-    const btnRefresh = $("btnRefreshAsistencias");
-    const btnDownload = $("btnDownloadAsistencias");
-    const search = $("asistenciasSearch");
-    const sentido = $("asistenciasSentido");
-    const vista = $("asistenciasVista");
-    const fromI = $("asistenciasFrom");
-    const toI = $("asistenciasTo");
-
-    if (btnRefresh) btnRefresh.addEventListener("click", loadAsistencias);
-    if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
-    if (search) search.addEventListener("input", render);
-    if (sentido) sentido.addEventListener("change", render);
-    if (vista) vista.addEventListener("change", render);
-    // Filtros de fecha re-consultan al servidor (porque limit=500).
-    if (fromI) fromI.addEventListener("change", () => { if (state.loadedOnce) loadAsistencias(); });
-    if (toI)   toI.addEventListener("change",   () => { if (state.loadedOnce) loadAsistencias(); });
-
-    // Reaccionar al cambio de base (entrar/salir desde la cabecera).
-    // El handler original muta `currentBase` sincronicamente, asi que un re-render
-    // en el mismo tick es suficiente.
-    const btnEnter = document.getElementById("btnEnterBase");
-    const btnExit  = document.getElementById("btnExitBase");
-    if (btnEnter) btnEnter.addEventListener("click", () => { if (state.loadedOnce) setTimeout(render, 0); else setBaseHint(); });
-    if (btnExit)  btnExit.addEventListener("click",  () => { if (state.loadedOnce) setTimeout(render, 0); else setBaseHint(); });
-
-    // Al cerrar sesion, limpiar el estado en memoria para no exponer datos del
-    // usuario anterior a uno nuevo que use la misma pestana.
-    const btnLogoutEl = document.getElementById("btnLogout");
-    if (btnLogoutEl) btnLogoutEl.addEventListener("click", () => {
-      state.rows = [];
-      state.loadedOnce = false;
-      _baseByName = null;
-      const tbody = $("asistenciasBody");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
-      setCount(0);
-      setStatus("Sin cargar");
-    });
-
-    // Lazy load: cargar al primer click en la pestana Asistencias.
-    // Si ya hay datos, re-render por si cambio la base desde la ultima visita.
-    document.querySelectorAll('.tab[data-tab="asistencias"]').forEach(tab => {
-      tab.addEventListener("click", () => {
-        if (!state.loadedOnce && !state.loading) loadAsistencias();
-        else if (state.loadedOnce) render();
-      });
-    });
-
-    // Pintar el hint apenas se vincula, antes de cargar nada.
-    setBaseHint();
-  }
-
-  // functions.js se carga al final del body: el DOM ya esta listo.
-  if (document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", bind);
-  } else {
-    bind();
-  }
-})();
-
-
-/* =====================================================================
-   MODULO: Llegadas 104 (lectura de la tabla `llegadas_104` de Supabase)
-   Solo lectura. Filtros por rango de fechas sobre `hora_llegada` y
-   export a Excel.
-   ===================================================================== */
-(function bootstrapLlegadas104(){
-  const TABLE = "llegadas_104";
-  const FETCH_LIMIT = 500;
-  // Columnas reales (2026-05-20):
-  //   vehicle_id text PK, interno text, itinerario text, posicion int4,
-  //   hora_llegada timestamptz, base text, driver_id text, distancia_m int/numeric,
-  //   listo bool, ubicacion text, updated_at timestamptz, lat float8, lon float8.
-  const SELECT = "*";
-
-  const state = {
-    rows: [],
-    loading: false,
-    loadedOnce: false,
-    map: null,
-    markersLayer: null,
-    activeItin: ""   // "" = Todos. Sino: nombre del itinerario o ITIN_SIN_LLEGADA.
-  };
-
-  // Centro por defecto: aeropuerto Jose Maria Cordoba (Rionegro, Antioquia).
-  const DEFAULT_CENTER = [6.1645, -75.4231];
-  const DEFAULT_ZOOM = 12;
-
-  const $ = (id) => document.getElementById(id);
-
-  function ensureMap(){
-    if (state.map) return state.map;
-    if (typeof L === "undefined") return null; // Leaflet aun no cargado
-    const container = $("mapaAeropuerto");
-    if (!container) return null;
-
-    // CSS para el marcador compacto tipo bus con el numero interno.
-    if (!document.getElementById("mapaAeropuertoStyles")){
-      const style = document.createElement("style");
-      style.id = "mapaAeropuertoStyles";
-      style.textContent = `
-        .bus-pin-wrap { background:transparent !important; border:none !important; }
-        .bus-pin {
-          position:absolute;
-          left:0; top:0;
-          transform: translate(-50%, -100%);
-          display:flex; align-items:center; gap:4px;
-          background: var(--pin, #1d4ed8); color:#fff;
-          padding:3px 8px 3px 6px; border-radius:999px;
-          font-weight:700; font-size:11px; line-height:1;
-          border:1.5px solid #fff;
-          box-shadow:0 1px 3px rgba(0,0,0,.45);
-          white-space:nowrap;
-        }
-        .bus-pin svg { display:block; flex:0 0 auto; }
-        .bus-pin-num { font-variant-numeric: tabular-nums; letter-spacing:.2px; }
-      `;
-      document.head.appendChild(style);
-    }
-
-    state.map = L.map(container, {
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
-      scrollWheelZoom: true
-    });
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    }).addTo(state.map);
-    state.markersLayer = L.layerGroup().addTo(state.map);
-    return state.map;
-  }
-
-  function syncMarkers(rows){
-    const map = ensureMap();
-    if (!map || !state.markersLayer) return;
-    state.markersLayer.clearLayers();
-
-    const points = [];
-    rows.forEach(r => {
-      const lat = Number(r.lat);
-      const lon = Number(r.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-      if (lat === 0 && lon === 0) return; // descartar coordenadas claramente invalidas
-      const interno = String(r.interno == null ? "" : r.interno);
-      const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
-      const listo = r.listo === true;
-      const color = listo ? "#16a34a" : "#1d4ed8"; // verde = listo, azul = en espera
-      const busSvg = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="#fff" d="M4 16c0 .88.39 1.67 1 2.22V20c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h8v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1.78c.61-.55 1-1.34 1-2.22V6c0-3.5-3.58-4-8-4S4 2.5 4 6v10zm3.5 1c-.83 0-1.5-.67-1.5-1.5S6.67 14 7.5 14s1.5.67 1.5 1.5S8.33 17 7.5 17zm9 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM18 11H6V6h12v5z"/></svg>';
-      const icon = L.divIcon({
-        className: "bus-pin-wrap",
-        html: `<div class="bus-pin" style="--pin:${color}">${busSvg}<span class="bus-pin-num">${esc(interno || "?")}</span></div>`,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0]
-      });
-      const m = L.marker([lat, lon], { icon });
-      const popupHtml = [
-        `<strong>Interno:</strong> ${interno || "-"}`,
-        `<strong>Vehiculo:</strong> ${r.vehicle_id || "-"}`,
-        `<strong>Itinerario:</strong> ${r.itinerario || "-"}`,
-        `<strong>Posicion:</strong> ${r.posicion == null ? "-" : r.posicion}`,
-        `<strong>Base:</strong> ${r.base || "-"}`,
-        `<strong>Conductor:</strong> ${r.driver_id || "-"}`,
-        `<strong>Hora llegada:</strong> ${fmtIsoCompacto(r.hora_llegada) || "-"}`,
-        `<strong>Listo:</strong> ${r.listo === true ? "Si" : (r.listo === false ? "No" : "-")}`
-      ].join("<br>");
-      m.bindPopup(popupHtml);
-      m.addTo(state.markersLayer);
-      points.push([lat, lon]);
-    });
-
-    if (points.length === 1){
-      map.setView(points[0], 15);
-    } else if (points.length > 1){
-      map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
-    }
-  }
-
-  function setStatus(msg, isErr = false){
-    const color = isErr ? "var(--color-danger, #b91c1c)" : "";
-    ["llegadas104Status", "mapaAeropuertoStatus"].forEach(id => {
-      const el = $(id);
-      if (!el) return;
-      el.textContent = msg;
-      el.style.color = color;
-    });
-  }
-
-  function setCount(n){
-    const s = String(n);
-    ["llegadas104Count", "mapaAeropuertoCount"].forEach(id => {
-      const el = $(id);
-      if (el) el.textContent = s;
-    });
-  }
-
-  function splitFechaHora(iso){
-    // PostgREST timestamptz -> "2026-05-20T13:38:10.366914+00:00" (normalmente UTC).
-    // Convertimos el instante a hora local de Colombia (America/Bogota) para que
-    // la HORA mostrada coincida con la realidad y con la columna "HACE".
-    if (!iso) return { fecha: "", hora: "" };
-    const str = String(iso);
-    const d = new Date(str);
-    if (!isNaN(d.getTime())) {
-      try {
-        const fecha = new Intl.DateTimeFormat("en-CA", {
-          timeZone: "America/Bogota",
-          year: "numeric", month: "2-digit", day: "2-digit"
-        }).format(d); // YYYY-MM-DD
-        const hora = new Intl.DateTimeFormat("en-GB", {
-          timeZone: "America/Bogota",
-          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-        }).format(d); // HH:mm:ss (24h)
-        return { fecha, hora };
-      } catch (e) {
-        // Si Intl/timeZone no esta disponible, caemos al corte de cadena.
-      }
-    }
-    // Fallback: corte de cadena sin conversion (comportamiento anterior).
-    const tIdx = str.indexOf("T");
-    if (tIdx < 0) return { fecha: str, hora: "" };
-    const fecha = str.slice(0, tIdx);
-    let resto = str.slice(tIdx + 1);
-    const offIdx = resto.search(/[+\-Z]/);
-    if (offIdx >= 0) resto = resto.slice(0, offIdx);
-    const dotIdx = resto.indexOf(".");
-    if (dotIdx >= 0) resto = resto.slice(0, dotIdx);
-    return { fecha, hora: resto };
-  }
-
-  function fmtCoord(v){
-    if (v == null || v === "") return "";
-    const n = Number(v);
-    if (!Number.isFinite(n)) return String(v);
-    return n.toFixed(6);
-  }
-
-  function fmtIsoCompacto(iso){
-    const { fecha, hora } = splitFechaHora(iso);
-    if (!fecha && !hora) return "";
-    return `${fecha} ${hora}`.trim();
-  }
-
-  function fmtHoraAmPm(hora){
-    if (!hora) return "";
-    const [hh, mm = "00", ss = "00"] = String(hora).split(":");
-    const h = parseInt(hh, 10);
-    if (!Number.isFinite(h)) return hora;
-    const ampm = h >= 12 ? "p. m." : "a. m.";
-    const h12 = ((h + 11) % 12) + 1;
-    return `${String(h12).padStart(2,"0")}:${mm}:${ss} ${ampm}`;
-  }
-
-  function fmtHace(iso){
-    if (!iso) return "";
-    const t = Date.parse(iso);
-    if (!Number.isFinite(t)) return "";
-    const diff = Math.max(0, Date.now() - t);
-    const totalMin = Math.floor(diff / 60000);
-    if (totalMin < 1) return "hace <1 min";
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    if (h === 0) return `hace ${m} min`;
-    return `hace ${h} h ${m} min`;
-  }
-
-  const ITIN_SIN_LLEGADA = "__sin_llegada__";
-
-  async function loadLlegadas104(){
-    if (state.loading) return;
-    if (typeof planillaSupabaseClient === "undefined" || !planillaSupabaseClient){
-      setStatus("Cliente Supabase no inicializado.", true);
-      return;
-    }
-    state.loading = true;
-    setStatus("Cargando...");
-    try {
-      const desde = $("llegadas104From") && $("llegadas104From").value;
-      const hasta = $("llegadas104To") && $("llegadas104To").value;
-
-      let q = planillaSupabaseClient
-        .from(TABLE)
-        .select(SELECT)
-        .order("hora_llegada", { ascending: false, nullsFirst: false })
-        .limit(FETCH_LIMIT);
-
-      if (desde) q = q.gte("hora_llegada", `${desde}T00:00:00`);
-      if (hasta) q = q.lte("hora_llegada", `${hasta}T23:59:59.999`);
-
-      const { data, error } = await q;
-      if (error) throw error;
-
-      state.rows = Array.isArray(data) ? data : [];
-      state.loadedOnce = true;
-      // Si el itinerario activo ya no existe en el dataset nuevo, vuelvo a "Todos".
-      if (state.activeItin){
-        const stillExists = state.rows.some(r => itinKey(r) === state.activeItin);
-        if (!stillExists) state.activeItin = "";
-      }
-      setStatus(`Cargadas ${state.rows.length} (limite ${FETCH_LIMIT}).`);
-      render();
-    } catch (err){
-      console.error("[llegadas_104] error de carga:", err);
-      setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudieron cargar las llegadas 104.", "err", err);
-    } finally {
-      state.loading = false;
-    }
-  }
-
-  function posNum(v){
-    const n = Number(v);
-    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
-  }
-
-  function itinKey(r){
-    const v = String(r.itinerario || "").trim();
-    return v || ITIN_SIN_LLEGADA;
-  }
-
-  function itinDisplay(key){
-    return key === ITIN_SIN_LLEGADA ? "Sin llegada 104 hoy" : key;
-  }
-
-  function getFilteredRows(){
-    let rows = state.rows.slice();
-    const sel = state.activeItin; // "" = Todos, key concreto, o ITIN_SIN_LLEGADA
-    if (sel){
-      rows = rows.filter(r => itinKey(r) === sel);
-      rows.sort((a, b) => posNum(a.posicion) - posNum(b.posicion));
-    } else {
-      rows.sort((a, b) => {
-        const cmp = itinKey(a).localeCompare(itinKey(b));
-        if (cmp !== 0) return cmp;
-        return posNum(a.posicion) - posNum(b.posicion);
-      });
-    }
-    return rows;
-  }
-
-  function renderChips(){
-    const cont = $("lleg104Chips");
-    if (!cont) return;
-    const counts = state.rows.reduce((acc, r) => {
-      const k = itinKey(r);
-      acc[k] = (acc[k] || 0) + 1;
-      return acc;
-    }, {});
-    const realItins = Object.keys(counts).filter(k => k !== ITIN_SIN_LLEGADA).sort((a,b) => a.localeCompare(b));
-    const allKeys = realItins.concat(counts[ITIN_SIN_LLEGADA] ? [ITIN_SIN_LLEGADA] : []);
-    const total = state.rows.length;
-    const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
-
-    const chipHtml = (key, label, n) => {
-      const active = state.activeItin === key ? " active" : "";
-      const dataVal = (key || "").replace(/"/g, "&quot;");
-      return `<span class="lleg104-chip${active}" data-itin="${dataVal}">${esc(label)} <span class="lleg104-chip-count">${n}</span></span>`;
+    const renglon = (c) => {
+      const qn = quienTxt(c.quien);
+      return `<tr><td class="nb-col-hora"><b>${esc(cuandoTxt(c.en, d.fecha))}</b></td>`
+        + `<td><span class="nb-badge ${qn.cls}">${esc(qn.txt)}</span></td>`
+        + `<td>${dondeTxt(c) || `<span class="nb-mut">—</span>`}</td>`
+        + `<td>${queTxt(c)}</td></tr>`;
     };
-
-    cont.innerHTML = chipHtml("", "Todos", total) + allKeys.map(k => chipHtml(k, itinDisplay(k), counts[k])).join("");
-  }
-
-  function renderMetrics(rows){
-    // rows = filas filtradas por el itinerario activo (o todas si "Todos").
-    const total = rows.length;
-    const listos = rows.filter(r => r.listo === true).length;
-    const espera = total - listos;
-    const t = $("lleg104MetricTotal"); if (t) t.textContent = total;
-    const l = $("lleg104MetricListos"); if (l) l.textContent = listos;
-    const e = $("lleg104MetricEspera"); if (e) e.textContent = espera;
-  }
-
-  function render(){
-    const tbody = $("llegadas104Body");
-    if (!tbody) return;
-    renderChips();
-
-    const rows = getFilteredRows();
-    renderMetrics(rows);
-    setCount(rows.length);
-    syncMarkers(rows);
-
-    // Titulo de seccion + contador (refleja el itinerario activo).
-    const secName = $("lleg104SectionName");
-    const secCount = $("lleg104SectionCount");
-    if (secName) secName.textContent = state.activeItin ? itinDisplay(state.activeItin) : "Todos";
-    if (secCount) secCount.textContent = String(rows.length);
-
-    if (!state.loadedOnce){
-      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
-      return;
-    }
-    if (!rows.length){
-      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin resultados con los filtros aplicados.</td></tr>`;
-      return;
-    }
-
-    const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
-    const showGroupHeaders = !state.activeItin;
-    const itinCounts = rows.reduce((acc, r) => { const k = itinKey(r); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
-
-    const html = [];
-    let lastItin = null;
-    rows.forEach((r, idx) => {
-      const ik = itinKey(r);
-      if (showGroupHeaders && ik !== lastItin){
-        const n = itinCounts[ik] || 0;
-        html.push(`<tr class="itin-group-row"><td colspan="5" style="background:#0f172a;color:#fff;font-weight:700;padding:10px 14px;font-size:13px">${esc(itinDisplay(ik))} <span style="opacity:.7;font-weight:500;margin-left:8px">- ${n} bus${n === 1 ? "" : "es"}</span></td></tr>`);
-        lastItin = ik;
-      }
-      const { hora } = splitFechaHora(r.hora_llegada);
-      const horaAmPm = fmtHoraAmPm(hora);
-      const hace = fmtHace(r.hora_llegada);
-
-      const pos = r.posicion == null ? "" : r.posicion;
-      const baseLabel = r.base ? `BASE ${r.base}` : "";
-      html.push(`<tr>
-        <td><strong>${esc(pos)}</strong></td>
-        <td style="white-space:nowrap">${esc(horaAmPm)}</td>
-        <td class="muted" style="white-space:nowrap">${esc(hace)}</td>
-        <td><strong>${esc(r.interno || "")}</strong></td>
-        <td style="white-space:nowrap">${esc(baseLabel)}</td>
-      </tr>`);
-    });
-    tbody.innerHTML = html.join("");
-  }
-
-  function exportToExcel(){
-    if (typeof XLSX === "undefined"){
-      if (typeof showToast === "function") showToast("XLSX no disponible.", "err");
-      return;
-    }
-    // Excel respeta el filtro de itinerario y el orden por posicion.
-    const rows = getFilteredRows();
-    if (!rows.length){
-      if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn");
-      return;
-    }
-    const data = rows.map(r => {
-      const { fecha, hora } = splitFechaHora(r.hora_llegada);
-      return {
-        Fecha: fecha,
-        Hora: hora,
-        Vehiculo: r.vehicle_id || "",
-        Interno: r.interno || "",
-        Itinerario: r.itinerario || "",
-        Posicion: r.posicion == null ? "" : r.posicion,
-        Base: r.base || "",
-        Conductor: r.driver_id || "",
-        DistanciaM: r.distancia_m == null ? "" : r.distancia_m,
-        Listo: r.listo === true ? "SI" : (r.listo === false ? "NO" : ""),
-        Ubicacion: r.ubicacion || "",
-        Lat: r.lat == null ? "" : r.lat,
-        Lon: r.lon == null ? "" : r.lon,
-        HoraLlegadaISO: r.hora_llegada || "",
-        ActualizadoISO: r.updated_at || ""
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Enturnamiento aeropuerto");
-    const fname = (typeof safeFileName === "function" ? safeFileName : (s) => s)(
-      `planilla_enturnamiento_aeropuerto_${new Date().toISOString().slice(0,10)}.xlsx`
-    );
-    XLSX.writeFile(wb, fname);
-  }
-
-  function bind(){
-    const btnRefresh = $("btnRefreshLlegadas104");
-    const btnDownload = $("btnDownloadLlegadas104");
-    const fromI = $("llegadas104From");
-    const toI = $("llegadas104To");
-
-    const btnRefreshMapa = $("btnRefreshMapaAeropuerto");
-    const chipsCont = $("lleg104Chips");
-
-    if (btnRefresh) btnRefresh.addEventListener("click", loadLlegadas104);
-    if (btnRefreshMapa) btnRefreshMapa.addEventListener("click", loadLlegadas104);
-    if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
-    if (fromI) fromI.addEventListener("change", () => { if (state.loadedOnce) loadLlegadas104(); });
-    if (toI)   toI.addEventListener("change",   () => { if (state.loadedOnce) loadLlegadas104(); });
-
-    // Click en un chip -> cambia el itinerario activo (sin re-consultar Supabase).
-    if (chipsCont){
-      chipsCont.addEventListener("click", (ev) => {
-        const chip = ev.target.closest(".lleg104-chip");
-        if (!chip) return;
-        state.activeItin = chip.getAttribute("data-itin") || "";
-        render();
-      });
-    }
-
-    // Lazy load comun para las dos pestanas (planilla y mapa) — comparten
-    // `state.rows`. El mapa ademas necesita invalidateSize al hacerse visible
-    // (Leaflet no mide bien sobre un contenedor display:none).
-    function onPlanillaClick(){
-      if (!state.loadedOnce && !state.loading) loadLlegadas104();
-    }
-    function onMapaClick(){
-      if (!state.loadedOnce && !state.loading){
-        loadLlegadas104(); // syncMarkers se invoca dentro de render()
-      } else {
-        setTimeout(() => {
-          ensureMap();
-          if (state.map) state.map.invalidateSize();
-          if (state.loadedOnce) syncMarkers(state.rows);
-        }, 50);
-      }
-    }
-    document.querySelectorAll('.tab[data-tab="llegadas-104"]').forEach(tab => tab.addEventListener("click", onPlanillaClick));
-    document.querySelectorAll('.tab[data-tab="mapa-aeropuerto"]').forEach(tab => tab.addEventListener("click", onMapaClick));
-
-    // Recarga expuesta para el modulo de Realtime (suscripcion a llegadas_104).
-    window.__reloadLlegadas104 = function(){ if (!state.loading) loadLlegadas104(); };
-
-    // Respaldo del Realtime: refresco automatico cada 15s mientras se ve la
-    // Planilla de enturnamiento o el Mapa (por si Supabase Realtime no entrega
-    // eventos de la tabla llegadas_104). Solo si la pestana esta activa y visible.
-    if (!window.__llegadas104PollTimer){
-      window.__llegadas104PollTimer = setInterval(() => {
-        if (document.hidden) return;
-        if (state.loading || !state.loadedOnce) return;
-        const viendo = (typeof isTabActive === "function") &&
-          (isTabActive("llegadas-104") || isTabActive("mapa-aeropuerto"));
-        if (viendo) loadLlegadas104();
-      }, 15000);
-    }
-
-    // Limpiar estado al cerrar sesion.
-    const btnLogoutEl = document.getElementById("btnLogout");
-    if (btnLogoutEl) btnLogoutEl.addEventListener("click", () => {
-      state.rows = [];
-      state.loadedOnce = false;
-      state.activeItin = "";
-      if (state.markersLayer) state.markersLayer.clearLayers();
-      const tbody = $("llegadas104Body");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>`;
-      const chipsCont = $("lleg104Chips");
-      if (chipsCont) chipsCont.innerHTML = "";
-      renderMetrics([]);
-      setCount(0);
-      setStatus("Sin cargar");
-    });
-  }
-
-  if (document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", bind);
-  } else {
-    bind();
-  }
-})();
-
-
-/* =====================================================================
-   MODULO: Parque automotor (tabla `parque_automotor` + `parque_documentos`)
-   Muestra vehiculos VINCULADOS, por base, con el vencimiento de SOAT,
-   Tecnomecanica y Tarjeta de operacion. Las bases pueden EDITAR las fechas
-   y subir una foto de cada documento (se guarda en `parque_documentos`,
-   tabla aparte que no se pisa al reimportar el CSV).
-   La base se deduce del interno con VEHICLE_TO_BASE_MAP (igual que despachos).
-   ===================================================================== */
-(function bootstrapParqueAutomotor(){
-  const TABLE = "parque_automotor";
-  const DOCS_TABLE = "parque_documentos";
-  const BUCKET = "parque-docs";
-  // tipo -> { csv: columna del CSV, venc: campo fecha en docs, foto: campo foto en docs }
-  const DOCS = {
-    soat:  { csv: "Fecha Vencimiento Soat",          venc: "venc_soat",          foto: "foto_soat" },
-    tecno: { csv: "Fecha Vencimiento Tecnomecanica",  venc: "venc_tecnomecanica", foto: "foto_tecnomecanica" },
-    oper:  { csv: "Fecha Vencimiento Operacion",      venc: "venc_operacion",     foto: "foto_operacion" }
-  };
-  const state = { rows: [], docs: new Map(), loading: false, loadedOnce: false, editInterno: null };
-  const $ = (id) => document.getElementById(id);
-  const esc = (typeof escapeHtml === "function") ? escapeHtml : (v) => String(v == null ? "" : v);
-
-  function val(r, key){ return (r && r[key] != null) ? String(r[key]) : ""; }
-  // Nombre de la ruta: usa "Nombre Ruta"; si no, el codigo "Ruta".
-  function rutaLabel(r){
-    const nombre = val(r, "Nombre Ruta").trim();
-    if (nombre) return nombre;
-    return val(r, "Ruta").trim();
-  }
-  function isVinculado(r){
-    // Quita todo lo que no sea letra (espacios, NBSP del CSV, tabs, etc.) antes de comparar.
-    const s = val(r, "Estado").replace(/[^A-Za-z]/g, "").toUpperCase();
-    return s === "VINCULADO"; // excluye DESVINCULADO, NULL y vacios
-  }
-
-  function baseLabelOf(r){
-    if (typeof resolveVehiculoBase === "function"){
-      const b = resolveVehiculoBase({ interno: val(r, "Interno") });
-      return (b && b !== "-") ? b : "";
-    }
-    return "";
-  }
-  function baseCanonOf(r){
-    const lbl = baseLabelOf(r);
-    if (!lbl) return "";
-    return (typeof getBaseCanonical === "function") ? getBaseCanonical(lbl) : lbl;
-  }
-  function isAdmin(){ return typeof isSuperAdmin === "function" ? isSuperAdmin() : false; }
-  function isOperator(){ return typeof isBaseOperator === "function" && isBaseOperator(); }
-  function userBase(){ return (typeof currentUserBase !== "undefined" && currentUserBase) ? String(currentUserBase) : ""; }
-  function canEdit(r){ return isAdmin() || (isOperator() && baseCanonOf(r) === userBase()); }
-  function getRow(interno){ return state.rows.find(r => val(r, "Interno") === String(interno)); }
-
-  function setStatus(msg, isErr){
-    const el = $("parqueStatus"); if (!el) return;
-    el.textContent = msg; el.style.color = isErr ? "var(--color-danger,#b91c1c)" : "";
-  }
-  function setCount(n){ const el = $("parqueCount"); if (el) el.textContent = String(n); }
-
-  // --- Fechas: acepta dd/mm/yyyy (CSV) y yyyy-mm-dd (editado) ---
-  function parseFecha(s){
-    const str = String(s || "").trim();
-    let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (m){ const dt = new Date(+m[1], +m[2] - 1, +m[3]); return isNaN(dt.getTime()) ? null : dt; }
-    m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-    if (m){ const d = +m[1], mo = +m[2], y = +m[3]; if (!d || !mo || !y || mo > 12 || d > 31) return null; const dt = new Date(y, mo - 1, d); return isNaN(dt.getTime()) ? null : dt; }
-    return null;
-  }
-  function fmtDMY(dt){ return `${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()}`; }
-  function toInputDate(raw){ const dt = parseFecha(raw); if (!dt) return ""; return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`; }
-
-  // Valor efectivo: si hay edicion en docs manda esa; si no, la del CSV.
-  function effVenc(r, tipo){
-    const d = state.docs.get(val(r, "Interno"));
-    const edited = d && d[DOCS[tipo].venc];
-    if (edited) return String(edited);
-    return val(r, DOCS[tipo].csv);
-  }
-  function fotoUrl(r, tipo){
-    const d = state.docs.get(val(r, "Interno"));
-    return (d && d[DOCS[tipo].foto]) ? String(d[DOCS[tipo].foto]) : "";
-  }
-
-  function docCell(r, tipo){
-    const raw = String(effVenc(r, tipo) || "").trim();
-    const foto = fotoUrl(r, tipo);
-    const link = foto ? ` <a class="parque-foto-link" href="${esc(foto)}" target="_blank" rel="noopener" title="Ver foto">[foto]</a>` : "";
-    if (!raw) return `<span class="muted">-</span>${link}`;
-    const dt = parseFecha(raw);
-    if (!dt) return `<span class="muted">${esc(raw)}</span>${link}`;
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
-    let style, title;
-    if (days < 0){ style = "background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"; title = "vencido"; }
-    else if (days <= 30){ style = "background:#fffbeb;color:#b45309;border:1px solid #fde68a;"; title = `vence en ${days} dias`; }
-    else { style = "background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;"; title = "vigente"; }
-    return `<span title="${esc(title)}" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;${style}">${esc(fmtDMY(dt))}</span>${link}`;
-  }
-
-  function populateBaseOptions(){
-    const sel = $("parqueBaseFilter");
-    const hint = $("parqueBaseHint");
-    if (isOperator()){
-      if (sel) sel.style.display = "none";
-      if (hint) hint.textContent = `Base ${userBase() || "-"}`;
-      return;
-    }
-    if (hint) hint.textContent = "";
-    if (!sel) return;
-    sel.style.display = "";
-    const bases = Array.from(new Set(state.rows.map(baseCanonOf).filter(Boolean)))
-      .sort((a, b) => (parseInt(a, 10) || 999) - (parseInt(b, 10) || 999));
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">Base: todas</option>' + bases.map(b => `<option value="${esc(b)}">Base ${esc(b)}</option>`).join("");
-    if (cur) sel.value = cur;
-  }
-
-  // Llena el desplegable de rutas con las rutas visibles para el usuario
-  // (operador: solo su base; admin: respeta la base seleccionada arriba).
-  function populateRutaOptions(){
-    const sel = $("parqueRutaFilter");
-    if (!sel) return;
-    let base = state.rows.slice();
-    if (isOperator()){
-      const ub = userBase();
-      base = base.filter(r => baseCanonOf(r) === ub);
-    } else {
-      const selBase = (($("parqueBaseFilter") || {}).value || "").trim();
-      if (selBase) base = base.filter(r => baseCanonOf(r) === selBase);
-    }
-    const rutas = Array.from(new Set(base.map(rutaLabel).filter(Boolean)))
-      .sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }));
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">Ruta: todas</option>' + rutas.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
-    // Conserva la seleccion si la ruta sigue disponible; si no, vuelve a "todas".
-    sel.value = (cur && rutas.indexOf(cur) >= 0) ? cur : "";
-  }
-
-  async function loadDocs(){
-    state.docs = new Map();
-    try {
-      const { data, error } = await planillaSupabaseClient.from(DOCS_TABLE).select("*").limit(5000);
-      if (error) throw error;
-      (Array.isArray(data) ? data : []).forEach(d => { if (d && d.interno != null) state.docs.set(String(d.interno), d); });
-    } catch (e){
-      // Si la tabla aun no existe, seguimos solo con el CSV (sin romper la vista).
-      console.warn("[parque_documentos] no disponible:", e && e.message ? e.message : e);
-    }
-  }
-
-  async function load(){
-    if (state.loading) return;
-    if (typeof planillaSupabaseClient === "undefined" || !planillaSupabaseClient){ setStatus("Cliente Supabase no inicializado.", true); return; }
-    state.loading = true; setStatus("Cargando...");
-    try {
-      const { data, error } = await planillaSupabaseClient.from(TABLE).select("*").limit(5000);
-      if (error) throw error;
-      state.rows = (Array.isArray(data) ? data : []).filter(isVinculado);
-      await loadDocs();
-      state.loadedOnce = true;
-      populateBaseOptions();
-      populateRutaOptions();
-      setStatus(`Cargados ${state.rows.length} vehiculos vinculados.`);
-      render();
-    } catch (err){
-      console.error("[parque_automotor] error de carga:", err);
-      setStatus("Error al cargar: " + (err && err.message ? err.message : "desconocido"), true);
-      if (typeof showToast === "function") showToast("No se pudo cargar el parque automotor. Verifica que la tabla 'parque_automotor' exista en Supabase.", "err", err);
-    } finally { state.loading = false; }
-  }
-
-  function internoNum(r){ const n = parseInt(String(val(r, "Interno")).replace(/\D/g, ""), 10); return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY; }
-
-  function getFilteredRows(){
-    let rows = state.rows.slice();
-    if (isOperator()){
-      const ub = userBase();
-      rows = rows.filter(r => baseCanonOf(r) === ub);
-    } else {
-      const selBase = (($("parqueBaseFilter") || {}).value || "").trim();
-      if (selBase) rows = rows.filter(r => baseCanonOf(r) === selBase);
-    }
-    const selRuta = (($("parqueRutaFilter") || {}).value || "").trim();
-    if (selRuta) rows = rows.filter(r => rutaLabel(r) === selRuta);
-    const term = (($("parqueSearch") || {}).value || "").trim().toLowerCase();
-    if (term){
-      rows = rows.filter(r => ["Interno", "Placa", "Marca", "Modelo", "Clase", "Nombres Propietarios", "Ruta", "Nombre Ruta"]
-        .map(k => val(r, k)).join(" | ").toLowerCase().includes(term));
-    }
-    rows.sort((a, b) => internoNum(a) - internoNum(b));
-    return rows;
-  }
-
-  function render(){
-    const tbody = $("parqueBody"); if (!tbody) return;
-    const rows = getFilteredRows();
-    setCount(rows.length);
-    if (!state.loadedOnce){ tbody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin datos. Pulsa "Actualizar" para cargar.</td></tr>'; return; }
-    if (!rows.length){ tbody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;padding:12px">Sin vehiculos para mostrar.</td></tr>'; return; }
-    tbody.innerHTML = rows.map(r => {
-      const base = baseCanonOf(r);
-      const interno = val(r, "Interno");
-      // Edicion deshabilitada temporalmente: se muestra "Proximamente".
-      const acciones = `<span title="La edicion de documentos se habilitara proximamente" style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;white-space:nowrap">Proximamente</span>`;
-      return `<tr>
-        <td><strong>${esc(interno)}</strong></td>
-        <td>${esc(val(r, "Placa"))}</td>
-        <td>${esc(val(r, "Marca"))}</td>
-        <td>${esc(val(r, "Modelo"))}</td>
-        <td>${base ? "BASE " + esc(base) : '<span class="muted">-</span>'}</td>
-        <td>${rutaLabel(r) ? esc(rutaLabel(r)) : '<span class="muted">-</span>'}</td>
-        <td>${docCell(r, "soat")}</td>
-        <td>${docCell(r, "tecno")}</td>
-        <td>${docCell(r, "oper")}</td>
-        <td>${acciones}</td>
-      </tr>`;
+    const filas = agruparCargas(lista).map((c) => {
+      if (!c.grupo) return renglon(c);
+      const qn = quienTxt(c.quien);
+      return `<tr class="nb-cambio-carga"><td class="nb-col-hora"><b>${esc(cuandoTxt(c.en, d.fecha))}</b></td>`
+        + `<td><span class="nb-badge ${qn.cls}">${esc(qn.txt)}</span></td>`
+        + `<td colspan="2"><details><summary>${c.accion === "agregada" ? "Cargó la programación" : "Quitó filas de la programación"}: `
+        + `<b>${plural(c.filas.length, "fila", "filas")}</b></summary><ul>${c.filas.map((f) => `<li>${esc((c.accion === "agregada" ? f.despues : f.antes) || "")}</li>`).join("")}</ul></details></td></tr>`;
     }).join("");
-    renderVenc();
+    box.innerHTML = `<div class="nb-tabla-caja"><table class="nb-tabla nb-tabla-cambios"><thead><tr><th>Hora</th><th>Quién</th>`
+      + `<th>Dónde</th><th>Qué cambió</th></tr></thead><tbody>${filas}</tbody></table></div>`;
   }
 
-  // ---------------- Vista: Por renovar / Vencidos ----------------
-  const DOC_META = [
-    { tipo: "soat",  label: "SOAT",                  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>' },
-    { tipo: "tecno", label: "Tecnomecanica",         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>' },
-    { tipo: "oper",  label: "Tarjeta de operacion",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 14h6"/><path d="M16 14h2"/></svg>' }
-  ];
-
-  function vencThreshold(){
-    const sel = $("parqueVencDias");
-    const n = sel ? parseInt(sel.value, 10) : 30;
-    return Number.isFinite(n) && n > 0 ? n : 30;
-  }
-
-  // Devuelve {vencidos:[], proximos:[]} para un documento, ordenados por urgencia.
-  function buildVencList(rows, tipo, limite){
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const vencidos = [], proximos = [];
-    rows.forEach(r => {
-      const dt = parseFecha(String(effVenc(r, tipo) || "").trim());
-      if (!dt) return; // sin fecha registrada -> no entra al tablero
-      const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
-      const item = { interno: val(r, "Interno"), placa: val(r, "Placa"), base: baseCanonOf(r), ruta: rutaLabel(r), dt, days };
-      if (days < 0) vencidos.push(item);
-      else if (days <= limite) proximos.push(item);
-    });
-    vencidos.sort((a, b) => a.days - b.days); // mas vencido primero
-    proximos.sort((a, b) => a.days - b.days); // mas proximo primero
-    return { vencidos, proximos };
-  }
-
-  function pvRow(it, cls){
-    const fecha = fmtDMY(it.dt);
-    const dias = cls === "bad"
-      ? `vencido hace ${Math.abs(it.days)} d`
-      : (it.days === 0 ? "vence hoy" : `en ${it.days} d`);
-    const baseTxt = it.base ? `BASE ${esc(it.base)}` : "";
-    const ruta = it.ruta ? esc(it.ruta) : "-";
-    return `<div class="pv-row ${cls}">
-      <span class="pv-interno">${esc(it.interno)}</span>
-      <span class="pv-placa">${esc(it.placa || "-")}</span>
-      <span class="pv-ruta" title="${ruta}">${ruta}</span>
-      <span class="pv-base">${baseTxt}</span>
-      <span class="pv-fecha ${cls}">${esc(fecha)}<span class="pv-dias">${esc(dias)}</span></span>
-    </div>`;
-  }
-
-  function renderVenc(){
-    const cont = $("parqueVencBody"); if (!cont) return;
-    if (!state.loadedOnce){ cont.innerHTML = '<div class="pv-empty">Sin datos. Pulsa "Actualizar" para cargar.</div>'; return; }
-    const rows = getFilteredRows();
-    const limite = vencThreshold();
-    let totalVenc = 0, totalProx = 0;
-
-    cont.innerHTML = DOC_META.map(meta => {
-      const { vencidos, proximos } = buildVencList(rows, meta.tipo, limite);
-      totalVenc += vencidos.length; totalProx += proximos.length;
-
-      const venSect = vencidos.length
-        ? `<div class="pv-sect-title bad">Vencidos · se deben renovar (${vencidos.length})</div>${vencidos.map(it => pvRow(it, "bad")).join("")}`
-        : `<div class="pv-sect-title bad">Vencidos (0)</div><div class="pv-empty">Ninguno vencido.</div>`;
-      const proxSect = proximos.length
-        ? `<div class="pv-sect-title warn">Proximos a renovar · ${limite} dias (${proximos.length})</div>${proximos.map(it => pvRow(it, "warn")).join("")}`
-        : `<div class="pv-sect-title warn">Proximos a renovar (0)</div><div class="pv-empty">Ninguno por vencer.</div>`;
-
-      return `<div class="pv-card">
-        <div class="pv-head">
-          <span class="pv-ico">${meta.icon}</span>
-          <span class="pv-title">${esc(meta.label)}</span>
-          <span class="pv-counts">
-            <span class="pv-pill bad">${vencidos.length} venc.</span>
-            <span class="pv-pill warn">${proximos.length} prox.</span>
-          </span>
-        </div>
-        <div class="pv-sect">${venSect}${proxSect}</div>
-      </div>`;
-    }).join("");
-
-    const resumen = $("parqueVencResumen");
-    if (resumen){
-      resumen.textContent = totalVenc === 0 && totalProx === 0
-        ? "Todo al dia ✓"
-        : `${totalVenc} vencidos · ${totalProx} por vencer (en ${limite} dias)`;
-    }
-  }
-
-  function setParqueView(view){
-    const listBtn = $("parqueViewListBtn"), vencBtn = $("parqueViewVencBtn");
-    const listWrap = $("parqueListWrap"), vencWrap = $("parqueVencWrap");
-    const isVenc = view === "venc";
-    if (listWrap) listWrap.classList.toggle("hidden", isVenc);
-    if (vencWrap) vencWrap.classList.toggle("hidden", !isVenc);
-    if (listBtn) listBtn.classList.toggle("active", !isVenc);
-    if (vencBtn) vencBtn.classList.toggle("active", isVenc);
-    if (isVenc) renderVenc();
-  }
-
-  function exportToExcel(){
-    if (typeof XLSX === "undefined"){ if (typeof showToast === "function") showToast("XLSX no disponible.", "err"); return; }
-    const rows = getFilteredRows();
-    if (!rows.length){ if (typeof showToast === "function") showToast("No hay filas para exportar.", "warn"); return; }
-    const data = rows.map(r => ({
-      Interno: val(r, "Interno"), Placa: val(r, "Placa"), Marca: val(r, "Marca"), Modelo: val(r, "Modelo"),
-      Base: baseCanonOf(r) ? "BASE " + baseCanonOf(r) : "",
-      Ruta: rutaLabel(r),
-      "Vence SOAT": effVenc(r, "soat"),
-      "Vence Tecnomecanica": effVenc(r, "tecno"),
-      "Vence T. Operacion": effVenc(r, "oper"),
-      "Foto SOAT": fotoUrl(r, "soat"),
-      "Foto Tecnomecanica": fotoUrl(r, "tecno"),
-      "Foto T. Operacion": fotoUrl(r, "oper")
-    }));
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Parque automotor");
-    const fname = (typeof safeFileName === "function" ? safeFileName : (s) => s)(`parque_automotor_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    XLSX.writeFile(wb, fname);
-  }
-
-  // ---------------- Edicion (modal) ----------------
-  function setDocStatus(msg, isErr){ const el = $("parqueDocStatus"); if (!el) return; el.textContent = msg || ""; el.style.color = isErr ? "var(--color-danger,#b91c1c)" : ""; }
-
-  // Estado de vigencia a partir de un valor de fecha (dd/mm/yyyy o yyyy-mm-dd).
-  function vencInfo(raw){
-    const dt = parseFecha(String(raw || "").trim());
-    if (!dt) return { cls: "is-none", label: "sin fecha" };
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const days = Math.round((dt.getTime() - today.getTime()) / 86400000);
-    if (days < 0) return { cls: "is-bad", label: `vencido hace ${Math.abs(days)} dias` };
-    if (days === 0) return { cls: "is-bad", label: "vence hoy" };
-    if (days <= 30) return { cls: "is-warn", label: `vence en ${days} dias` };
-    return { cls: "is-ok", label: "vigente" };
-  }
-
-  function applyDocBadge(cardId, badgeId, raw){
-    const card = $(cardId), badge = $(badgeId);
-    const info = vencInfo(raw);
-    if (card){ card.classList.remove("is-ok", "is-warn", "is-bad", "is-none"); card.classList.add(info.cls); }
-    if (badge){ badge.classList.remove("is-ok", "is-warn", "is-bad", "is-none"); badge.classList.add(info.cls); badge.textContent = info.label; }
-  }
-
-  function setThumb(linkId, thumbId, url){
-    const link = $(linkId), thumb = $(thumbId);
-    if (thumb) thumb.src = url || "";
-    if (link){
-      if (url){ link.href = url; link.classList.add("show"); }
-      else { link.href = "#"; link.classList.remove("show"); }
-    }
-  }
-
-  function openModal(interno){
-    const r = getRow(interno);
-    if (!r) return;
-    if (!canEdit(r)){ if (typeof showToast === "function") showToast("No tienes permiso para editar este vehiculo.", "warn"); return; }
-    state.editInterno = interno;
-    const sub = $("parqueDocSub");
-    if (sub){
-      const baseTxt = baseCanonOf(r) ? "BASE " + baseCanonOf(r) : "sin base";
-      sub.innerHTML =
-        `<span class="pdoc-chip">Interno <strong>${esc(String(interno))}</strong></span>` +
-        `<span class="pdoc-chip">Placa <strong>${esc(val(r, "Placa") || "-")}</strong></span>` +
-        `<span class="pdoc-chip">${esc(baseTxt)}</span>`;
-    }
-    // [tipo, inputFecha, inputFile, link, thumb, card, badge]
-    const map = [
-      ["soat",  "docSoatFecha",  "docSoatFoto",  "docSoatLink",  "docSoatThumb",  "pdocSoat",  "docSoatBadge"],
-      ["tecno", "docTecnoFecha", "docTecnoFoto", "docTecnoLink", "docTecnoThumb", "pdocTecno", "docTecnoBadge"],
-      ["oper",  "docOperFecha",  "docOperFoto",  "docOperLink",  "docOperThumb",  "pdocOper",  "docOperBadge"]
-    ];
-    map.forEach(([tipo, fId, fileId, linkId, thumbId, cardId, badgeId]) => {
-      const raw = effVenc(r, tipo);
-      const f = $(fId); if (f) f.value = toInputDate(raw);
-      const file = $(fileId); if (file) file.value = "";
-      setThumb(linkId, thumbId, fotoUrl(r, tipo));
-      applyDocBadge(cardId, badgeId, raw);
-    });
-    setDocStatus("");
-    const modal = $("parqueDocModal"); if (modal) modal.classList.remove("hidden");
-  }
-  function closeModal(){ const modal = $("parqueDocModal"); if (modal) modal.classList.add("hidden"); state.editInterno = null; }
-
-  async function uploadFoto(interno, tipo, file){
-    const extRaw = (file.name && file.name.indexOf(".") >= 0) ? file.name.split(".").pop() : "jpg";
-    const ext = String(extRaw || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
-    const path = `${interno}/${tipo}-${Date.now()}.${ext}`;
-    const { error } = await planillaSupabaseClient.storage.from(BUCKET).upload(path, file, { upsert: true, contentType: file.type || undefined });
-    if (error) throw error;
-    const { data } = planillaSupabaseClient.storage.from(BUCKET).getPublicUrl(path);
-    return (data && data.publicUrl) ? data.publicUrl : "";
-  }
-
-  async function saveModal(){
-    const interno = state.editInterno;
-    const r = getRow(interno);
-    if (!r) return;
-    const btn = $("parqueDocSave");
-    if (btn) btn.disabled = true;
-    setDocStatus("Guardando...");
+  /* ---------- Turnos del dia: la celda cambiada dice quien y cuando ---------- */
+  const marcas = { clave: "", en: 0, datos: null, cargando: false, reloj: null };
+  function fechaTurnos(){
     try {
-      const prev = state.docs.get(String(interno)) || {};
-      const rec = {
-        interno: String(interno),
-        base: baseCanonOf(r),
-        venc_soat: ($("docSoatFecha") && $("docSoatFecha").value) || null,
-        venc_tecnomecanica: ($("docTecnoFecha") && $("docTecnoFecha").value) || null,
-        venc_operacion: ($("docOperFecha") && $("docOperFecha").value) || null,
-        foto_soat: prev.foto_soat || null,
-        foto_tecnomecanica: prev.foto_tecnomecanica || null,
-        foto_operacion: prev.foto_operacion || null,
-        actualizado_por: (typeof currentUserEmail !== "undefined" && currentUserEmail) ? currentUserEmail : "",
-        actualizado_en: new Date().toISOString()
-      };
-      // Subir fotos seleccionadas (si hay).
-      const uploads = [["soat", "docSoatFoto", "foto_soat"], ["tecno", "docTecnoFoto", "foto_tecnomecanica"], ["oper", "docOperFoto", "foto_operacion"]];
-      for (const [tipo, fileId, field] of uploads){
-        const fileEl = $(fileId);
-        const file = fileEl && fileEl.files && fileEl.files[0];
-        if (file){ setDocStatus(`Subiendo foto ${tipo}...`); rec[field] = await uploadFoto(interno, tipo, file); }
-      }
-      const { error } = await planillaSupabaseClient.from(DOCS_TABLE).upsert(rec, { onConflict: "interno" });
+      return (typeof filterDate2 !== "undefined" && filterDate2 && typeof normalizeDateToISO === "function")
+        ? normalizeDateToISO(filterDate2.value || "") : "";
+    } catch (_) {
+      return "";
+    }
+  }
+  function turnosActiva(){
+    return !!el("tab-programacion2")?.classList.contains("active");
+  }
+  async function cargarMarcas(forzar){
+    if (!puedeVer()) return;
+    const fecha = fechaTurnos();
+    const base = baseActiva();
+    if (!fecha || !base) { marcas.datos = null; pintarMarcas(); return; }
+    const clave = `${fecha}|${etiquetaBase(base)}`;
+    if (!forzar && marcas.clave === clave && Date.now() - marcas.en < CADA_MS.cambios) { pintarMarcas(); return; }
+    const cli = cliente();
+    if (!cli || marcas.cargando) return;
+    marcas.cargando = true;
+    try {
+      const { data, error } = await cli.rpc(RPC_CAMBIOS, { p_fecha: fecha, p_base: etiquetaBase(base) });
       if (error) throw error;
-      state.docs.set(String(interno), rec);
-      if (typeof showToast === "function") showToast("Documentos actualizados.", "ok");
-      closeModal();
-      render();
-    } catch (err){
-      console.error("[parque_documentos] error al guardar:", err);
-      setDocStatus("Error al guardar: " + (err && err.message ? err.message : "desconocido"), true);
-      reportError("No se pudieron guardar los documentos del vehiculo", err, {
-        hint: "Los cambios no se guardaron. Revisa que exista la tabla 'parque_documentos' y el bucket 'parque-docs'."
-      });
+      marcas.datos = data && data.ok ? data : null;
+    } catch (err) {
+      marcas.datos = null;   // sin la funcion todavia o sin permiso: no se marca nada
+      if (!errorEsperado(err)) console.warn("[cambios] no se pudieron leer los cambios:", err?.message || err);
     } finally {
-      if (btn) btn.disabled = false;
+      marcas.clave = clave;
+      marcas.en = Date.now();
+      marcas.cargando = false;
     }
+    if (fechaTurnos() === fecha) pintarMarcas();
+  }
+  function pintarBarraTurnos(lista, fecha){
+    const body = (typeof gridBody2 !== "undefined") ? gridBody2 : null;
+    const tabla = body?.closest("table");
+    if (!tabla || !tabla.parentNode) return;
+    let barra = el("cambiosTurnosBarra");
+    if (!barra) {
+      barra = document.createElement("div");
+      barra.id = "cambiosTurnosBarra";
+      barra.className = "cambios-barra";
+      tabla.parentNode.insertBefore(barra, tabla);
+      barra.addEventListener("click", (ev) => {
+        if (!ev.target.closest("[data-ver-cambios]")) return;
+        st.fecha = fechaTurnos() || st.fecha;
+        st.cambios = null;
+        st.vista = "cambios";
+        document.querySelector('.tab[data-tab="novedades-base"]')?.click();
+        cambiarVista("cambios");
+      });
+    }
+    if (!lista) { barra.innerHTML = ""; barra.hidden = true; return; }
+    barra.hidden = false;
+    if (!lista.length) {
+      barra.innerHTML = `<span class="nb-mut">Nadie ha cambiado la programación de este día.</span>`;
+      return;
+    }
+    const porQuien = new Map();
+    lista.forEach((c) => { const q = quienTxt(c.quien); porQuien.set(q.txt, { cls: q.cls, n: ((porQuien.get(q.txt) || {}).n || 0) + 1 }); });
+    const quienes = [...porQuien.entries()].sort((a, b) => b[1].n - a[1].n)
+      .map(([txt, v]) => `<span class="nb-badge ${v.cls}">${esc(txt)} · ${numero(v.n)}</span>`).join(" ");
+    barra.innerHTML = `<span>✎ <b>${plural(lista.length, "cambio", "cambios")}</b> en la programación de este día</span> ${quienes}`
+      + ` <button type="button" class="btn btn-ghost nb-btn-mini" data-ver-cambios>Ver quién cambió qué</button>`;
+  }
+  function pintarMarcas(){
+    const body = (typeof gridBody2 !== "undefined") ? gridBody2 : null;
+    if (!body) return;
+    body.querySelectorAll(".cambio-marca").forEach((x) => x.remove());
+    body.querySelectorAll("td.td-cambiada").forEach((x) => x.classList.remove("td-cambiada"));
+    const d = marcas.datos;
+    const lista = d && Array.isArray(d.cambios) ? d.cambios.filter((c) => c.origen === "turnos") : null;
+    pintarBarraTurnos(puedeVer() && fechaTurnos() && baseActiva() ? lista : null);
+    if (!lista || !lista.length) return;
+    const ultimo = new Map();   // fila|campo -> el cambio mas nuevo (la lista viene de la mas nueva a la mas vieja)
+    lista.forEach((c) => {
+      if (c.accion !== "cambio" || !c.row_key || !c.campo) return;
+      const k = `${c.row_key}|${normCampo(c.campo)}`;
+      if (!ultimo.has(k)) ultimo.set(k, c);
+    });
+    if (!ultimo.size) return;
+    body.querySelectorAll("tr[data-row-key]").forEach((tr) => {
+      tr.querySelectorAll("td[data-campo]").forEach((td) => {
+        const c = ultimo.get(`${tr.dataset.rowKey}|${normCampo(td.dataset.campo)}`);
+        if (!c) return;
+        const q = quienTxt(c.quien);
+        const s = document.createElement("span");
+        s.className = `cambio-marca cambio-${q.cls}`;
+        s.textContent = `✎ ${q.txt} · ${cuandoTxt(c.en, d.fecha)}`;
+        s.title = `Cambiado por ${q.txt} (${cuandoTxt(c.en, "")}). Antes: ${c.antes == null || c.antes === "" ? "(vacío)" : c.antes}`;
+        td.classList.add("td-cambiada");
+        td.appendChild(s);
+      });
+    });
+  }
+  // La tabla de turnos se vuelve a pintar seguido (al asignar, al guardar): se marcan de una vez con lo que ya se
+  // sabe y se piden los cambios otra vez a los pocos segundos (sin pedir mas de una vez cada 8 s).
+  window.combuasignaMarcarCambios = function(){
+    pintarMarcas();
+    clearTimeout(marcas.reloj);
+    const espera = Math.max(1500, 8000 - (Date.now() - marcas.en));
+    marcas.reloj = setTimeout(() => { if (turnosActiva()) cargarMarcas(true); }, espera);
+  };
+  setInterval(() => {
+    if (turnosActiva() && document.visibilityState === "visible") cargarMarcas(false);
+  }, 20 * 1000);
+
+  /* ---------- eventos ---------- */
+  function irA(fecha){
+    const h = hoy();
+    let f = fecha || h;
+    if (f > diaMaximo()) f = diaMaximo();
+    if (f < masDias(h, -DIAS_ATRAS)) f = masDias(h, -DIAS_ATRAS);
+    if (f === st.fecha && (st.vista === "novedades" ? st.datos : st.vista === "cambios" ? st.cambios : st.viajes)) return;
+    st.fecha = f;
+    st.datos = null;
+    st.viajes = null;
+    st.cambios = null;
+    cargar();
   }
 
   function bind(){
-    const btnRefresh = $("btnRefreshParque");
-    const btnDownload = $("btnDownloadParque");
-    const search = $("parqueSearch");
-    const baseSel = $("parqueBaseFilter");
-    const rutaSel = $("parqueRutaFilter");
-    if (btnRefresh) btnRefresh.addEventListener("click", load);
-    if (btnDownload) btnDownload.addEventListener("click", exportToExcel);
-    if (search) search.addEventListener("input", () => { if (state.loadedOnce) render(); });
-    // Al cambiar la base se recalculan las rutas disponibles y luego se renderiza.
-    if (baseSel) baseSel.addEventListener("change", () => { if (state.loadedOnce){ populateRutaOptions(); render(); } });
-    if (rutaSel) rutaSel.addEventListener("change", () => { if (state.loadedOnce) render(); });
-
-    const body = $("parqueBody");
-    if (body) body.addEventListener("click", (ev) => {
-      const btn = ev.target.closest && ev.target.closest(".parque-edit-btn");
-      if (btn) openModal(btn.getAttribute("data-interno"));
+    const tab = document.querySelector('.tab[data-tab="novedades-base"]');
+    if (!tab) return;
+    tab.addEventListener("click", () => {
+      if (!st.fecha) st.fecha = hoy();
+      if (EXTERNAS[st.vista]) { mostrarExterna(st.vista); return; }   // vuelve a Despachos o al Visor
+      const d = st.vista === "novedades" ? st.datos : st.vista === "viajes" ? st.viajes : st.fila;
+      cargar({ silencioso: !!d });
     });
-    const cancel = $("parqueDocCancel"); if (cancel) cancel.addEventListener("click", closeModal);
-    const save = $("parqueDocSave"); if (save) save.addEventListener("click", saveModal);
-    const modal = $("parqueDocModal"); if (modal) modal.addEventListener("click", (ev) => { if (ev.target === modal) closeModal(); });
-
-    // Badge en vivo al cambiar la fecha + vista previa al elegir foto.
-    const live = [
-      ["docSoatFecha",  "docSoatFoto",  "docSoatLink",  "docSoatThumb",  "pdocSoat",  "docSoatBadge"],
-      ["docTecnoFecha", "docTecnoFoto", "docTecnoLink", "docTecnoThumb", "pdocTecno", "docTecnoBadge"],
-      ["docOperFecha",  "docOperFoto",  "docOperLink",  "docOperThumb",  "pdocOper",  "docOperBadge"]
-    ];
-    live.forEach(([fId, fileId, linkId, thumbId, cardId, badgeId]) => {
-      const f = $(fId);
-      if (f) f.addEventListener("input", () => applyDocBadge(cardId, badgeId, f.value));
-      const file = $(fileId);
-      if (file) file.addEventListener("change", () => {
-        const sel = file.files && file.files[0];
-        if (!sel){ return; }
-        const reader = new FileReader();
-        reader.onload = (e) => setThumb(linkId, thumbId, e.target.result);
-        reader.readAsDataURL(sel);
-      });
+    el("nbVistas")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-vista");
+      if (b) cambiarVista(b.dataset.vista);
     });
-
-    // Selector de vista Listado / Por renovar.
-    const listBtn = $("parqueViewListBtn"), vencBtn = $("parqueViewVencBtn");
-    if (listBtn) listBtn.addEventListener("click", () => setParqueView("list"));
-    if (vencBtn) vencBtn.addEventListener("click", () => setParqueView("venc"));
-    const vencDias = $("parqueVencDias");
-    if (vencDias) vencDias.addEventListener("change", () => { if (state.loadedOnce) renderVenc(); });
-
-    document.querySelectorAll('.tab[data-tab="parque-automotor"]').forEach(tab => tab.addEventListener("click", () => {
-      if (!state.loadedOnce && !state.loading) load();
+    el("nbActualizar")?.addEventListener("click", () => cargar());
+    el("nbFecha")?.addEventListener("change", (ev) => irA(ev.target.value));
+    el("nbAnterior")?.addEventListener("click", () => irA(masDias(st.fecha || hoy(), -1)));
+    el("nbSiguiente")?.addEventListener("click", () => irA(masDias(st.fecha || hoy(), 1)));
+    el("nbHoy")?.addEventListener("click", () => irA(hoy()));
+    el("nbBuscar")?.addEventListener("input", (ev) => { st.buscar = ev.target.value || ""; pintarEntradas(); });
+    el("nbChips")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      st.filtro = b.dataset.f || "";
+      el("nbChips").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
+      pintarEntradas();
+    });
+    el("nbChipsRevisar")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      st.revFiltro = b.dataset.r || "pendientes";
+      el("nbChipsRevisar").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
+      if (st.datos) pintarRevisar(st.datos);
+    });
+    // Filtro por tipo y páginas de Por revisar.
+    el("nbRevisar")?.addEventListener("click", (ev) => {
+      const t = ev.target.closest(".nb-rev-tipo");
+      if (t) {
+        st.revTipo = t.dataset.t || "";
+        if (st.datos) pintarRevisar(st.datos);
+        return;
+      }
+      const p = ev.target.closest(".nb-pag-btn");
+      if (p && !p.disabled && st.datos) {
+        const v = p.dataset.pag;
+        st.revPagina = v === "prev" ? (st.revPagina || 1) - 1 : v === "next" ? (st.revPagina || 1) + 1 : Number(v) || 1;
+        pintarRevisar(st.datos);
+        el("nbSecRevisar")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+    el("nbViajesBuscar")?.addEventListener("input", (ev) => { st.buscarViajes = ev.target.value || ""; pintarViajes(); });
+    el("nbCambiosBuscar")?.addEventListener("input", (ev) => { st.cambiosBuscar = ev.target.value || ""; pintarCambios(); });
+    el("nbCambiosChips")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      st.cambiosFiltro = b.dataset.c || "";
+      el("nbCambiosChips").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
+      pintarCambios();
+    });
+    ["nbHoraDesde", "nbHoraHasta"].forEach((id) => el(id)?.addEventListener("change", (ev) => {
+      if (id === "nbHoraDesde") st.horasDesde = ev.target.value || "";
+      else st.horasHasta = ev.target.value || "";
+      pintarViajes();
     }));
+    el("nbHorasChips")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      const [d, h] = (b.dataset.h || "").split("-");
+      st.horasDesde = d || "";
+      st.horasHasta = h || "";
+      pintarViajes();
+    });
+    el("nbViajesAbrir")?.addEventListener("click", () => {
+      st.viajesAbiertos = !st.viajesAbiertos;
+      el("nbViajesAbrir").textContent = st.viajesAbiertos ? "Cerrar todos" : "Abrir todos";
+      pintarViajes();
+    });
+    const cont = el("tab-novedades-base");
+    // Con "Mi base" abierta la pagina usa todo el ancho: el cuadro "Conductores disponibles"
+    // es de la asignacion de turnos y aqui solo quita espacio. Vuelve al cambiar de pestana.
+    const ajustarAncho = () => el("operativoInner")?.classList.toggle("nb-ancho", tabActiva());
+    if (cont && typeof MutationObserver === "function") {
+      new MutationObserver(ajustarAncho).observe(cont, { attributes: true, attributeFilter: ["class"] });
+    }
+    ajustarAncho();
+    cont?.addEventListener("click", (ev) => {
+      const ir = ev.target.closest("[data-ir]");
+      if (ir) {
+        el(ir.dataset.ir)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      const rev = ev.target.closest(".nb-btn-revisar");
+      if (rev) {
+        abrirRevisar(rev.dataset.tipo, rev.dataset.clave);
+        return;
+      }
+      if (ev.target.closest("summary")) return;
+      const f = ev.target.closest("[data-id]");
+      if (f && cont.contains(f)) abrirDetalle(f.dataset.id);
+    });
+    cont?.addEventListener("keydown", (ev) => {
+      if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches("[data-id]")) {
+        ev.preventDefault();
+        abrirDetalle(ev.target.dataset.id);
+      }
+    });
+    el("nbModalCerrar")?.addEventListener("click", cerrarDetalle);
+    el("nbModal")?.addEventListener("click", (ev) => { if (ev.target === el("nbModal")) cerrarDetalle(); });
+    el("nbRevCancelar")?.addEventListener("click", cerrarRevisar);
+    el("nbRevGuardar")?.addEventListener("click", guardarRevision);
+    el("nbRevModal")?.addEventListener("click", (ev) => { if (ev.target === el("nbRevModal")) cerrarRevisar(); });
+    el("nbRevNota")?.addEventListener("input", (ev) => {
+      el("nbRevCuenta").textContent = `${ev.target.value.length}/500`;
+      el("nbRevError").textContent = "";
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      if (!el("nbRevModal")?.classList.contains("hidden")) cerrarRevisar();
+      else if (!el("nbModal")?.classList.contains("hidden")) cerrarDetalle();
+    });
+
+    // El administrador cambia de base desde la cabecera: los datos viejos no sirven.
+    ["btnEnterBase", "btnExitBase"].forEach((id) => {
+      el(id)?.addEventListener("click", () => setTimeout(() => {
+        olvidar();
+        if (tabActiva()) cargar();
+      }, 0));
+    });
+    el("btnLogout")?.addEventListener("click", () => { cerrarDetalle(); cerrarRevisar(); olvidar(); });
+
+    // Cada parte se actualiza sola, solo con la pestana abierta y la pantalla a la vista.
+    // Novedades y viajes solo si se esta viendo el dia de hoy; la fila siempre es en vivo.
+    const tocaActualizar = () => {
+      const v = st.vista;
+      if (!QUE[v]) return false;
+      if (!tabActiva() || document.visibilityState !== "visible" || st.cargando[v]) return false;
+      if (QUE[v].conFecha && st.fecha !== hoy()) return false;
+      if (!el("nbRevModal")?.classList.contains("hidden")) return false;   // no repintar mientras escribe
+      return Date.now() - st.cargadoEn[v] >= CADA_MS[v] - 1000;
+    };
+    setInterval(() => { if (tocaActualizar()) cargar({ silencioso: true }); }, 10 * 1000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && tabActiva() && !st.cargando[st.vista]
+          && QUE[st.vista] && (!QUE[st.vista].conFecha || st.fecha === hoy())
+          && el("nbRevModal")?.classList.contains("hidden")) {
+        cargar({ silencioso: true });
+      }
+    });
   }
 
-  if (document.readyState === "loading"){
+  if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", bind);
   } else {
     bind();
   }
 })();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
