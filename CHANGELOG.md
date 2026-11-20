@@ -18,6 +18,15 @@ Convencion de version:
 
 ---
 
+## [2.11.1] - 2026-11-20
+
+### Cambiado
+- **El Excel del visor ya no sale protegido.** Se puede editar todo. La nota del final ahora dice cuando se descargo y que, si algo de la programacion esta mal, se corrija en CombuAsigna para que todos lo vean igual.
+- **Al imprimir el Excel del visor** sale horizontal y a lo ancho de una hoja.
+
+### Corregido
+- **El Excel del visor salia sin colores en algunos PC**, y como la letra de los buses y de los FICHO es blanca, esas celdas parecian vacias (VEH de Terminal del Norte y las filas FICHO). Ahora los colores se toman del estilo que escribe el propio visor (no de lo que diga el navegador), el relleno se guarda como lo guarda Excel y, si una celda queda sin fondo, la letra sale oscura: el dato siempre se lee.
+
 ## [2.11.0] - 2026-11-18
 
 ### Anadido

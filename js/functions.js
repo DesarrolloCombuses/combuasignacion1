@@ -7499,21 +7499,50 @@ async function renderLiveExcelPreview(){
   liveExcelPreview.innerHTML = html;
 }
 
-// El Excel del visor sale PROTEGIDO (18-nov-2026, pedido del usuario: "que se deje editar solo lo visual, no lo que
-// esta escrito, para evitar discrepancias"): igual al visor (colores, celdas unidas, anchos) y con la hoja bloqueada con
-// una clave al azar que no se guarda ni se muestra. Se puede cambiar el formato (colores, letra, anchos, altos); lo
-// escrito no. Para corregir algo se corrige en CombuAsigna y se descarga de nuevo.
+// El Excel del visor sale igual al visor: colores, celdas unidas y anchos (18-nov-2026). Desde la 2.11.1 (20-nov-2026)
+// sale SIN protección (pedido del usuario) y los colores se toman del estilo que escribe el propio visor (#hex), no de lo
+// que diga el navegador: en un PC el Excel salió sin fondos y con la letra blanca, y los buses y los FICHO parecían vacíos.
+// Acepta #rgb, #rrggbb, rgb()/rgba() con comas o espacios y color(srgb ...). Devuelve "FFRRGGBB" o null (transparente).
 function colorArgbDesdeCss(css){
-  const m = String(css || "").match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
-  if (!m) return null;
-  if (m[4] !== undefined && Number(m[4]) === 0) return null;
-  return "FF" + [m[1], m[2], m[3]].map(n => Number(n).toString(16).padStart(2, "0")).join("").toUpperCase();
+  const s = String(css || "").trim().toLowerCase();
+  if (!s || s === "transparent" || s === "none") return null;
+  let m = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})\b/);
+  if (m) {
+    const h = m[1].length === 3 ? m[1].split("").map(c => c + c).join("") : m[1];
+    return "FF" + h.toUpperCase();
+  }
+  let rgb = null;
+  let alfa = null;
+  m = s.match(/rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/);
+  if (m) {
+    rgb = [m[1], m[2], m[3]].map(v => v.endsWith("%") ? parseFloat(v) * 2.55 : parseFloat(v));
+    alfa = m[4];
+  } else {
+    m = s.match(/color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+%?))?\s*\)/);
+    if (m) { rgb = [m[1], m[2], m[3]].map(v => parseFloat(v) * 255); alfa = m[4]; }
+  }
+  if (!rgb || rgb.some(v => !Number.isFinite(v))) return null;
+  if (alfa !== undefined && alfa !== null && parseFloat(alfa) === 0) return null;
+  return "FF" + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
-function claveAlAzarExcel(){
-  const a = new Uint8Array(24);
-  window.crypto.getRandomValues(a);
-  return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
+// Color de una celda del visor: primero el que escribió el visor en su estilo (no depende del navegador); si no tiene,
+// el que pinta el navegador (las franjas de las filas). que = "fondo" | "letra".
+function colorCeldaVisor(td, que){
+  const estilo = String(td.getAttribute("style") || "");
+  const m = que === "fondo"
+    ? estilo.match(/(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i)
+    : estilo.match(/(?:^|;)\s*color\s*:\s*([^;]+)/i);
+  const propio = m ? colorArgbDesdeCss(m[1]) : null;
+  if (propio) return propio;
+  const est = getComputedStyle(td);
+  return colorArgbDesdeCss(que === "fondo" ? est.backgroundColor : est.color);
+}
+
+function colorEsClaro(argb){
+  if (!argb || argb.length !== 8) return false;
+  const [r, g, b] = [2, 4, 6].map(k => parseInt(argb.slice(k, k + 2), 16));
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 200;
 }
 
 async function exportLiveExcelPreviewTable(){
@@ -7538,7 +7567,12 @@ async function exportLiveExcelPreviewTable(){
     const wb = new ExcelJS.Workbook();
     wb.creator = "CombuAsigna";
     wb.created = new Date();
-    const ws = wb.addWorksheet("Visor", { views: [{ showGridLines: false }] });
+    const ws = wb.addWorksheet("Visor", {
+      views: [{ showGridLines: false }],
+      // al imprimir: horizontal y a lo ancho de una hoja (lo largo, en las hojas que hagan falta)
+      pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
+                   margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } }
+    });
     const anchos = Array.from(table.querySelectorAll("colgroup col")).map(c => parseFloat(c.style.width) || 8);
     if (anchos.length) ws.columns = anchos.map(p => ({ width: Math.max(3, Math.round(p * 1.7)) }));
     const borde = { style: "thin", color: { argb: "FFBFBFBF" } };
@@ -7552,12 +7586,16 @@ async function exportLiveExcelPreviewTable(){
         const cs = Math.max(1, td.colSpan || 1);
         const rs = Math.max(1, td.rowSpan || 1);
         const texto = String(td.innerText || td.textContent || "").replace(/\r/g, "").trim();
-        const est = getComputedStyle(td);
+        const est = getComputedStyle(td);   // letra, negrilla, tamaño y alineación (los colores, con colorCeldaVisor)
         const cell = ws.getCell(ri + 1, ci + 1);
         cell.value = texto;   // como texto: lo mismo que se ve en el visor
-        const fondo = colorArgbDesdeCss(est.backgroundColor);
-        if (fondo && fondo !== "FFFFFFFF") cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo } };
-        const letra = colorArgbDesdeCss(est.color);
+        const fondo = colorCeldaVisor(td, "fondo");
+        const conFondo = !!fondo && fondo !== "FFFFFFFF";
+        // el relleno como lo guarda Excel (fgColor + bgColor 64): algunos programas no pintan el fondo sin el bgColor
+        if (conFondo) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo }, bgColor: { indexed: 64 } };
+        let letra = colorCeldaVisor(td, "letra");
+        // nunca letra blanca sin fondo: si el fondo no sale, el dato igual se lee
+        if (letra && colorEsClaro(letra) && !(conFondo && !colorEsClaro(fondo))) letra = "FF0F172A";
         const peso = parseInt(est.fontWeight, 10) || 400;
         const px = parseFloat(est.fontSize) || 13;
         cell.font = { name: "Calibri", size: Math.max(8, Math.round(px * 0.75)), bold: peso >= 600, ...(letra ? { color: { argb: letra } } : {}) };
@@ -7573,19 +7611,13 @@ async function exportLiveExcelPreviewTable(){
       ultimaFila = ri + 1;
     });
     const nota = ws.getCell(ultimaFila + 2, 1);
-    nota.value = `Archivo de solo lectura de CombuAsigna (${new Date().toLocaleString("es-CO")}): lo escrito no se puede cambiar; `
-      + "el formato sí (colores, letra, anchos). Para corregir algo, corríjalo en CombuAsigna y descargue el visor de nuevo.";
+    nota.value = `Descargado de CombuAsigna el ${new Date().toLocaleString("es-CO")}. Si algo de la programación está mal, `
+      + "corríjalo en CombuAsigna para que todos lo vean igual y descargue el visor de nuevo.";
     nota.font = { italic: true, size: 9, color: { argb: "FF64748B" } };
     nota.alignment = { wrapText: true, vertical: "top" };
     ws.mergeCells(ultimaFila + 2, 1, ultimaFila + 2, Math.max(1, anchos.length || 11));
     ws.getRow(ultimaFila + 2).height = 30;
-    // Protegida: se puede seleccionar y cambiar el formato; nada mas (ni escribir, ni insertar, ni borrar, ni ordenar).
-    await ws.protect(claveAlAzarExcel(), {
-      selectLockedCells: true, selectUnlockedCells: true,
-      formatCells: true, formatColumns: true, formatRows: true,
-      insertColumns: false, insertRows: false, insertHyperlinks: false,
-      deleteColumns: false, deleteRows: false, sort: false, autoFilter: false, pivotTables: false
-    });
+    // 2.11.1: sin protección (pedido del usuario 20-nov-2026); se puede editar todo.
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -7596,7 +7628,7 @@ async function exportLiveExcelPreviewTable(){
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast("Visor descargado: el Excel sale protegido (se puede cambiar el formato, no lo escrito).", "ok");
+    showToast("Visor descargado en Excel, con sus colores.", "ok");
   } catch (error) {
     console.error("No se pudo descargar el visor:", error);
     showToast(`No se pudo descargar el visor: ${error?.message || error}`, "err");

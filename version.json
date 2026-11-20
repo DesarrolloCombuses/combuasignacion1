@@ -1,7 +1,7 @@
 {
-  "version": "2.11.0",
+  "version": "2.11.1",
   "minVersion": "2.9.1",
-  "buildDate": "2026-11-18",
+  "buildDate": "2026-11-20",
   "channel": "stable",
-  "notes": "Nueva pestana 'Mi base', solo para las cuentas de base (el conductor no la ve): 1) Novedades del dia con la foto y la bandeja 'Por revisar', donde la base revisa cada novedad con una nota (entro antes de tiempo, cambio de turno, llego tarde, no entro, turno sin cerrar, jornada de mas de 16 h); 2) Viaje a viaje de sus buses con pasajeros y plata; 3) Enturnamiento en vivo: la fila completa con sus buses resaltados. Ademas: quien cambio que (cada cambio de conductor queda anotado con quien y cuando, y se ve en Turnos del dia y en Mi base -> Cambios) y el Excel del visor sale protegido (se cambia el formato, no lo escrito). Se quitaron las pestanas 'Parque automotor y documentacion de vehiculos' (eso lo maneja el Kardex), 'Planilla de enturnamiento aeropuerto', 'Mapa enturnamiento aeropuerto' (la fila se ve en Mi base), 'Datos compartidos con el cliente', 'Asistencias' (las marcas de cada base se ven en Mi base) y 'Consulta por fechas'."
+  "notes": "El Excel del visor sale sin proteccion (se puede editar) y con sus colores en todos los PC: antes, en algunos, salia sin fondos y los buses y los FICHO parecian vacios. Al imprimirlo sale horizontal y a lo ancho de una hoja."
 }

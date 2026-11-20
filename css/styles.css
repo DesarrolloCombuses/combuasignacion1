@@ -2289,7 +2289,7 @@ td.td-cambiada{ box-shadow:inset 0 0 0 2px var(--color-warning-200); }
 }
 .cambio-marca.cambio-ok{ color:var(--color-success-700); }
 .cambio-marca.cambio-info{ color:var(--color-info); }
-.visor-protegido{ font-size:var(--fs-12); }
+.visor-nota{ font-size:var(--fs-12); }
 
 /* v2.11.0 (19-nov-2026): Despachos en vivo y Visor Excel van dentro de Mi base (sus pestañas de arriba no se ven). */
 .tab.mb-dentro{ display:none !important; }
