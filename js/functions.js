@@ -973,6 +973,23 @@ document.addEventListener("dragstart", clearDragPayload, true);
 document.addEventListener("dragend", clearDragPayload, true);
 
 function autoScrollDuringDrag(clientY){
+  // v2.12.0: si la tabla de Turnos del dia tiene su propio scroll (celular), se mueve ella; antes solo se movia la
+  // pagina y para llevar un conductor a una fila de abajo habia que soltarlo, bajar y volver a arrastrarlo.
+  const vp = document.getElementById("gridViewport2");
+  if (vp && vp.offsetParent !== null && vp.scrollHeight > vp.clientHeight + 2) {
+    const rc = vp.getBoundingClientRect();
+    if (clientY >= rc.top - 10 && clientY <= rc.bottom + 10) {
+      const borde = 70;
+      if (clientY < rc.top + borde && vp.scrollTop > 0) {
+        vp.scrollTop -= Math.max(6, Math.round(((rc.top + borde - clientY) / borde) * 24));
+        return;
+      }
+      if (clientY > rc.bottom - borde && vp.scrollTop + vp.clientHeight < vp.scrollHeight) {
+        vp.scrollTop += Math.max(6, Math.round(((clientY - (rc.bottom - borde)) / borde) * 24));
+        return;
+      }
+    }
+  }
   const edge = 90;
   const maxStep = 28;
   const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
@@ -2455,6 +2472,71 @@ const DRIVERS_CEDULA_CACHE_KEY = "driverCedulaByNameV1";
 // Mapa nombre(normalizado por nameKeyForMatch) -> cedula, tomado del CSV de conductores.
 let driverCedulaByName = new Map();
 
+// v2.12.0: el ERP (employees, el del Kardex) es el que sabe quien trabaja hoy. La hoja de conductores (la lista de
+// Sonar) sigue con retirados habilitados: el 25-nov eran 64 de los 201 que veian las bases. Esos no se le muestran a
+// ninguna base; el resumen de la carga dice cuantos y quienes.
+const RPC_NO_ACTIVOS_ERP = "afiliados_conductores_no_activos";
+const ERP_NO_ACTIVOS_CACHE_KEY = "conductoresNoActivosErpV1";
+let driversFueraPorErp = [];   // [{ nombre, base, motivo: "retirado" | "no_esta" }]
+let erpRevisionNota = "";      // aviso cuando no se pudo revisar con el ERP
+let driversHojaPorBase = {};   // { "3": [{ nombre, cedula }] } los habilitados de la hoja con base, activos o no (historial)
+
+// Cuantos de la hoja en esta base (y sus bases extra) no salen en el panel porque en el ERP no estan activos.
+function conductoresFueraDelPanel(base){
+  const bases = getDriverBasesForBase(base);
+  const fuera = new Set();
+  (driversFueraPorErp || []).forEach(x => {
+    if (x.base && bases.some(b => sameBase(x.base, b))) fuera.add(norm(x.nombre));
+  });
+  return fuera.size;
+}
+
+// Abre Mi base · Historial de conductores (desde el aviso del panel de conductores).
+function abrirHistorialConductores(){
+  const tab = document.querySelector('.tab[data-tab="novedades-base"]');
+  if (!tab || tab.offsetParent === null) return;
+  tab.click();
+  setTimeout(() => document.querySelector('#nbVistas .nb-vista[data-vista="conductores"]')?.click(), 0);
+}
+
+function claveConductorErp(nombre, cedula){
+  const c = String(cedula || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  return c.length >= 5 ? c : `N:${nameKeyForMatch(nombre)}`;
+}
+
+// Devuelve { mapa: Map(clave -> motivo) con los que NO estan activos en el ERP, nota }. Si la consulta falla usa la
+// ultima revision guardada en este navegador; si tampoco hay, mapa = null (se muestran todos y se avisa).
+async function conductoresNoActivosERP(lista){
+  if (!lista.length) return { mapa: new Map(), nota: "" };
+  const cli = (typeof planillaSupabaseClient !== "undefined" && planillaSupabaseClient) ? planillaSupabaseClient : null;
+  if (cli && currentUserId) {
+    try {
+      const { data, error } = await cli.rpc(RPC_NO_ACTIVOS_ERP, {
+        p_conductores: lista.map(x => ({ k: x.k, c: x.cedula, n: x.nombre }))
+      });
+      if (error) throw error;
+      const mapa = new Map((Array.isArray(data) ? data : []).map(x => [String(x.k), x.motivo === "no_esta" ? "no_esta" : "retirado"]));
+      try {
+        localStorage.setItem(ERP_NO_ACTIVOS_CACHE_KEY, JSON.stringify({ en: Date.now(), fuera: Object.fromEntries(mapa) }));
+      } catch (e) {}
+      return { mapa, nota: "" };
+    } catch (e) {
+      console.warn("[conductores] no se pudo revisar con el ERP:", e?.message || e);
+    }
+  }
+  try {
+    const guardado = JSON.parse(localStorage.getItem(ERP_NO_ACTIVOS_CACHE_KEY) || "null");
+    if (guardado && guardado.fuera && typeof guardado.fuera === "object") {
+      const cuando = new Date(Number(guardado.en) || 0).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
+      return {
+        mapa: new Map(Object.entries(guardado.fuera)),
+        nota: `No se pudo revisar con el ERP quien esta activo; se usa la ultima revision (${cuando}).`
+      };
+    }
+  } catch (e) {}
+  return { mapa: null, nota: "No se pudo revisar con el ERP quien esta activo: se muestran todos los habilitados de la hoja." };
+}
+
 function loadDriversCache(){
   try {
     const raw = localStorage.getItem(DRIVERS_CACHE_KEY);
@@ -3463,6 +3545,118 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
   }
 }
 
+/* ---------- Turnos del dia mas claro (v2.12.0) ----------
+   Barra de avance, asignar con un toque (conductor del panel -> casilla vacia), "solo lo que falta" y "siguiente
+   vacia". Todo sale de lo que se ve en la tabla (#grid2): las casillas con conductor (td.drop.filled), las vacias con
+   nota (td.drop.con-nota) y las vacias sin nada. */
+let conductorElegido = null;     // conductor tocado en el panel, esperando la casilla
+let soloFaltanTurnos = false;    // "Ver solo lo que falta"
+let ultimaVaciaMostrada = null;  // para que "Ir a la siguiente vacia" avance
+
+function marcarFilaTurnos(tr){
+  if (!tr) return;
+  const falta = [...tr.querySelectorAll("td.drop")].some(td => !td.classList.contains("filled") && !td.classList.contains("con-nota"));
+  tr.classList.toggle("fila-completa", !falta);
+  tr.classList.toggle("fila-falta", falta);
+}
+
+function elegirConductor(nombre){
+  conductorElegido = (conductorElegido === nombre) ? null : nombre;
+  pintarEleccionConductor();
+}
+
+function soltarConductorElegido(){
+  if (!conductorElegido) return;
+  conductorElegido = null;
+  pintarEleccionConductor();
+}
+
+function pintarEleccionConductor(){
+  document.querySelectorAll("#driversList .driver-item").forEach(d => d.classList.toggle("elegido", d.dataset.nombre === conductorElegido));
+  const grid = document.getElementById("grid2");
+  if (grid) grid.classList.toggle("eligiendo", !!conductorElegido);
+  const aviso = document.getElementById("avisoElegido");
+  if (aviso) {
+    aviso.hidden = !conductorElegido;
+    aviso.innerHTML = conductorElegido
+      ? `<span>Va a poner a <b>${escapeHtml(conductorElegido)}</b>: toque la casilla <b>sin conductor</b> donde va.</span>`
+        + `<button type="button" id="avisoElegidoCancelar">Cancelar</button>`
+      : "";
+  }
+}
+
+function pintarAvanceTurnos(){
+  const caja = document.getElementById("avanceTurnos");
+  if (!caja || !gridBody2) return;
+  const celdas = [...gridBody2.querySelectorAll("td.drop")];
+  const fecha = normalizeDateToISO(filterDate2?.value || "");
+  if (!currentBase || !fecha || !celdas.length) {
+    caja.hidden = true;
+    soltarConductorElegido();
+    return;
+  }
+  const total = celdas.length;
+  const conConductor = celdas.filter(td => td.classList.contains("filled")).length;
+  const conNota = celdas.filter(td => td.classList.contains("con-nota")).length;
+  const faltan = total - conConductor - conNota;
+  const libres = getAvailableDriversForBase(getBaseCanonical(currentBase));
+  if (conductorElegido && !libres.includes(conductorElegido)) conductorElegido = null;
+  const listas = conConductor + conNota;
+  const pct = total ? Math.round((listas / total) * 100) : 100;
+  caja.hidden = false;
+  caja.classList.toggle("completo", faltan === 0);
+  caja.innerHTML =
+    `<div class="avance-num"><b>${listas}</b> de ${total} casillas listas</div>`
+    + `<div class="avance-barra" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${listas}"><span style="width:${pct}%"></span></div>`
+    + `<div class="avance-acciones">`
+    +   `<label class="av-solo"><input type="checkbox" id="avSoloFaltan"${soloFaltanTurnos ? " checked" : ""}> Ver solo lo que falta</label>`
+    +   `<button type="button" class="av-btn" id="avSiguiente"${faltan ? "" : " disabled"}>Ir a la siguiente vacía &#8595;</button>`
+    + `</div>`
+    + `<div class="avance-chips">`
+    +   `<span class="av-chip av-ok">${conConductor} con conductor</span>`
+    +   (faltan ? `<span class="av-chip av-falta">${faltan} sin conductor</span>` : `<span class="av-chip av-ok">Ninguna vacía</span>`)
+    +   (conNota ? `<span class="av-chip av-nota">${conNota} con nota (taller, etc.)</span>` : "")
+    +   `<span class="av-chip av-info">${libres.length} ${libres.length === 1 ? "conductor" : "conductores"} sin ubicar</span>`
+    + `</div>`
+    + `<div class="aviso-elegido" id="avisoElegido" hidden></div>`;
+  const grid = document.getElementById("grid2");
+  if (grid) grid.classList.toggle("solo-faltan", soloFaltanTurnos);
+  pintarEleccionConductor();
+  const tab = document.getElementById("tab-programacion2");
+  if (tab) tab.style.setProperty("--av-alto", `${caja.offsetHeight}px`);
+}
+
+function irASiguienteVacia(){
+  const pend = [...(gridBody2?.querySelectorAll("td.drop:not(.filled):not(.con-nota)") || [])].filter(td => td.offsetParent !== null);
+  if (!pend.length) {
+    showToast("No quedan casillas sin conductor.", "ok");
+    return;
+  }
+  const i = pend.indexOf(ultimaVaciaMostrada);
+  const sig = pend[(i + 1) % pend.length];
+  ultimaVaciaMostrada = sig;
+  sig.scrollIntoView({ behavior: "smooth", block: "center" });
+  sig.classList.remove("destello");
+  void sig.offsetWidth;
+  sig.classList.add("destello");
+  setTimeout(() => sig.classList.remove("destello"), 1700);
+  if (!conductorElegido) sig.querySelector("input.driver-typed-input")?.focus({ preventScroll: true });
+}
+
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("#avSiguiente")) irASiguienteVacia();
+  else if (ev.target.closest("#avisoElegidoCancelar")) soltarConductorElegido();
+});
+document.addEventListener("change", (ev) => {
+  if (ev.target && ev.target.id === "avSoloFaltan") {
+    soloFaltanTurnos = !!ev.target.checked;
+    document.getElementById("grid2")?.classList.toggle("solo-faltan", soloFaltanTurnos);
+  }
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && conductorElegido) soltarConductorElegido();
+});
+
 function renderTable2(){
   if (!gridHead2 || !gridBody2) return;
   if (isTargetTableEditing() && gridBody2.children.length > 0) {
@@ -3513,9 +3707,11 @@ function renderTable2(){
   headers.forEach(h => {
     const th = document.createElement("th");
     th.textContent = h;
+    th.dataset.campo = h;   // v2.12.0: para esconder FECHA y BASE con una base abierta (ya estan arriba)
     headRow.appendChild(th);
   });
   gridHead2.appendChild(headRow);
+  document.getElementById("grid2")?.classList.toggle("con-base", !!currentBase);
 
   const baseKey = getBaseKeyFromRows(rowsTarget);
   const fechaKey = getFechaKeyFromArray(rowsTarget);
@@ -3667,6 +3863,7 @@ function renderTable2(){
         const renderLabel = () => {
           const assignedNow = extractConductorName(r[k] || "");
           const noteNow = getConductorNote(r, k);
+          td.classList.toggle("con-nota", !assignedNow && !!noteNow);
           if (assignedNow) {
             td.classList.add("filled");
             labelWrap.innerHTML = `
@@ -3676,12 +3873,15 @@ function renderTable2(){
           } else {
             td.classList.remove("filled");
             labelWrap.innerHTML = `
-              <span class="muted">${UNASSIGNED_LABEL}</span>
-              <span class="slot-hint">Copia una nota o asigna conductor</span>
+              <span class="slot-vacio">${noteNow ? "Sin conductor · con nota" : "Sin conductor"}</span>
               ${noteNow ? `<div class="cell-note">${noteNow}</div>` : ""}
               <button class="btn-note" type="button">${noteNow ? "Editar nota" : "Agregar nota"}</button>
             `;
             wireNoteButton();
+          }
+          if (tr.isConnected) {
+            marcarFilaTurnos(tr);
+            pintarAvanceTurnos();
           }
         };
 
@@ -3689,18 +3889,13 @@ function renderTable2(){
         td.appendChild(labelWrap);
 
         const editorWrap = document.createElement("div");
-        editorWrap.style.marginTop = "6px";
+        editorWrap.className = "driver-cell-editor";
         const input = document.createElement("input");
         input.type = "text";
         input.className = "driver-typed-input";
-        input.placeholder = "Escribe o pega conductor...";
+        input.placeholder = "Escriba el nombre…";
         input.autocomplete = "off";
         input.setAttribute("list", typedDatalistId);
-        input.style.width = "100%";
-        input.style.fontSize = "12px";
-        input.style.padding = "4px 6px";
-        input.style.border = "1px solid #cbd5e1";
-        input.style.borderRadius = "6px";
         input.value = assigned || "";
         editorWrap.appendChild(input);
         td.appendChild(editorWrap);
@@ -3826,6 +4021,33 @@ function renderTable2(){
           scheduleTargetEditSave(`Remocion guardada en DB nueva (${k}).`);
           renderDrivers();
         };
+        // v2.12.0: asignar con un toque: se escoge el conductor en el panel y se toca la casilla sin conductor.
+        // Al apretar (mousedown), no al soltar: el "click" sobre la casilla a veces no llega (la lista de nombres que
+        // se abre al tocarla se lo come, en el celular) y asi tampoco se abre el teclado.
+        td.addEventListener("mousedown", (ev) => {
+          if (!conductorElegido || extractConductorName(r[k] || "")) return;
+          // con un conductor escogido, cualquier parte de la casilla vacia lo pone (tambien donde esta "Agregar nota")
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nombre = conductorElegido;
+          try {
+            r[k] = nombre;
+            setConductorNote(r, k, "");
+            input.value = extractConductorName(r[k] || "");
+            renderLabel();
+            pendingAssignmentConfirmations.push({
+              conductor: extractConductorName(r[k] || "") || String(nombre || ""),
+              vehiculo: String(r[getVehiculoKey(r)] || "").trim(),
+              slot: k
+            });
+            scheduleTargetEditSave(`Asignacion guardada en DB nueva (${k}).`);
+            conductorElegido = null;
+            if (document.activeElement === input) input.blur();
+            renderDrivers();
+          } catch (e) {
+            reportError("No se pudo asignar el conductor en Turnos del dia", e);
+          }
+        }, true);
       } else if (vehiculoKey && k === vehiculoKey) {
         const vehLabel = v || "";
         const rowLabel = getSwapRowLabel(r, { numeroKey, puestoKey, iniciaKey });
@@ -3938,9 +4160,11 @@ function renderTable2(){
       tr.appendChild(td);
     });
     gridBody2.appendChild(tr);
+    marcarFilaTurnos(tr);
   });
   rebuildAssigned();
   renderDrivers();
+  pintarAvanceTurnos();
   if (typeof window.combuasignaMarcarCambios === "function") window.combuasignaMarcarCambios();
 }
 
@@ -6610,21 +6834,46 @@ function dedupeProgramacionRows(inputRows){
 function renderDriversCsvSummary(totalEnabled, totalBases, opts = {}){
   const sufijo = opts.cache ? " (cache)" : "";
   const sinBase = driversSinBaseAsignada.length;
+  const fueraErp = driversFueraPorErp.length;
+  const retirados = driversFueraPorErp.filter(x => x.motivo === "retirado").length;
+  const noEstan = fueraErp - retirados;
 
   if (lblDriversCount) {
-    lblDriversCount.textContent = sinBase
-      ? `Conductores: ${totalEnabled} en ${totalBases} bases - ${sinBase} sin base${sufijo}`
-      : `Conductores: ${totalEnabled} en ${totalBases} bases${sufijo}`;
-    lblDriversCount.classList.toggle("pill-warn", sinBase > 0);
-    lblDriversCount.title = sinBase
-      ? `${sinBase} conductores habilitados no tienen base en la hoja de conductores, asi que no aparecen en ninguna base de la aplicacion.`
-      : "Conductores habilitados con base asignada en la hoja de conductores";
+    lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases`
+      + (fueraErp ? ` - ${fueraErp} fuera por el ERP` : "")
+      + (sinBase ? ` - ${sinBase} sin base` : "") + sufijo;
+    lblDriversCount.classList.toggle("pill-warn", sinBase > 0 || !!erpRevisionNota);
+    lblDriversCount.title = [
+      "Conductores habilitados en la hoja de conductores, con base y activos en el ERP.",
+      fueraErp ? `${fueraErp} habilitados en la hoja no salen porque en el ERP no estan activos.` : "",
+      sinBase ? `${sinBase} conductores habilitados no tienen base en la hoja de conductores, asi que no aparecen en ninguna base de la aplicacion.` : "",
+      erpRevisionNota
+    ].filter(Boolean).join(" ");
   }
 
   if (!csvStatus) return;
   const partes = [];
   if (opts.nota) partes.push(`<div>${escapeHtml(opts.nota)}</div>`);
+  if (erpRevisionNota) {
+    partes.push(`<div style="margin-bottom:6px;padding:8px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb">${escapeHtml(erpRevisionNota)}</div>`);
+  }
   partes.push(`<div>Cargados <strong>${totalEnabled}</strong> conductores en ${totalBases} bases${sufijo}.</div>`);
+  if (fueraErp) {
+    const porque = [retirados ? `${retirados} estan retirados` : "", noEstan ? `${noEstan} no estan creados` : ""].filter(Boolean).join(" y ");
+    partes.push(
+      `<div class="csv-fuera-erp" style="margin-top:8px;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc">` +
+        `<strong>${fueraErp} conductores habilitados en la hoja no se muestran a las bases</strong> porque en el ERP ${porque}. ` +
+        `Si alguno si esta trabajando, que Gestion Humana lo active (o lo cree) en el ERP y aparecera en la siguiente carga.` +
+        `<details style="margin-top:6px"><summary style="cursor:pointer">Ver los ${fueraErp} nombres</summary>` +
+          `<div style="max-height:180px;overflow:auto;margin-top:6px;font-size:12px;line-height:1.6">` +
+            driversFueraPorErp.map(x =>
+              `${escapeHtml(x.base ? "Base " + x.base : "Sin base")} · ${escapeHtml(x.nombre)} · ` +
+              (x.motivo === "no_esta" ? "no esta en el ERP" : "retirado en el ERP")).join("<br>") +
+          `</div>` +
+        `</details>` +
+      `</div>`
+    );
+  }
   if (driversInactivosCount) {
     partes.push(`<div>${driversInactivosCount} filas inactivas (status distinto de ENABLED). Es lo normal: no se cargan.</div>`);
   }
@@ -6726,6 +6975,7 @@ async function loadDriversFromCSV() {
     let totalEnabled = 0;
     const sinBase = [];      // habilitados sin base: no se pueden usar en ninguna
     let inactivos = 0;       // status distinto de ENABLED
+    const habilitados = [];  // ENABLED, con base o sin ella; antes de cruzarlos con el ERP
 
     for (let i = 1; i < lines.length; i++) {
       const values = parseCsvRow(lines[i]);
@@ -6747,13 +6997,26 @@ async function loadDriversFromCSV() {
         // fila sin nombre: no es un conductor
       } else if (status !== 'ENABLED') {
         inactivos++;
-      } else if (baseMatch) {
-        const baseNumber = baseMatch[1];
-        if (!newDriversByBase[baseNumber]) newDriversByBase[baseNumber] = [];
-        newDriversByBase[baseNumber].push(nombre);
+      } else {
+        habilitados.push({ k: claveConductorErp(nombre, cedula), nombre, cedula, base: baseMatch ? baseMatch[1] : "" });
+      }
+    }
+
+    // v2.12.0: fuera los que en el ERP no estan activos (retirados o sin crear), tengan base o no.
+    const revisionErp = await conductoresNoActivosERP(habilitados);
+    const fueraErp = [];
+    const hojaPorBase = {};
+    for (const h of habilitados) {
+      if (h.base) (hojaPorBase[h.base] = hojaPorBase[h.base] || []).push({ nombre: h.nombre, cedula: h.cedula });
+      const motivo = revisionErp.mapa ? revisionErp.mapa.get(h.k) : null;
+      if (motivo) {
+        fueraErp.push({ nombre: h.nombre, base: h.base, motivo });
+      } else if (h.base) {
+        if (!newDriversByBase[h.base]) newDriversByBase[h.base] = [];
+        newDriversByBase[h.base].push(h.nombre);
         totalEnabled++;
       } else {
-        sinBase.push(nombre);
+        sinBase.push(h.nombre);
       }
     }
 
@@ -6765,6 +7028,10 @@ async function loadDriversFromCSV() {
     driversByBase = newDriversByBase;
     driversSinBaseAsignada = sinBase.slice().sort((a, b) => a.localeCompare(b, "es"));
     driversInactivosCount = inactivos;
+    driversFueraPorErp = fueraErp.sort((a, b) =>
+      ((Number(a.base) || 999) - (Number(b.base) || 999)) || a.nombre.localeCompare(b.nombre, "es"));
+    erpRevisionNota = revisionErp.nota;
+    driversHojaPorBase = hojaPorBase;
     if (newCedulaByName.size) driverCedulaByName = newCedulaByName;
     saveDriversCache();
 
@@ -6794,6 +7061,8 @@ async function loadDriversFromCSV() {
       // conviene no arrastrar la cuenta de la carga anterior como si fuera de esta.
       driversSinBaseAsignada = [];
       driversInactivosCount = 0;
+      driversFueraPorErp = [];   // el cache se guardo ya sin los que no estan activos en el ERP
+      erpRevisionNota = "";
       renderDriversCsvSummary(totalEnabled, totalBases, {
         cache: true,
         nota: "Sin internet para Google Sheet; usando cache local de conductores."
@@ -6804,6 +7073,8 @@ async function loadDriversFromCSV() {
     } else {
       driversSinBaseAsignada = [];
       driversInactivosCount = 0;
+      driversFueraPorErp = [];
+      erpRevisionNota = "";
       lblDriversCount.textContent = "Conductores: 0 en 0 bases";
       lblDriversCount.classList.remove("pill-warn");
       csvStatus.innerHTML = 'Error al cargar conductores';
@@ -7105,6 +7376,23 @@ function renderDrivers(){
     + `${reparto.libres.length} sin ubicar.`;
   list.appendChild(resumen);
 
+  // v2.12.0: los que la hoja tiene en la base pero en el ERP estan retirados (o no estan creados) no salen en el
+  // panel; se dice cuantos y "Ver cuales" abre Mi base · Historial de conductores.
+  const fueraErp = conductoresFueraDelPanel(base);
+  if (fueraErp) {
+    const aviso = document.createElement("div");
+    aviso.className = "muted driver-fuera-erp";
+    aviso.style.cssText = "padding:6px 8px;margin-bottom:8px;font-size:11px;text-align:center;border:1px dashed #cbd5e1;border-radius:8px";
+    const tabMiBase = document.querySelector('.tab[data-tab="novedades-base"]');
+    aviso.innerHTML = `No se muestran <b>${fueraErp}</b> ${fueraErp === 1 ? "conductor que en el ERP esta retirado o no esta creado"
+      : "conductores que en el ERP estan retirados o no estan creados"}.`
+      + (tabMiBase && tabMiBase.offsetParent !== null
+        ? ` <button type="button" class="driver-fuera-ver" style="background:none;border:0;padding:0;font:inherit;color:var(--color-primary);font-weight:600;text-decoration:underline;cursor:pointer">Ver cuales</button>`
+        : "");
+    aviso.querySelector(".driver-fuera-ver")?.addEventListener("click", abrirHistorialConductores);
+    list.appendChild(aviso);
+  }
+
   if (dateStatus.state === "needs_states") {
     const info = document.createElement("div");
     info.className = "muted";
@@ -7143,11 +7431,21 @@ function renderDrivers(){
         highlightDropTargets(true);
       };
       div.ondragend = () => highlightDropTargets(false);
+      // v2.12.0: tocar el conductor lo escoge; despues se toca la casilla vacia (o se arrastra, como antes).
+      div.dataset.nombre = name;
+      div.title = "Toque para escogerlo y luego toque la casilla vacia (o arrastrelo)";
+      if (name === conductorElegido) div.classList.add("elegido");
+      div.addEventListener("click", () => elegirConductor(name));
+      div.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); elegirConductor(name); }
+      });
+      div.addEventListener("dragstart", () => soltarConductorElegido());
       
       list.appendChild(div);
     });
   updateWorkflowGuide();
   refreshNovedadesManualAutocomplete2();
+  pintarAvanceTurnos();
 }
 
 /* ===================== NOVEDADES ===================== */
@@ -10234,6 +10532,8 @@ function bindWindowEvents(){
   const RPC_VIAJES = "afiliados_viajes_base";
   const RPC_FILA = "afiliados_fila_base";
   const RPC_CAMBIOS = "combuasigna_cambios_dia";
+  const RPC_HISTORIAL = "afiliados_historial_conductores";   // v2.12.0: historial de conductores de la base (con el ERP)
+  const RPC_RELEVOS = "afiliados_relevos_base";   // v2.12.0: a qué hora se entregó el carro (GPS + marcas)
   const FOTO_BUCKET = "asistencia-fotos";
   const FOTO_SEG = 600;            // vigencia de cada foto firmada
   const FOTO_DIAS = 15;            // el biometrico borra las fotos a los 15 dias
@@ -10241,7 +10541,8 @@ function bindWindowEvents(){
   const DIAS_ATRAS = 62;           // las funciones aceptan hasta 2 meses atras
   const FILA_VIEJA_MS = 3 * 60 * 1000;
   // Cada cuanto se actualiza sola cada parte (solo con la pestana abierta y la pantalla a la vista).
-  const CADA_MS = { novedades: 60 * 1000, viajes: 2 * 60 * 1000, fila: 30 * 1000, cambios: 60 * 1000 };
+  const CADA_MS = { novedades: 60 * 1000, viajes: 2 * 60 * 1000, fila: 30 * 1000, cambios: 60 * 1000, relevos: 2 * 60 * 1000,
+    conductores: 10 * 60 * 1000 };
   // Los cambios se pueden ver hasta 7 dias adelante: las bases arman la programacion de manana.
   const DIAS_ADELANTE_CAMBIOS = 7;
   const PUNTOS_FILA = ["Aeropuerto", "Almacentro", "Nutibara", "Terminal Norte"];
@@ -10283,11 +10584,17 @@ function bindWindowEvents(){
     viajes: null,
     fila: null,
     cambios: null,
+    relevos: null,
+    conductores: null,    // historial de conductores
+    conductoresFiltro: "",
+    conductoresBuscar: "",
+    relevosFiltro: "",
+    relevosBuscar: "",
     cambiosFiltro: "",
     cambiosBuscar: "",
-    cargando: { novedades: false, viajes: false, fila: false, cambios: false },
-    pedido: { novedades: 0, viajes: 0, fila: 0, cambios: 0 },
-    cargadoEn: { novedades: 0, viajes: 0, fila: 0, cambios: 0 },
+    cargando: { novedades: false, viajes: false, fila: false, cambios: false, relevos: false, conductores: false },
+    pedido: { novedades: 0, viajes: 0, fila: 0, cambios: 0, relevos: 0, conductores: 0 },
+    cargadoEn: { novedades: 0, viajes: 0, fila: 0, cambios: 0, relevos: 0, conductores: 0 },
     filtro: "",
     buscar: "",
     revFiltro: "pendientes",
@@ -10468,7 +10775,7 @@ function bindWindowEvents(){
   }
 
   function olvidar(){
-    ["novedades", "viajes", "fila", "cambios"].forEach((k) => {
+    ["novedades", "viajes", "fila", "cambios", "relevos", "conductores"].forEach((k) => {
       st.pedido[k]++;
       st.cargando[k] = false;
       st.cargadoEn[k] = 0;
@@ -10477,14 +10784,18 @@ function bindWindowEvents(){
     st.viajes = null;
     st.fila = null;
     st.cambios = null;
+    st.relevos = null;
+    st.conductores = null;
     st.urls.clear();
     ["nbResumen", "nbPersonal", "nbRevisar", "nbEntradas", "nbMotivos", "nbFaltan", "nbSalidas",
-      "nbViajesResumen", "nbViajes", "nbFilaAviso", "nbMisBuses", "nbFila", "nbCambiosResumen", "nbCambios"].forEach((id) => {
+      "nbViajesResumen", "nbViajes", "nbFilaAviso", "nbMisBuses", "nbFila", "nbCambiosResumen", "nbCambios", "nbRelevosResumen", "nbRelevos",
+      "nbConductoresResumen", "nbConductores"].forEach((id) => {
       const e = el(id);
       if (e) e.innerHTML = "";
     });
     ["nbCuentaRevisar", "nbCuentaEntradas", "nbCuentaMotivos", "nbCuentaFaltan", "nbCuentaSalidas",
-      "nbCuentaViajes", "nbCuentaMisBuses", "nbNumRevisar", "nbCuentaCambios", "nbNumCambios"].forEach((id) => {
+      "nbCuentaViajes", "nbCuentaMisBuses", "nbNumRevisar", "nbCuentaCambios", "nbNumCambios", "nbCuentaRelevos", "nbNumRelevos",
+      "nbCuentaConductores"].forEach((id) => {
       const e = el(id);
       if (e) e.textContent = "";
     });
@@ -10505,6 +10816,7 @@ function bindWindowEvents(){
     if (s) {
       s.textContent = EXTERNAS[st.vista] ? EXTERNAS[st.vista].nombre : st.vista === "fila"
         ? "Enturnamiento en vivo"
+        : st.vista === "conductores" ? "Historial de conductores"
         : (st.fecha ? `${fechaLarga(st.fecha)}${st.fecha === h ? " · hoy" : ""}` : "");
     }
     const maxDia = diaMaximo();
@@ -10517,8 +10829,8 @@ function bindWindowEvents(){
     if (sig) sig.disabled = !st.fecha || st.fecha >= maxDia;
     const ant = el("nbAnterior");
     if (ant) ant.disabled = !st.fecha || st.fecha <= masDias(h, -DIAS_ATRAS);
-    // La fila es en vivo: no tiene dia para escoger.
-    el("nbDia")?.classList.toggle("nb-dia-vivo", st.vista === "fila");
+    // La fila es en vivo y el historial es de todos los dias: no tienen dia para escoger.
+    el("nbDia")?.classList.toggle("nb-dia-vivo", st.vista === "fila" || st.vista === "conductores");
   }
 
   /* ---------- carga ---------- */
@@ -10526,7 +10838,9 @@ function bindWindowEvents(){
     novedades: { rpc: RPC_NOVEDADES, txt: "las novedades", conFecha: true },
     viajes: { rpc: RPC_VIAJES, txt: "el viaje a viaje", conFecha: true },
     fila: { rpc: RPC_FILA, txt: "la fila", conFecha: false },
-    cambios: { rpc: RPC_CAMBIOS, txt: "los cambios", conFecha: true }
+    cambios: { rpc: RPC_CAMBIOS, txt: "los cambios", conFecha: true },
+    relevos: { rpc: RPC_RELEVOS, txt: "los relevos", conFecha: true },
+    conductores: { rpc: RPC_HISTORIAL, txt: "el historial de conductores", conFecha: false }
   };
 
   async function cargar(opc = {}){
@@ -10554,6 +10868,7 @@ function bindWindowEvents(){
     if (!opc.silencioso && vista === st.vista) setEstado(`Cargando ${q.txt}…`, "cargando");
     try {
       const args = q.conFecha ? { p_fecha: st.fecha, p_base: etiquetaBase(base) } : { p_base: etiquetaBase(base) };
+      if (vista === "conductores") args.p_hoja = hojaDeLaBase(base);
       const { data, error } = await cli.rpc(q.rpc, args);
       if (pedido !== st.pedido[vista]) return;   // ya se pidio otro dia u otra base
       if (error) throw error;
@@ -10561,13 +10876,15 @@ function bindWindowEvents(){
       if (vista === "novedades") st.datos = data;
       else if (vista === "viajes") st.viajes = data;
       else if (vista === "cambios") st.cambios = data;
+      else if (vista === "relevos") st.relevos = data;
+      else if (vista === "conductores") st.conductores = data;
       else st.fila = data;
       st.cargadoEn[vista] = Date.now();
       if (vista === st.vista) {
         pintarVista(vista);
         const h = new Date().toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
         const vivo = vista === "fila" || data.es_hoy;
-        const cada = vista === "fila" ? "30 segundos" : vista === "viajes" ? "2 minutos" : "minuto";
+        const cada = vista === "fila" ? "30 segundos" : (vista === "viajes" || vista === "relevos") ? "2 minutos" : "minuto";
         if (vista === "cambios") setEstado(`Actualizado a las ${h}${data.es_hoy ? " · se actualiza solo cada minuto" : ""}`, "ok");
         if (vista !== "cambios") setEstado(`Actualizado a las ${h}${vivo ? ` · se actualiza solo cada ${cada}` : ""}`, "ok");
       }
@@ -10592,6 +10909,8 @@ function bindWindowEvents(){
     if (vista === "novedades") pintar();
     else if (vista === "viajes") pintarViajes();
     else if (vista === "cambios") pintarCambios();
+    else if (vista === "relevos") pintarRelevos();
+    else if (vista === "conductores") pintarConductores();
     else pintarFila();
   }
 
@@ -10639,7 +10958,7 @@ function bindWindowEvents(){
       b.classList.toggle("activa", on);
       b.setAttribute("aria-selected", on ? "true" : "false");
     });
-    ["nbVistaNovedades", "nbVistaViajes", "nbVistaFila", "nbVistaCambios"].forEach((id) => el(id)?.classList.add("hidden"));
+    ["nbVistaNovedades", "nbVistaViajes", "nbVistaFila", "nbVistaCambios", "nbVistaRelevos", "nbVistaConductores"].forEach((id) => el(id)?.classList.add("hidden"));
     Object.keys(EXTERNAS).forEach((k) => {
       const on = k === v;
       el(EXTERNAS[k].caja)?.classList.toggle("hidden", !on);
@@ -10679,6 +10998,7 @@ function bindWindowEvents(){
       st.fecha = hoy();
       st.datos = null;
       st.viajes = null;
+      st.relevos = null;
     }
     el("nbVistas")?.querySelectorAll(".nb-vista").forEach((b) => {
       const on = b.dataset.vista === v;
@@ -10689,8 +11009,10 @@ function bindWindowEvents(){
     el("nbVistaViajes")?.classList.toggle("hidden", v !== "viajes");
     el("nbVistaFila")?.classList.toggle("hidden", v !== "fila");
     el("nbVistaCambios")?.classList.toggle("hidden", v !== "cambios");
+    el("nbVistaRelevos")?.classList.toggle("hidden", v !== "relevos");
+    el("nbVistaConductores")?.classList.toggle("hidden", v !== "conductores");
     pintarCabeza(baseActiva());
-    const d = v === "novedades" ? st.datos : v === "viajes" ? st.viajes : v === "cambios" ? st.cambios : st.fila;
+    const d = datosDe(v);
     const mismoDia = !QUE[v].conFecha || (d && d.fecha === st.fecha);
     if (d && mismoDia) {
       pintarVista(v);
@@ -11242,6 +11564,7 @@ function bindWindowEvents(){
     const d = st.datos;
     const e = d && (d.entradas || []).find((x) => String(x.id) === String(id));
     if (!e) return;
+    el("nbModal")?.querySelector(".nb-modal-card")?.classList.remove("nb-modal-relevo");
     const bus = partirBus(e.bus);
     el("nbModalTitulo").textContent = e.nombre || "Conductor";
     el("nbModalSub").textContent = [
@@ -11261,13 +11584,62 @@ function bindWindowEvents(){
     const revs = (d.por_revisar || []).filter((r) => String(r.ref) === String(e.id) && r.revision);
     const notas = revs.map((r) => `<div class="nb-rev-nota"><b>✔ ${esc(revisionTxt(r.revision))}:</b> ${esc(r.revision.nota)}</div>`).join("");
     const nota = fotosBorradas() ? `<div class="nb-det-nota">Las fotos se guardan ${FOTO_DIAS} días; las de este día ya se borraron.</div>` : "";
-    el("nbModalCuerpo").innerHTML = llegada + `<div class="nb-det">${bloqueMarca("Entrada", e, e.fecha)}${salida}</div>` + je + notas + nota;
+    el("nbModalCuerpo").innerHTML = llegada + `<div class="nb-det">${bloqueMarca("Entrada", e, e.fecha)}${salida}</div>` + je + notas + nota
+      + `<div class="nb-det-relevo" id="nbDetRelevo" data-id="${esc(e.id)}"></div>`;
     el("nbModal").classList.remove("hidden");
     el("nbModalCerrar")?.focus();
     if (!fotosBorradas()) firmar([e.foto, e.salida && e.salida.foto]).then(pintarFotos).catch(() => {});
+    relevoDelConductor(e).catch((err) => console.warn("[mi-base] relevo del conductor:", err?.message || err));
+  }
+  // Su relevo de ese día (turno 1 = le entregó el carro a; turno 2 = recibió el carro de), con el GPS del carro.
+  const relevosDia = new Map();
+  async function relevosDelDia(fecha){
+    const base = baseActiva();
+    const cli = cliente();
+    if (!base || !cli || !fecha) return null;
+    const clave = `${fecha}|${etiquetaBase(base)}`;
+    const c = relevosDia.get(clave);
+    if (c && Date.now() - c.en < CADA_MS.relevos) return c.data;
+    const { data, error } = await cli.rpc(RPC_RELEVOS, { p_fecha: fecha, p_base: etiquetaBase(base) });
+    if (error) {
+      if (errorEsperado(error)) return null;
+      throw error;
+    }
+    if (!data || !data.ok) return null;
+    relevosDia.set(clave, { en: Date.now(), data });
+    return data;
+  }
+  async function relevoDelConductor(e){
+    const bus = partirBus(e.bus).num || partirBus(e.bus_prog).num;
+    const turno = String(e.turno || "");
+    const caja = () => {
+      const b = el("nbDetRelevo");
+      return b && b.dataset.id === String(e.id) && !el("nbModal")?.classList.contains("hidden") ? b : null;
+    };
+    if (!bus || (turno !== "1" && turno !== "2") || !caja()) return;
+    caja().innerHTML = `<div class="nb-mut">Buscando el relevo del bus ${esc(bus)}…</div>`;
+    const d = await relevosDelDia(e.fecha);
+    const box = caja();
+    if (!box) return;   // ya la cerraron o abrieron otra
+    const r = d && (d.relevos || []).find((x) => String(x.interno) === String(bus));
+    if (!r) {
+      box.innerHTML = d ? `<div class="nb-mut">El bus ${esc(bus)} no tiene relevo ese día (turno 1 y turno 2 de personas distintas).</div>` : "";
+      return;
+    }
+    const quien = turno === "1"
+      ? `Le entregó el carro a <b>${esc(r.recibe_nombre || "—")}</b> (conductor 2)`
+      : `Recibió el carro de <b>${esc(r.entrega_nombre || "—")}</b> (conductor 1)`;
+    box.innerHTML = `<h5>Relevo del bus ${esc(bus)} · ${esc(r.relevo)} en ${esc(lugarRelevo(r.punto))}</h5>`
+      + `<div class="nb-det-rl-quien">${quien}</div>`
+      + `<div class="nb-det-rl-entrega"><span class="nb-rl-rol">Entrega del carro</span> ${entregaRelevo(r)}<div>${porqueRelevo(r)}</div></div>`
+      + `<div class="nb-det-rl-cond">${conductoresRelevo(r, e.fecha)}</div>`
+      + `<button type="button" class="btn btn-secondary nb-det-rl-fotos">Ver las fotos de los dos conductores</button>`;
+    box.querySelector(".nb-det-rl-fotos")?.addEventListener("click", () => pintarRelevoModal(r, e.fecha));
   }
   function cerrarDetalle(){
+    cerrarFotoGrande();
     el("nbModal")?.classList.add("hidden");
+    el("nbModal")?.querySelector(".nb-modal-card")?.classList.remove("nb-modal-relevo");
   }
 
   /* ---------- revisar una novedad ---------- */
@@ -11706,6 +12078,644 @@ function bindWindowEvents(){
       + `<th>Dónde</th><th>Qué cambió</th></tr></thead><tbody>${filas}</tbody></table></div>`;
   }
 
+  /* ---------- Historial de conductores (v2.12.0): con el ERP ---------- */
+  // Todos los que han trabajado en la base (la programación) y los que la hoja de conductores tiene en la base, con su
+  // estado en el ERP (afiliados_historial_conductores). Solo los activos que están en la hoja salen para programar.
+  const ESTADO_CONDUCTOR = {
+    activo: { txt: "Activo", cls: "ok" },
+    retirado: { txt: "Retirado", cls: "err" },
+    no_esta: { txt: "No está en el ERP", cls: "warn" }
+  };
+  // Los de la hoja en esta base (activos o no en el ERP), para que el historial también muestre a los que no han
+  // trabajado: los arma loadDriversFromCSV.
+  function hojaDeLaBase(base){
+    const num = String(etiquetaBase(base) || base || "").replace(/\D/g, "");
+    const lista = (typeof driversHojaPorBase !== "undefined" && driversHojaPorBase && driversHojaPorBase[num]) || [];
+    return lista.map((x) => ({ c: x.cedula || "", n: x.nombre }));
+  }
+  function fechaConAnio(iso){
+    try {
+      return new Date(`${iso}T12:00:00Z`).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+        .replace(".", "").replace(/ de /g, " ");
+    } catch (_) {
+      return iso;
+    }
+  }
+  function pintarConductores(){
+    const d = st.conductores;
+    if (!d) return;
+    pintarCabeza(d.base);
+    const todos = Array.isArray(d.conductores) ? d.conductores : [];
+    const de = (e) => todos.filter((c) => c.estado === e);
+    const activos = de("activo");
+    const retirados = de("retirado");
+    const noEstan = de("no_esta");
+    const activosSinHoja = activos.filter((c) => !c.en_hoja).length;
+    const retiradosEnHoja = retirados.filter((c) => c.en_hoja).length;
+    const t = [
+      tile(numero(activos.length), "Activos", activosSinHoja
+        ? `${activosSinHoja} ${activosSinHoja === 1 ? "no está" : "no están"} en la hoja de su base` : "salen para programar", "ok", ""),
+      tile(numero(retirados.length), "Retirados", retiradosEnHoja
+        ? `${retiradosEnHoja} ${retiradosEnHoja === 1 ? "sigue habilitado" : "siguen habilitados"} en la hoja` : "ya no salen para programar",
+        retirados.length ? "err" : "", ""),
+      tile(numero(noEstan.length), "No están en el ERP", noEstan.length ? "no salen para programar" : "", noEstan.length ? "warn" : "", "")
+    ];
+    el("nbConductoresResumen").innerHTML = `<div class="nb-rgrupo"><div class="nb-rgrupo-tit">Conductores de su base`
+      + `${d.desde ? ` desde el ${esc(fechaConAnio(d.desde))}` : ""}</div><div class="nb-rgrupo-tiles">${t.join("")}</div></div>`;
+
+    const q = sinTildes(st.conductoresBuscar).trim();
+    const lista = todos.filter((c) => {
+      if (st.conductoresFiltro && c.estado !== st.conductoresFiltro) return false;
+      if (!q) return true;
+      return sinTildes(`${c.nombre || ""} ${c.bus || ""}`).includes(q);
+    });
+    el("nbCuentaConductores").textContent = todos.length ? (lista.length === todos.length ? plural(todos.length, "conductor", "conductores")
+      : `${numero(lista.length)} de ${plural(todos.length, "conductor", "conductores")}`) : "";
+    const box = el("nbConductores");
+    if (!todos.length) {
+      box.innerHTML = `<div class="nb-vacio">Todavía no hay conductores en el historial de esta base.</div>`;
+      return;
+    }
+    if (!lista.length) {
+      box.innerHTML = `<div class="nb-vacio">Ningún conductor coincide con el filtro.</div>`;
+      return;
+    }
+    const filas = lista.map((c) => {
+      const e = ESTADO_CONDUCTOR[c.estado] || ESTADO_CONDUCTOR.no_esta;
+      const desde = c.estado === "retirado" && c.salida ? `<div class="nb-mut">desde el ${esc(fechaConAnio(c.salida))}</div>` : "";
+      let nota = "";
+      if (c.estado !== "activo" && c.en_hoja) nota = "Sigue habilitado en la hoja de conductores, pero no sale para programar.";
+      else if (c.estado === "activo" && !c.en_hoja) nota = "No está en la hoja de conductores de esta base: no sale para programar.";
+      const trabajo = c.primero
+        ? `${esc(fechaConAnio(c.primero))} → ${esc(fechaConAnio(c.ultimo))}<div class="nb-mut">${esc(plural(Number(c.dias) || 0, "día", "días"))}</div>`
+        : `<span class="nb-mut">No ha trabajado en su base${d.desde ? ` desde el ${esc(fechaConAnio(d.desde))}` : ""}</span>`;
+      const bus = c.bus ? `<b>${esc(partirBus(c.bus).num)}</b>` : `<span class="nb-mut">—</span>`;
+      return `<tr data-estado="${esc(c.estado)}"><td><b>${esc(c.nombre)}</b>${nota ? `<div class="nb-hc-nota">${esc(nota)}</div>` : ""}</td>`
+        + `<td><span class="nb-badge ${e.cls}">${esc(e.txt)}</span>${desde}</td>`
+        + `<td>${trabajo}</td><td>${bus}</td></tr>`;
+    }).join("");
+    box.innerHTML = `<div class="nb-tabla-caja"><table class="nb-tabla nb-tabla-conductores"><thead><tr><th>Conductor</th>`
+      + `<th>Estado en el ERP</th><th>Trabajó en su base</th><th>Último bus</th></tr></thead><tbody>${filas}</tbody></table></div>`;
+  }
+
+  /* ---------- Relevos (v2.12.0): a qué hora se entregó de verdad el carro ---------- */
+  // Lo calcula la base de datos (afiliados_relevos_base) con el GPS del carro (dónde estuvo, guardado por el programa
+  // de la tarjeta) y las marcas del biométrico: la entrega es la primera vez que el carro está en el punto del relevo
+  // con el que recibe ya marcado. La salida que marca el que entrega llega después (el carro ya se fue): no sirve.
+  function datosDe(v){
+    return v === "novedades" ? st.datos : v === "viajes" ? st.viajes : v === "cambios" ? st.cambios
+      : v === "relevos" ? st.relevos : v === "conductores" ? st.conductores : st.fila;
+  }
+  const CAUSA_RELEVO = {
+    antes: { txt: "Se relevaron antes de la hora", cls: "info", grupo: "antes" },
+    a_tiempo: { txt: "A tiempo", cls: "ok", grupo: "a_tiempo" },
+    aeropuerto: { txt: "El carro estaba en el aeropuerto esperando despacho", cls: "err", grupo: "tarde" },
+    iba_aeropuerto: { txt: "El carro iba para el aeropuerto a la hora del relevo", cls: "err", grupo: "tarde" },
+    venia_aeropuerto: { txt: "El carro venía del aeropuerto", cls: "warn", grupo: "tarde" },
+    recibe_tarde: { txt: "El que recibe llegó tarde", cls: "warn", grupo: "tarde" },
+    en_punto: { txt: "El carro estaba en el punto", cls: "warn", grupo: "tarde" },
+    otro: { txt: "El carro venía de otro lado", cls: "warn", grupo: "tarde" }
+  };
+  function grupoRelevo(r){
+    if (r.estado === "entregado") return (CAUSA_RELEVO[r.causa] || {}).grupo || "tarde";
+    if (r.estado === "en_curso" || r.estado === "falta") return "en_curso";
+    return "sin_dato";
+  }
+  function nombrePunto(p){
+    return p === "Terminal Norte" ? "Terminal del Norte" : (p || "?");
+  }
+  function lugarRelevo(p){
+    return p === "Aeropuerto" ? "el aeropuerto" : nombrePunto(p);
+  }
+  function delLugar(p){
+    return p === "Aeropuerto" ? "del aeropuerto" : `de ${nombrePunto(p)}`;
+  }
+  function alLugar(p){
+    return p === "Aeropuerto" ? "al aeropuerto" : `a ${nombrePunto(p)}`;
+  }
+  // Dónde andaba el carro a una hora en que no estaba en ningún punto, mirando el recorrido del GPS (el punto de antes
+  // y el de después). Si entre los dos pasó más de hora y media, no "iba en la vía": estuvo por fuera de los puntos
+  // (parqueado, en el taller…). Si salió de un punto y volvió al mismo, se dice así. Devuelve { via, txt } sin verbo.
+  const VIA_MAX_MIN = 90;
+  function viaRelevo(r, hora, de, a){
+    const viejo = () => ((de || a)
+      ? { via: true, txt: `en la vía${de ? ` ${delLugar(de)}` : ""}${a ? ` ${alLugar(a)}` : ""}` } : null);
+    if (!hora || !r.gps_desde || r.recorrido === undefined) return viejo();
+    const rec = Array.isArray(r.recorrido) ? r.recorrido : [];   // null = no pasó por ningún punto
+    if (!rec.length) {
+      return { via: false, txt: `por fuera de los puntos (el GPS no lo muestra en ninguno de las ${r.gps_desde} a las ${r.gps_hasta || "?"})` };
+    }
+    const min = (h) => Number(h.slice(0, 2)) * 60 + Number(h.slice(3, 5));
+    const base = min(r.gps_desde);
+    const o = (h) => ((min(h) - base) % 1440 + 1440) % 1440;
+    const t = o(hora);
+    const fin = r.gps_hasta ? o(r.gps_hasta) : t;
+    if (t > fin + 5) return viejo();
+    let antes = null, despues = null;
+    for (const [p, d, h] of rec) {
+      if (h && o(h) <= t) antes = { p, h };
+      if (!despues && o(d) >= t) despues = { p, h: d };
+    }
+    if (!antes && !despues) return viejo();
+    if (antes && despues) {
+      const rato = o(despues.h) - o(antes.h);
+      if (antes.p === despues.p) {
+        return rato <= 15
+          ? { via: false, txt: `cerca ${delLugar(antes.p)} (salió a las ${antes.h} y volvió a las ${despues.h})` }
+          : { via: false, txt: `por fuera de los puntos (salió ${delLugar(antes.p)} a las ${antes.h} y volvió a las ${despues.h})` };
+      }
+      return rato <= VIA_MAX_MIN
+        ? { via: true, txt: `en la vía ${delLugar(antes.p)} ${alLugar(despues.p)}` }
+        : { via: false, txt: `por fuera de los puntos (salió ${delLugar(antes.p)} a las ${antes.h} y llegó ${alLugar(despues.p)} a las ${despues.h})` };
+    }
+    if (despues) {
+      return o(despues.h) <= VIA_MAX_MIN
+        ? { via: true, txt: `en la vía ${alLugar(despues.p)}` }
+        : { via: false, txt: `por fuera de los puntos (de las ${r.gps_desde} a las ${despues.h} no pasó por ninguno)` };
+    }
+    const enCurso = r.estado === "en_curso" || r.estado === "falta";
+    return fin - o(antes.h) <= VIA_MAX_MIN
+      ? { via: true, txt: `en la vía (salió ${delLugar(antes.p)} a las ${antes.h})` }
+      : { via: false, txt: `por fuera de los puntos (salió ${delLugar(antes.p)} a las ${antes.h} y no ${enCurso ? "ha vuelto" : "volvió"} a pasar por ninguno)` };
+  }
+  function aLaHoraRelevo(r){
+    const a = r.a_la_hora;
+    if (!a || r.estado === "sin_gps") {
+      return r.estado === "falta" || r.estado === "en_curso"
+        ? `<span class="nb-mut">Todavía no es la hora</span>` : `<span class="nb-mut">Sin GPS a esa hora</span>`;
+    }
+    if (a.en) {
+      const desde = a.desde ? ` desde las ${esc(a.desde)}` : "";
+      const hasta = a.hasta ? `<div class="nb-rl-nota">Salió a las ${esc(a.hasta)}</div>`
+        : (r.estado === "en_curso" ? `<div class="nb-rl-nota">Sigue allá</div>` : "");
+      return `En ${esc(lugarRelevo(a.en))}${desde}${hasta}`;
+    }
+    const via = viaRelevo(r, r.relevo, a.de, a.a);
+    if (via) return esc(via.txt.charAt(0).toUpperCase() + via.txt.slice(1));
+    return "En la vía";
+  }
+  function minutosRelevo(r){
+    const m = Number(r.minutos);
+    if (r.minutos === null || r.minutos === undefined || !Number.isFinite(m)) return "";
+    if (m < -30) return `<span class="nb-badge info">${numero(-m)} min antes</span>`;
+    if (m <= 10) {
+      return `<span class="nb-badge ok">${m < 0 ? `${numero(-m)} min antes` : m === 0 ? "a la hora" : `${numero(m)} min después`}</span>`;
+    }
+    return `<span class="nb-badge ${m > 30 ? "err" : "warn"}">${numero(m)} min tarde</span>`;
+  }
+  function entregaRelevo(r){
+    if (r.estado === "entregado") {
+      const det = [];
+      if (r.llego_al_punto) det.push(`Llegó ${esc(alLugar(r.punto))} ${esc(r.llego_al_punto)}`);
+      if (r.salio_del_punto) det.push(`salió ${esc(r.salio_del_punto)}`);
+      return `<b>${esc(r.entrega)}</b> ${minutosRelevo(r)}${det.length ? `<div class="nb-rl-nota">${det.join(" · ")}</div>` : ""}`;
+    }
+    if (r.estado === "falta") return `<span class="nb-mut">El relevo es a las ${esc(r.relevo)}</span>`;
+    if (r.estado === "en_curso") {
+      const a = r.ahora;
+      let donde = "";
+      if (a && a.en) donde = `Ahora en ${esc(lugarRelevo(a.en))}${a.desde ? ` desde las ${esc(a.desde)}` : ""}`;
+      else if (a && a.salio_de) donde = `Ahora en la vía: salió ${esc(delLugar(a.salio_de))}${a.salio ? ` a las ${esc(a.salio)}` : ""}`;
+      return `<span class="nb-badge info">Todavía no lo entrega</span>`
+        + (donde ? `<div class="nb-rl-ahora">${donde}${a && a.gps ? ` · GPS de las ${esc(a.gps)}` : ""}</div>` : "");
+    }
+    if (r.estado === "sin_gps") return `<span class="nb-badge mut">Sin GPS del carro</span>`;
+    return `<span class="nb-badge mut">No se pudo saber</span>`;
+  }
+  // v4: el conductor 2 marcó en un punto y recibió el carro en otro (donde el conductor 1 marcó la salida con el carro).
+  function notaPuntoRelevo(r){
+    if (!r.entrega_en_salida) return "";
+    return `<div class="nb-rl-nota nb-rl-otro-punto">Se entregó donde el conductor 1 marcó la salida, con el carro ahí.`
+      + `${r.punto_recibe ? ` El conductor 2 había marcado la entrada en ${esc(nombrePunto(r.punto_recibe))}.` : ""}</div>`;
+  }
+  function porqueRelevo(r){
+    if (r.estado !== "entregado") {
+      if (r.estado === "sin_dato" && r.gps_hasta && !(Array.isArray(r.recorrido) && r.recorrido.length)) {
+        return `<span class="nb-mut">El GPS no muestra el carro en ningún punto en todo ese rato: estuvo quieto o por fuera de los puntos (¿parqueado, en el taller o cambiaron de carro?)</span>`;
+      }
+      if (r.estado === "sin_dato") return `<span class="nb-mut">El carro no pasó por ${esc(lugarRelevo(r.punto))} con los dos conductores</span>`;
+      if (r.estado === "sin_gps") return `<span class="nb-mut">No hay GPS de este carro para ese rato</span>`;
+      if (r.estado === "en_curso" && !r.recibe_marco) return `<span class="nb-mut">El que recibe todavía no marca la entrada</span>`;
+      return "";
+    }
+    const c = CAUSA_RELEVO[r.causa] || { txt: "—", cls: "mut" };
+    let t = `<span class="nb-badge ${c.cls}">${esc(c.txt)}</span>`;
+    const ae = Number(r.aeropuerto_despues_min);
+    if (r.causa === "aeropuerto" && Number.isFinite(ae) && ae > 0) {
+      t += `<div class="nb-rl-nota">Salió del aeropuerto ${numero(ae)} min después de la hora del relevo</div>`;
+    }
+    if (r.otra_pasada) {
+      t += `<div class="nb-rl-ojo">Ojo: el carro volvió a pasar por el punto antes de que el que entrega marcara la salida; la entrega pudo ser en esa otra pasada.</div>`;
+    }
+    return t;
+  }
+  function duracionRelevo(min){
+    const m = Math.abs(Math.round(Number(min) || 0));
+    if (m < 60) return `${numero(m)} min`;
+    return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+  }
+  // El que recibe contra su hora (de 15 min antes, la regla del biométrico, a 10 min después).
+  function entradaRelevo(r){
+    const h = r.recibe_horario;
+    const m = Number(r.recibe_vs_hora_min);
+    if (h === "en_horario") return { cls: "ok", txt: "En su horario" };
+    if (h === "temprano") return { cls: "warn", txt: `${duracionRelevo(m)} antes de su hora` };
+    if (h === "tarde") return { cls: "err", txt: `${duracionRelevo(m)} tarde a su hora` };
+    if (h === "sin_marca") return { cls: "err", txt: "No marcó entrada" };
+    return null;
+  }
+  // La salida del que entrega contra la entrega (de 5 min antes a 30 min después de que el carro salió con el otro).
+  function salidaRelevo(r){
+    const s = r.entrega_salida;
+    const m = Number(r.entrega_salida_min);
+    if (s === "cuadra") return { cls: "ok", txt: "Cuadra con la entrega" };
+    if (s === "despues") return { cls: "warn", txt: `La marcó ${duracionRelevo(m)} después de entregar` };
+    if (s === "antes") return { cls: "err", txt: "La marcó antes de entregar el carro" };
+    if (s === "sin_marca") return { cls: "err", txt: "No marcó salida" };
+    return null;
+  }
+  // Dónde estaba el carro cuando marcó cada uno (salida del 1, entrada del 2), con el GPS. «malo» = la marca no
+  // cuadra con el carro: lo marcó donde el carro no pasó, antes de que llegara, o cuando ya se había ido hace rato.
+  function carroEnMarca(r, cual){
+    const v = cual === "salida" ? r.carro_en_salida : r.carro_en_entrada;
+    if (!v) return null;
+    if (!v.gps) return { cls: "mut", txt: "Sin GPS del carro a esa hora", malo: false };
+    const marca = marcaDe(r, cual === "salida" ? "s1" : "e2");
+    const via = v.en ? null : viaRelevo(r, marca && marca.hora, v.de, v.a);
+    const donde = v.en ? `estaba en ${lugarRelevo(v.en)}${v.desde ? ` desde las ${v.desde}` : ""}`
+      : via ? `${via.via ? "iba" : "estaba"} ${via.txt}`
+      : "no estaba en ningún punto";
+    if (v.alli === undefined) return { cls: "mut", txt: `El carro ${donde}`, malo: false };
+    if (v.alli) return { cls: "ok", txt: `El carro estaba ahí${v.desde ? ` (llegó a las ${v.desde})` : ""}`, malo: false };
+    const enCurso = r.estado === "en_curso" || r.estado === "falta";
+    if (cual === "salida") {
+      const fue = v.se_fue ? Number(v.se_fue_min) : null;
+      const llega = v.llego ? Number(v.llego_min) : null;
+      if (fue !== null && fue <= 60) {
+        return { cls: "ok", txt: `El carro estuvo ahí: salió a las ${v.se_fue} (${duracionRelevo(fue)} antes)`, malo: false };
+      }
+      if (llega !== null && (fue === null || llega < fue)) {
+        return { cls: "warn", txt: `Marcó antes de que llegara el carro: llegó a las ${v.llego} (${duracionRelevo(llega)} después). A esa hora ${donde}`, malo: true };
+      }
+      if (fue !== null) {
+        return { cls: "warn", txt: `El carro se había ido de ahí a las ${v.se_fue} (${duracionRelevo(fue)} antes). A esa hora ${donde}`, malo: true };
+      }
+      return { cls: "err", txt: `El carro no pasó por ahí: a esa hora ${donde}`, malo: true };
+    }
+    if (r.entrega_en_salida && r.estado === "entregado") {
+      return { cls: "warn", txt: `El carro no estaba ahí: ${donde}. Lo recibió en ${lugarRelevo(r.punto)} a las ${r.entrega}, donde salió el conductor 1`, malo: true };
+    }
+    if (v.llego) {
+      return { cls: "info", txt: `El carro no estaba: ${donde}. Llegó a las ${v.llego} (${duracionRelevo(v.llego_min)} después)`, malo: false };
+    }
+    if (enCurso) return { cls: "info", txt: `El carro no estaba: ${donde}. Todavía no llega`, malo: false };
+    if (v.se_fue && Number(v.se_fue_min) <= 30) {
+      return { cls: "warn", txt: `El carro acababa de irse de ahí: salió a las ${v.se_fue} (${duracionRelevo(v.se_fue_min)} antes)`, malo: true };
+    }
+    if (v.se_fue) {
+      return { cls: "err", txt: `El carro no volvió a pasar por ahí después de que marcó (había salido a las ${v.se_fue}). A esa hora ${donde}`, malo: true };
+    }
+    return { cls: "err", txt: `El carro no pasó por ahí: a esa hora ${donde}`, malo: true };
+  }
+  function marcaFuera(r, cual){
+    if (cual === "m_entrada") return ["temprano", "tarde", "sin_marca"].includes(r.recibe_horario);
+    if (cual === "m_gps") return !!((carroEnMarca(r, "salida") || {}).malo || (carroEnMarca(r, "entrada") || {}).malo);
+    return ["despues", "antes", "sin_marca"].includes(r.entrega_salida);
+  }
+  // Por dónde anduvo el carro, con las marcas de los dos y la entrega, en orden de hora.
+  function recorridoRelevo(r, abierto){
+    const rec = Array.isArray(r.recorrido) ? r.recorrido : [];
+    if (!rec.length) return "";
+    const min = (h) => (h ? Number(h.slice(0, 2)) * 60 + Number(h.slice(3, 5)) : null);
+    const base = min(r.gps_desde || rec[0][1]) || 0;
+    const orden = (h) => ((min(h) - base) % 1440 + 1440) % 1440;
+    const cosas = rec.map(([p, a, b]) => ({ h: a, txt: `${b ? `${esc(a)}–${esc(b)}` : `desde ${esc(a)}`} · el carro en <b>${esc(nombrePunto(p))}</b>`, cls: "" }));
+    if (r.recibe_marco) cosas.push({ h: r.recibe_marco, txt: `${esc(r.recibe_marco)} · el conductor 2 marcó entrada${r.recibe_marco_en ? ` en ${esc(nombrePunto(r.recibe_marco_en))}` : ""}`, cls: "nb-rl-rec-marca" });
+    if (r.entrega_marco) cosas.push({ h: r.entrega_marco, txt: `${esc(r.entrega_marco)} · el conductor 1 marcó salida${r.entrega_marco_en ? ` en ${esc(nombrePunto(r.entrega_marco_en))}` : ""}`, cls: "nb-rl-rec-marca" });
+    if (r.estado === "entregado" && r.entrega) cosas.push({ h: r.entrega, txt: `${esc(r.entrega)} · entrega del carro en ${esc(lugarRelevo(r.punto))}`, cls: "nb-rl-rec-entrega" });
+    cosas.push({ h: r.relevo, txt: `${esc(r.relevo)} · hora programada del relevo`, cls: "nb-rl-rec-hora" });
+    cosas.sort((x, y) => orden(x.h) - orden(y.h));
+    const tit = `Por dónde anduvo el carro${r.gps_desde && r.gps_hasta ? ` (GPS de ${esc(r.gps_desde)} a ${esc(r.gps_hasta)})` : ""}`;
+    return `<details class="nb-rl-rec"${abierto ? " open" : ""}><summary>${tit}</summary><ol>${cosas.map((c) => `<li class="${c.cls}">${c.txt}</li>`).join("")}</ol></details>`;
+  }
+  // Las marcas: de la v3 (marcas.e1/s1/e2/s2 con foto) o, si la base de datos todavía no la tiene, de los campos viejos.
+  function marcaDe(r, k){
+    const m = (r.marcas || {})[k];
+    if (m) return m;
+    const v = { e1: [r.entrega_entro, r.entrega_entro_en], s1: [r.entrega_marco, r.entrega_marco_en],
+      e2: [r.recibe_marco, r.recibe_marco_en] }[k];
+    return v && v[0] ? { hora: v[0], punto: v[1] } : null;
+  }
+  function marcaTxt(m, fecha){
+    const otroDia = m.fecha && fecha && m.fecha !== fecha ? ` <small>(${esc(fechaCorta(m.fecha))})</small>` : "";
+    return `${esc(m.hora)}${otroDia}${m.punto ? ` en ${esc(nombrePunto(m.punto))}` : ""}`;
+  }
+  function origenTxt(m){
+    const o = m && (ORIGEN[m.origen] || m.origen);
+    return o ? ` <span class="nb-rl-origen">· ${esc(o)}</span>` : "";
+  }
+  function turnoTxt(n, x){
+    return x && x.desde ? `<div class="nb-rl-turno">Turno ${n}: de ${esc(x.desde)} a ${esc(x.hasta || "?")}</div>` : "";
+  }
+  function conductoresRelevo(r, fecha){
+    const insignia = (x) => (x ? ` <span class="nb-badge ${x.cls}">${esc(x.txt)}</span>` : "");
+    const gps = (x) => (x ? `<div class="nb-rl-gps nb-rl-gps-${x.cls}">${esc(x.txt)}</div>` : "");
+    const t = r.turnos || {};
+    const e1 = marcaDe(r, "e1"), s1 = marcaDe(r, "s1"), e2 = marcaDe(r, "e2"), s2 = marcaDe(r, "s2");
+    const juntos = r.estado === "entregado"
+      ? `<div class="nb-rl-juntos">Se juntaron a las ${esc(r.entrega)} en ${esc(lugarRelevo(r.punto))}</div>${notaPuntoRelevo(r)}` : "";
+    // conductor 1: trae el carro y lo entrega
+    const sale1 = s1
+      ? `Salió ${marcaTxt(s1, fecha)}`
+        + (Number(r.salida_despues_min) > 0 ? ` (${duracionRelevo(r.salida_despues_min)} después de que el carro se fue)` : "")
+        + origenTxt(s1)
+      : (r.entrega_salida === "sin_marca" ? "" : "No ha marcado salida");
+    // conductor 2: lo recibe
+    const entro2 = e2 ? `Entró ${marcaTxt(e2, fecha)}${origenTxt(e2)}` : (r.recibe_horario === "sin_marca" ? "" : "No ha marcado entrada");
+    const esperas = [];
+    if (Number(r.recibe_espero_min) > 0) esperas.push(`esperó el carro ${duracionRelevo(r.recibe_espero_min)}`);
+    if (Number(r.carro_espero_min) > 0) esperas.push(`llegó después del carro: el carro lo esperó ${duracionRelevo(r.carro_espero_min)}`);
+    return juntos
+      + `<div class="nb-rl-per"><div><span class="nb-rl-rol">Conductor 1 · entrega</span> ${esc(r.entrega_nombre || "—")}</div>`
+      + turnoTxt(1, t.t1)
+      + (e1 ? `<div class="nb-rl-marca">Entró ${marcaTxt(e1, fecha)}${origenTxt(e1)}</div>` : "")
+      + `<div class="nb-rl-marca">${sale1}${insignia(salidaRelevo(r))}</div>`
+      + (s1 ? gps(carroEnMarca(r, "salida")) : "") + `</div>`
+      + `<div class="nb-rl-per"><div><span class="nb-rl-rol">Conductor 2 · recibe</span> ${esc(r.recibe_nombre || "—")}</div>`
+      + turnoTxt(2, t.t2)
+      + `<div class="nb-rl-marca">${entro2}${insignia(entradaRelevo(r))}</div>`
+      + (e2 ? gps(carroEnMarca(r, "entrada")) : "")
+      + (esperas.length ? `<div class="nb-rl-nota">${esperas.map(esc).join(" · ")}</div>` : "")
+      + (s2 ? `<div class="nb-rl-marca">Salió ${marcaTxt(s2, fecha)}${origenTxt(s2)}</div>` : "") + `</div>`
+      + recorridoRelevo(r);
+  }
+  // Tocar el bus: la ventana del relevo con las fotos de las marcas de los dos conductores.
+  function abrirRelevo(bus){
+    const d = st.relevos;
+    const r = d && (d.relevos || []).find((x) => String(x.interno) === String(bus));
+    if (r) pintarRelevoModal(r, d.fecha);
+  }
+  // La ventana del relevo (25-nov, más ordenada): 1) la entrega en grande y en palabras, 2) si cuadran las marcas,
+  // 3) el paso a paso de lo que importa, 4) los dos conductores lado a lado con fotos pequeñas (tocar = grande),
+  // 5) todo el recorrido del carro (cerrado) y 6) qué quiere decir cada color.
+  function tonoRelevo(r){
+    const g = grupoRelevo(r);
+    return g === "tarde" ? "err" : g === "a_tiempo" ? "ok" : g === "antes" || g === "en_curso" ? "info" : "mut";
+  }
+  function fraseEntrega(r){
+    const lugar = lugarRelevo(r.punto);
+    if (r.estado === "entregado") {
+      const m = Number(r.minutos);
+      const vs = !Number.isFinite(m) ? "" : m === 0 ? "justo a la hora del relevo"
+        : `${duracionRelevo(m)} ${m < 0 ? "antes" : "después"} de la hora del relevo (${r.relevo})`;
+      return `El carro y el conductor 2 se juntaron en ${lugar} a las ${r.entrega}${vs ? `: ${vs}` : ""}.`;
+    }
+    if (r.estado === "falta") return `Todavía no es la hora: el relevo es a las ${r.relevo} en ${lugar}.`;
+    if (r.estado === "en_curso") return `El carro todavía no se ha juntado con el conductor 2 en ${lugar}.`;
+    if (r.estado === "sin_gps") return "No hay GPS de este carro para ese rato: no se puede saber a qué hora se entregó.";
+    return "Con el GPS no se pudo saber a qué hora se entregó el carro.";
+  }
+  function chequeosRelevo(r){
+    const items = [];
+    const e = entradaRelevo(r);
+    if (e) items.push(["Entrada del conductor 2", e]);
+    const s = salidaRelevo(r);
+    if (s) items.push(["Salida del conductor 1", s]);
+    const g = [marcaDe(r, "s1") ? carroEnMarca(r, "salida") : null, marcaDe(r, "e2") ? carroEnMarca(r, "entrada") : null]
+      .filter((x) => x && x.cls !== "mut");
+    if (g.some((x) => x.cls === "err")) items.push(["El carro en las marcas (GPS)", { cls: "err", txt: "Una marca donde el carro no pasó" }]);
+    else if (g.some((x) => x.cls === "warn")) items.push(["El carro en las marcas (GPS)", { cls: "warn", txt: "Una marca no cuadra con el carro" }]);
+    else if (g.length) items.push(["El carro en las marcas (GPS)", { cls: "ok", txt: "Cuadran con el carro" }]);
+    if (!items.length) return "";
+    return `<h4 class="nb-rv-tit">¿Cuadran las marcas?</h4><div class="nb-rv-chks">`
+      + items.map(([et, x]) => `<div class="nb-rv-chk"><span class="nb-rv-chk-et">${esc(et)}</span><span class="nb-badge ${x.cls}">${esc(x.txt)}</span></div>`).join("")
+      + `</div>`;
+  }
+  function pasosRelevo(r){
+    const aMin = (h) => Number(String(h).slice(0, 2)) * 60 + Number(String(h).slice(3, 5));
+    const base = aMin(r.relevo || "00:00") - 360;                 // seis horas antes del relevo: así ordena después de medianoche
+    const orden = (h) => (((aMin(h) - base) % 1440) + 1440) % 1440;
+    const e2 = marcaDe(r, "e2"), s1 = marcaDe(r, "s1");
+    const entregado = r.estado === "entregado";
+    const p = [];
+    if (entregado && r.llego_al_punto) p.push({ h: r.llego_al_punto, txt: `El carro llega ${alLugar(r.punto)}`, cls: "carro" });
+    if (e2 && e2.hora) p.push({ h: e2.hora, txt: `El conductor 2 marca la entrada${e2.punto ? ` en ${nombrePunto(e2.punto)}` : ""}`, cls: "marca" });
+    if (entregado && r.entrega) p.push({ h: r.entrega, txt: `Entrega: el conductor 2 recibe el carro en ${lugarRelevo(r.punto)}`, cls: "entrega" });
+    if (s1 && s1.hora) p.push({ h: s1.hora, txt: `El conductor 1 marca la salida${s1.punto ? ` en ${nombrePunto(s1.punto)}` : ""}`, cls: "marca" });
+    if (r.relevo) p.push({ h: r.relevo, txt: "Hora programada del relevo", cls: "hora" });
+    if (entregado && r.salio_del_punto) p.push({ h: r.salio_del_punto, txt: `El carro sale ${delLugar(r.punto)} con el conductor 2`, cls: "carro" });
+    if (p.length < 2) return "";
+    p.sort((a, b) => orden(a.h) - orden(b.h));
+    return `<h4 class="nb-rv-tit">Paso a paso</h4><ol class="nb-rv-pasos">`
+      + p.map((x) => `<li class="nb-rv-p-${x.cls}"><span class="nb-rv-h">${esc(x.h)}</span><span>${esc(x.txt)}</span></li>`).join("")
+      + `</ol>`;
+  }
+  // v5: qué cuenta registró la marca (la del conductor, la del biométrico o del celular de un punto, u otra) y dónde
+  // estaba el celular cuando se tomó la foto.
+  function cuentaMarca(m){
+    if (m.cuenta_tipo === "propia") return "con la cuenta del conductor";
+    if (m.cuenta_tipo === "empresa") return m.cuenta ? `cuenta ${m.cuenta}` : "cuenta de la empresa";
+    if (m.cuenta_tipo === "otra") return `otra cuenta${m.cuenta ? ` (${m.cuenta})` : ""}`;
+    if (m.cuenta_tipo === "ninguna") return "sin cuenta";
+    return "";
+  }
+  function ubicacionMarca(m){
+    if (m.lat === undefined || m.lat === null || m.lon === undefined || m.lon === null) return "";
+    const p = Number(m.precision_m);
+    const prec = m.precision_m !== undefined && Number.isFinite(p) ? ` (GPS ±${numero(p)} m${p >= 100 ? ", aproximado" : ""})` : "";
+    const sitio = m.punto ? `en ${nombrePunto(m.punto)}` : "fuera de los puntos de marca";
+    const url = `https://www.google.com/maps?q=${encodeURIComponent(`${m.lat},${m.lon}`)}`;
+    return `<div class="nb-rv-ml nb-rv-ubic">Foto tomada ${esc(sitio)}${esc(prec)} · `
+      + `<a href="${esc(url)}" target="_blank" rel="noopener">ver en el mapa</a></div>`;
+  }
+  function motivosMarca(m){
+    const ms = Array.isArray(m.motivos) ? m.motivos : [];
+    return ms.map((t) => {
+      const x = leerMotivo(t);
+      return `<div class="nb-rv-motivo"><span class="nb-badge ${x.cls}">${esc(x.tipo)}</span>${x.det ? ` <small>${esc(x.det)}</small>` : ""}`
+        + `${x.txt ? `<div class="nb-rv-motivo-txt">«${esc(x.txt)}»</div>` : ""}</div>`;
+    }).join("");
+  }
+  function marcaModal(r, k, titulo, fecha, extra, quien){
+    const m = marcaDe(r, k);
+    if (!m) {
+      const falta = k === "s2" ? "Todavía no marca la salida" : k === "s1" ? "No ha marcado la salida" : "No marcó la entrada";
+      return `<div class="nb-rv-marca nb-rv-sin"><span class="nb-rv-foto nb-rv-foto-vacia">${fotoHtml(null)}</span>`
+        + `<div class="nb-rv-md"><div class="nb-rv-mt">${esc(titulo)}</div><div class="nb-det-vacio">${esc(falta)}</div>${extra || ""}</div></div>`;
+    }
+    const otroDia = m.fecha && fecha && m.fecha !== fecha ? ` (${fechaCorta(m.fecha)})` : "";
+    const donde = m.punto ? ` en ${nombrePunto(m.punto)}` : "";
+    const cuenta = cuentaMarca(m);
+    const ubic = ubicacionMarca(m);
+    // con la ubicación del celular el punto va en «Foto tomada en …»; si no, en la línea del origen, como antes
+    const lugar = [ubic ? "" : (m.punto ? nombrePunto(m.punto) : ""), ORIGEN[m.origen] || m.origen || "", cuenta].filter(Boolean).join(" · ");
+    const cap = `${quien} · ${titulo} ${m.hora}${otroDia}${donde}${cuenta ? ` · ${cuenta}` : ""}`;
+    return `<div class="nb-rv-marca"><span class="nb-rv-foto" role="button" tabindex="0" title="Ver la foto grande" data-cap="${esc(cap)}">${fotoHtml(m.foto)}</span>`
+      + `<div class="nb-rv-md"><div class="nb-rv-mt">${esc(titulo)} · <b>${esc(m.hora)}</b>${esc(otroDia)}</div>`
+      + (lugar ? `<div class="nb-rv-ml">${esc(lugar)}</div>` : "") + ubic + motivosMarca(m) + (extra || "") + `</div></div>`;
+  }
+  function conductorModal(r, n, fecha){
+    const t = (r.turnos || {})[`t${n}`];
+    const gps = (x) => (x ? `<div class="nb-rl-gps nb-rl-gps-${x.cls}">${esc(x.txt)}</div>` : "");
+    const insignia = (x) => (x ? `<div><span class="nb-badge ${x.cls}">${esc(x.txt)}</span></div>` : "");
+    const quien = `Conductor ${n}`;
+    let marcas;
+    if (n === 1) {
+      marcas = marcaModal(r, "e1", "Entrada", fecha, "", quien)
+        + marcaModal(r, "s1", "Salida", fecha, insignia(salidaRelevo(r)) + gps(marcaDe(r, "s1") ? carroEnMarca(r, "salida") : null), quien);
+    } else {
+      const esperas = [];
+      if (Number(r.recibe_espero_min) > 0) esperas.push(`Esperó el carro ${duracionRelevo(r.recibe_espero_min)}`);
+      if (Number(r.carro_espero_min) > 0) esperas.push(`Llegó después del carro: el carro lo esperó ${duracionRelevo(r.carro_espero_min)}`);
+      marcas = marcaModal(r, "e2", "Entrada", fecha, insignia(entradaRelevo(r))
+          + gps(marcaDe(r, "e2") ? carroEnMarca(r, "entrada") : null)
+          + (esperas.length ? `<div class="nb-rl-nota">${esperas.map(esc).join(" · ")}</div>` : ""), quien)
+        + marcaModal(r, "s2", "Salida", fecha, "", quien);
+    }
+    return `<section class="nb-rv-cond"><div class="nb-rv-ch"><span class="nb-rl-rol">Conductor ${n} · ${n === 1 ? "entrega el carro" : "recibe el carro"}</span>`
+      + `<div class="nb-rv-nom">${esc((n === 1 ? r.entrega_nombre : r.recibe_nombre) || "—")}</div>`
+      + (t && t.desde ? `<div class="nb-rl-turno">Turno ${n}: de ${esc(t.desde)} a ${esc(t.hasta || "?")}</div>` : "")
+      + `</div>${marcas}</section>`;
+  }
+  function pintarRelevoModal(r, fecha){
+    const viejas = diasEntre(fecha, hoy()) > FOTO_DIAS;
+    el("nbModalTitulo").textContent = `Bus ${r.interno} · relevo de las ${r.relevo} en ${nombrePunto(r.punto)}`;
+    el("nbModalSub").textContent = [fechaLarga(fecha), r.puesto ? `Puesto ${r.puesto}` : ""].filter(Boolean).join(" · ");
+    el("nbModal")?.querySelector(".nb-modal-card")?.classList.add("nb-modal-relevo");
+    const grande = r.estado === "entregado"
+      ? `<b>${esc(r.entrega)}</b> <span class="nb-rv-en">en ${esc(lugarRelevo(r.punto))}</span> ${minutosRelevo(r)}`
+      : entregaRelevo(r);
+    const porque = porqueRelevo(r);
+    el("nbModalCuerpo").innerHTML =
+      `<div class="nb-rv-resumen nb-rv-${tonoRelevo(r)}"><span class="nb-rl-rol">Entrega del carro</span>`
+      + `<div class="nb-rv-big">${grande}</div>`
+      + `<div class="nb-rv-frase">${esc(fraseEntrega(r))}</div>`
+      + (porque ? `<div class="nb-rv-porque">${porque}</div>` : "") + notaPuntoRelevo(r) + `</div>`
+      + chequeosRelevo(r)
+      + pasosRelevo(r)
+      + `<h4 class="nb-rv-tit">Los dos conductores <small>${viejas ? "" : "Toque una foto para verla grande"}</small></h4>`
+      + `<div class="nb-rv-conds">${conductorModal(r, 1, fecha)}${conductorModal(r, 2, fecha)}</div>`
+      + recorridoRelevo(r, false)
+      + `<div class="nb-rv-ley"><span><b class="nb-rv-c-ok">Verde</b>: el carro estaba en el punto</span>`
+      + `<span><b class="nb-rv-c-warn">Amarillo</b>: revisar (no cuadra del todo)</span>`
+      + `<span><b class="nb-rv-c-err">Rojo</b>: la marca no cuadra con el carro</span></div>`
+      + (viejas ? `<div class="nb-det-nota">Las fotos se guardan ${FOTO_DIAS} días; las de este día ya se borraron.</div>` : "");
+    el("nbModal").classList.remove("hidden");
+    el("nbModalCerrar")?.focus();
+    const m = r.marcas || {};
+    if (!viejas) firmar([m.e1, m.s1, m.e2, m.s2].map((x) => x && x.foto)).then(pintarFotos).catch(() => {});
+  }
+  // La foto grande: encima de la ventana; se cierra tocando en cualquier parte o con Escape (la ventana sigue abierta).
+  function verFotoGrande(img){
+    const src = img && img.getAttribute("src");
+    if (!src) return;
+    let v = el("nbFotoVisor");
+    if (!v) {
+      v = document.createElement("div");
+      v.id = "nbFotoVisor";
+      v.className = "nb-rv-visor hidden";
+      v.setAttribute("role", "dialog");
+      v.setAttribute("aria-label", "Foto de la marca");
+      v.innerHTML = `<figure><img alt="Foto de la marca" /><figcaption></figcaption></figure>`
+        + `<button type="button" class="btn btn-primary">Cerrar la foto</button>`;
+      v.addEventListener("click", (ev) => { ev.stopPropagation(); cerrarFotoGrande(); });
+      el("nbModal")?.appendChild(v);
+    }
+    v.querySelector("img").src = src;
+    v.querySelector("figcaption").textContent = img.closest(".nb-rv-foto")?.dataset.cap || "";
+    v.classList.remove("hidden");
+    v.querySelector("button")?.focus();
+  }
+  function cerrarFotoGrande(){
+    const v = el("nbFotoVisor");
+    if (v && !v.classList.contains("hidden")) {
+      v.classList.add("hidden");
+      return true;
+    }
+    return false;
+  }
+  function pintarRelevos(){
+    const d = st.relevos;
+    if (!d) return;
+    pintarCabeza(d.base);
+    const todos = Array.isArray(d.relevos) ? d.relevos : [];
+    const de = (g) => todos.filter((r) => grupoRelevo(r) === g);
+    const tarde = de("tarde");
+    const aero = tarde.filter((r) => r.causa === "aeropuerto" || r.causa === "iba_aeropuerto");
+    const mediana = (xs) => {
+      const v = xs.map((r) => Number(r.minutos)).filter(Number.isFinite).sort((a, b) => a - b);
+      return v.length ? v[Math.floor(v.length / 2)] : null;
+    };
+    const mAero = mediana(aero);
+    const n = el("nbNumRelevos");
+    if (n) n.textContent = tarde.length ? String(tarde.length) : "";
+    const t = [
+      tile(numero(todos.length), "Relevos", d.es_hoy ? "programados hoy" : `programados el ${fechaCorta(d.fecha)}`, "", ""),
+      tile(numero(tarde.length), "Entregaron tarde",
+        aero.length ? `${numero(aero.length)} por el aeropuerto${mAero !== null ? ` · ${numero(mAero)} min en la mitad` : ""}` : "",
+        tarde.length ? "err" : "ok", ""),
+      tile(numero(de("a_tiempo").length), "A tiempo", "hasta 10 min", "ok", ""),
+      tile(numero(de("antes").length), "Antes de la hora", "más de 30 min antes", "info", "")
+    ];
+    if (d.es_hoy) t.push(tile(numero(de("en_curso").length), "Todavía no", "el carro no ha llegado al punto", "", ""));
+    t.push(tile(numero(de("sin_dato").length), "No se pudo saber", "", "", ""));
+    const fueraE = todos.filter((r) => marcaFuera(r, "m_entrada"));
+    const fueraS = todos.filter((r) => marcaFuera(r, "m_salida"));
+    const antesS = todos.filter((r) => r.entrega_salida === "antes").length;
+    const fueraG = todos.filter((r) => marcaFuera(r, "m_gps"));
+    const noPaso = todos.filter((r) => ["salida", "entrada"].some((c) => (carroEnMarca(r, c) || {}).cls === "err")).length;
+    const m = [
+      tile(numero(fueraE.length), "Entradas fuera de horario", "el que recibe, contra su hora", fueraE.length ? "warn" : "ok", ""),
+      tile(numero(fueraS.length), "Salidas que no cuadran",
+        antesS ? `${plural(antesS, "marcó", "marcaron")} antes de entregar` : "el que entrega, contra la entrega",
+        antesS ? "err" : fueraS.length ? "warn" : "ok", "")
+    ];
+    if (todos.some((r) => r.carro_en_salida || r.carro_en_entrada)) {
+      m.push(tile(numero(fueraG.length), "Marcaron donde no estaba el carro",
+        noPaso ? `${numero(noPaso)} donde el carro no pasó` : "contra el GPS del carro",
+        noPaso ? "err" : fueraG.length ? "warn" : "ok", ""));
+    }
+    el("nbRelevosResumen").innerHTML = `<div class="nb-rgrupo"><div class="nb-rgrupo-tit">Relevos del día</div>`
+      + `<div class="nb-rgrupo-tiles">${t.join("")}</div></div>`
+      + `<div class="nb-rgrupo"><div class="nb-rgrupo-tit">Marcas de los conductores</div>`
+      + `<div class="nb-rgrupo-tiles">${m.join("")}</div></div>`;
+
+    const q = sinTildes(st.relevosBuscar).trim();
+    const lista = todos.filter((r) => {
+      if (st.relevosFiltro === "m_entrada" || st.relevosFiltro === "m_salida" || st.relevosFiltro === "m_gps") {
+        if (!marcaFuera(r, st.relevosFiltro)) return false;
+      } else if (st.relevosFiltro && grupoRelevo(r) !== st.relevosFiltro) return false;
+      if (!q) return true;
+      return sinTildes(`${r.interno || ""} ${r.entrega_nombre || ""} ${r.recibe_nombre || ""} ${r.punto || ""}`).includes(q);
+    });
+    el("nbCuentaRelevos").textContent = todos.length ? (lista.length === todos.length ? plural(todos.length, "relevo", "relevos")
+      : `${numero(lista.length)} de ${plural(todos.length, "relevo", "relevos")}`) : "";
+    const box = el("nbRelevos");
+    if (!todos.length) {
+      box.innerHTML = `<div class="nb-vacio">Ningún carro de la base tiene relevo (turno 1 y turno 2) en la programación de este día.</div>`;
+      return;
+    }
+    if (!lista.length) {
+      box.innerHTML = `<div class="nb-vacio">Ningún relevo coincide con el filtro.</div>`;
+      return;
+    }
+    const filas = lista.map((r) => {
+      const c = r.estado === "entregado" ? (CAUSA_RELEVO[r.causa] || {}).cls : "";
+      const marca = r.estado === "entregado" && Number(r.minutos) > 10 ? ` nb-rl-${c === "err" ? "err" : "warn"}` : "";
+      return `<tr class="nb-rl nb-rl-click${marca}" data-bus="${esc(r.interno)}" tabindex="0" title="Ver las fotos de las marcas">`
+        + `<td class="nb-rl-c-bus" data-l="Bus"><span class="nb-rl-bus">${esc(r.interno)}</span><div class="nb-rl-nota">${esc(nombrePunto(r.punto))}</div>`
+        + `<div class="nb-rl-verfotos">Ver fotos</div></td>`
+        + `<td class="nb-rl-c-hora" data-l="Relevo"><b>${esc(r.relevo)}</b></td>`
+        + `<td class="nb-rl-c-donde" data-l="A esa hora el carro estaba">${aLaHoraRelevo(r)}</td>`
+        + `<td class="nb-rl-c-entrega" data-l="Entrega del carro">${entregaRelevo(r)}</td>`
+        + `<td class="nb-rl-c-porque" data-l="Por qué">${porqueRelevo(r)}</td>`
+        + `<td class="nb-rl-c-cond" data-l="Los dos conductores: turnos, marcas y el carro">${conductoresRelevo(r, d.fecha)}</td></tr>`;
+    }).join("");
+    box.innerHTML = `<div class="nb-tabla-caja"><table class="nb-tabla nb-tabla-relevos"><thead><tr><th>Bus</th><th>Relevo</th>`
+      + `<th>A esa hora el carro estaba</th><th>Entrega del carro</th><th>Por qué</th><th>Los dos conductores: turnos, marcas y el carro</th></tr></thead>`
+      + `<tbody>${filas}</tbody></table></div>`;
+  }
+
   /* ---------- Turnos del dia: la celda cambiada dice quien y cuando ---------- */
   const marcas = { clave: "", en: 0, datos: null, cargando: false, reloj: null };
   function fechaTurnos(){
@@ -11823,11 +12833,12 @@ function bindWindowEvents(){
     let f = fecha || h;
     if (f > diaMaximo()) f = diaMaximo();
     if (f < masDias(h, -DIAS_ATRAS)) f = masDias(h, -DIAS_ATRAS);
-    if (f === st.fecha && (st.vista === "novedades" ? st.datos : st.vista === "cambios" ? st.cambios : st.viajes)) return;
+    if (f === st.fecha && datosDe(st.vista)) return;
     st.fecha = f;
     st.datos = null;
     st.viajes = null;
     st.cambios = null;
+    st.relevos = null;
     cargar();
   }
 
@@ -11837,8 +12848,7 @@ function bindWindowEvents(){
     tab.addEventListener("click", () => {
       if (!st.fecha) st.fecha = hoy();
       if (EXTERNAS[st.vista]) { mostrarExterna(st.vista); return; }   // vuelve a Despachos o al Visor
-      const d = st.vista === "novedades" ? st.datos : st.vista === "viajes" ? st.viajes : st.fila;
-      cargar({ silencioso: !!d });
+      cargar({ silencioso: !!datosDe(st.vista) });
     });
     el("nbVistas")?.addEventListener("click", (ev) => {
       const b = ev.target.closest(".nb-vista");
@@ -11889,6 +12899,33 @@ function bindWindowEvents(){
       el("nbCambiosChips").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
       pintarCambios();
     });
+    el("nbRelevosBuscar")?.addEventListener("input", (ev) => { st.relevosBuscar = ev.target.value || ""; pintarRelevos(); });
+    el("nbRelevos")?.addEventListener("click", (ev) => {
+      if (ev.target.closest("details, summary, a, button, input")) return;
+      const tr = ev.target.closest("tr[data-bus]");
+      if (tr) abrirRelevo(tr.dataset.bus);
+    });
+    el("nbRelevos")?.addEventListener("keydown", (ev) => {
+      if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches("tr[data-bus]")) {
+        ev.preventDefault();
+        abrirRelevo(ev.target.dataset.bus);
+      }
+    });
+    el("nbRelevosChips")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      st.relevosFiltro = b.dataset.r || "";
+      el("nbRelevosChips").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
+      pintarRelevos();
+    });
+    el("nbConductoresBuscar")?.addEventListener("input", (ev) => { st.conductoresBuscar = ev.target.value || ""; pintarConductores(); });
+    el("nbConductoresChips")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".nb-chip");
+      if (!b) return;
+      st.conductoresFiltro = b.dataset.h || "";
+      el("nbConductoresChips").querySelectorAll(".nb-chip").forEach((c) => c.classList.toggle("activo", c === b));
+      pintarConductores();
+    });
     ["nbHoraDesde", "nbHoraHasta"].forEach((id) => el(id)?.addEventListener("change", (ev) => {
       if (id === "nbHoraDesde") st.horasDesde = ev.target.value || "";
       else st.horasHasta = ev.target.value || "";
@@ -11937,6 +12974,15 @@ function bindWindowEvents(){
       }
     });
     el("nbModalCerrar")?.addEventListener("click", cerrarDetalle);
+    // la ventana del relevo: tocar una foto pequeña la muestra grande
+    el("nbModalCuerpo")?.addEventListener("click", (ev) => {
+      const f = ev.target.closest && ev.target.closest(".nb-rv-foto");
+      if (f) verFotoGrande(f.querySelector("img"));
+    });
+    el("nbModalCuerpo")?.addEventListener("keydown", (ev) => {
+      const f = ev.target.closest && ev.target.closest(".nb-rv-foto");
+      if (f && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); verFotoGrande(f.querySelector("img")); }
+    });
     el("nbModal")?.addEventListener("click", (ev) => { if (ev.target === el("nbModal")) cerrarDetalle(); });
     el("nbRevCancelar")?.addEventListener("click", cerrarRevisar);
     el("nbRevGuardar")?.addEventListener("click", guardarRevision);
@@ -11947,6 +12993,7 @@ function bindWindowEvents(){
     });
     document.addEventListener("keydown", (ev) => {
       if (ev.key !== "Escape") return;
+      if (cerrarFotoGrande()) return;                       // primero la foto grande; la ventana sigue abierta
       if (!el("nbRevModal")?.classList.contains("hidden")) cerrarRevisar();
       else if (!el("nbModal")?.classList.contains("hidden")) cerrarDetalle();
     });

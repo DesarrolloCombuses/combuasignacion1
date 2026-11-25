@@ -1,7 +1,7 @@
 {
-  "version": "2.11.1",
+  "version": "2.12.0",
   "minVersion": "2.9.1",
-  "buildDate": "2026-11-20",
+  "buildDate": "2026-11-24",
   "channel": "stable",
-  "notes": "El Excel del visor sale sin proteccion (se puede editar) y con sus colores en todos los PC: antes, en algunos, salia sin fondos y los buses y los FICHO parecian vacios. Al imprimirlo sale horizontal y a lo ancho de una hoja."
+  "notes": "Mi base tiene la vista Relevos: a qué hora se entregó de verdad cada carro (con el GPS), dónde estaba a la hora del relevo y por qué se entregó tarde (por ejemplo, esperando despacho en el aeropuerto). Con los dos conductores y, en cada marca, si el carro estaba en ese punto."
 }

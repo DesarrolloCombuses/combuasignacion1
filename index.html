@@ -13,7 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-<link rel="stylesheet" href="css/styles.css?v=2.11.1">
+<link rel="stylesheet" href="css/styles.css?v=2.12.0">
 </head>
 <body>
 
@@ -238,16 +238,15 @@
 
         <div id="tab-programacion2" class="tab-content active">
           <div class="workflow">
-            <span class="workflow-step active">1. Selecciona fecha (DB nueva)</span>
-            <span class="workflow-note" id="workflowNote2">Vista independiente de programacion desde la base nueva.</span>
+            <span class="workflow-step active">1. Escoja el día</span>
+            <span class="workflow-note" id="workflowNote2">Luego toque un conductor del panel y la casilla donde va (también puede arrastrarlo o escribir su nombre).</span>
           </div>
           <div class="row" style="margin-bottom:10px">
             <select id="filterDate2" class="cal2-native" aria-hidden="true" tabindex="-1">
               <option value="">Selecciona fecha...</option>
             </select>
             <button class="btn btn-ghost" id="clearFilter2">Limpiar filtro</button>
-            <button class="btn btn-ghost" id="btnRefreshProgramacion2">Actualizar DB nueva</button>
-            <span class="muted">Fuente: proyecto nuevo de Supabase.</span>
+            <button class="btn btn-ghost" id="btnRefreshProgramacion2">Actualizar</button>
           </div>
           <div class="cal2-wrap" id="dateCalendar2">
             <button type="button" class="cal2-trigger" id="cal2Trigger" aria-haspopup="dialog" aria-expanded="false">
@@ -275,7 +274,8 @@
               </div>
             </div>
           </div>
-          <div id="gridViewport2" style="overflow:auto;max-height:60vh">
+          <div class="avance-turnos" id="avanceTurnos" hidden></div>
+          <div id="gridViewport2">
             <table id="grid2"><thead></thead><tbody></tbody></table>
           </div>
         </div>
@@ -327,8 +327,10 @@
           <div class="nb-vistas" id="nbVistas" role="tablist" aria-label="Qué ver de la base">
             <button type="button" class="nb-vista activa" data-vista="novedades" role="tab" aria-selected="true">Novedades <span class="nb-vista-n" id="nbNumRevisar"></span></button>
             <button type="button" class="nb-vista" data-vista="viajes" role="tab" aria-selected="false">Viaje a viaje</button>
+            <button type="button" class="nb-vista" data-vista="relevos" role="tab" aria-selected="false">Relevos <span class="nb-vista-n" id="nbNumRelevos"></span></button>
             <button type="button" class="nb-vista" data-vista="fila" role="tab" aria-selected="false">Enturnamiento <span class="nb-vivo">en vivo</span></button>
             <button type="button" class="nb-vista" data-vista="cambios" role="tab" aria-selected="false">Cambios <span class="nb-vista-n nb-vista-n-info" id="nbNumCambios"></span></button>
+            <button type="button" class="nb-vista" data-vista="conductores" role="tab" aria-selected="false">Historial de conductores</button>
             <span class="nb-vistas-sep" aria-hidden="true"></span>
             <button type="button" class="nb-vista" data-vista="despachos" role="tab" aria-selected="false">Despachos en vivo</button>
             <button type="button" class="nb-vista" data-vista="visor" role="tab" aria-selected="false">Visor Excel</button>
@@ -446,6 +448,61 @@
                 <div class="nb-ayuda">Dónde está cada bus de la base: en la fila de un punto, en ruta o sin despacho.</div>
               </div>
               <div id="nbMisBuses"></div>
+            </section>
+          </div>
+
+          <div id="nbVistaRelevos" class="nb-vista-cuerpo hidden">
+            <div class="nb-barra" role="group" aria-label="Filtros de relevos">
+              <div class="nb-chips" id="nbRelevosChips" role="group" aria-label="Qué relevos ver">
+                <button type="button" class="nb-chip activo" data-r="">Todos</button>
+                <button type="button" class="nb-chip" data-r="tarde">Entregaron tarde</button>
+                <button type="button" class="nb-chip" data-r="a_tiempo">A tiempo</button>
+                <button type="button" class="nb-chip" data-r="antes">Antes de la hora</button>
+                <button type="button" class="nb-chip" data-r="en_curso">Todavía no</button>
+                <button type="button" class="nb-chip" data-r="sin_dato">No se pudo saber</button>
+                <button type="button" class="nb-chip" data-r="m_entrada">Entrada fuera de horario</button>
+                <button type="button" class="nb-chip" data-r="m_salida">Salida que no cuadra</button>
+                <button type="button" class="nb-chip" data-r="m_gps">Marcaron donde no estaba el carro</button>
+              </div>
+              <div class="nb-filtros">
+                <input id="nbRelevosBuscar" type="search" placeholder="Buscar bus o conductor" aria-label="Buscar bus o conductor" />
+              </div>
+            </div>
+            <div class="nb-resumen-grupos" id="nbRelevosResumen"></div>
+            <section class="nb-seccion" aria-labelledby="nbHR">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHR">Relevos de sus carros <span class="nb-cuenta" id="nbCuentaRelevos"></span></h4>
+                <div class="nb-ayuda">Cada renglón es un carro con relevo: el <b>conductor 1</b> trae el carro y lo entrega; el <b>conductor 2</b> lo recibe. Para cada uno sale su turno (hora programada de inicio y de salida) y sus marcas: a qué hora, en qué punto (Almacentro, Terminal del Norte, Nutibara) y si fue en el biométrico o en el celular. La <b>entrega del carro</b> es la hora en que de verdad se juntaron, sacada del GPS: cuando el carro llegó al punto y el conductor 2 ya había marcado. Si el conductor 2 marcó en un punto pero fue a recibir el carro a otro (donde el conductor 1 marcó la salida con el carro ahí), la entrega se cuenta en ese otro punto y se avisa. Debajo de cada marca dice dónde estaba el carro en ese momento. <b>Toque el bus para ver las fotos de las marcas.</b> Se actualiza cada 10 minutos.</div>
+                <div class="nb-rl-leyenda" aria-label="Qué quiere decir cada color">
+                  <span class="nb-rl-gps nb-rl-gps-ok">El carro estaba ahí</span>
+                  <span class="nb-rl-gps nb-rl-gps-info">El carro llegó después (el conductor lo esperó)</span>
+                  <span class="nb-rl-gps nb-rl-gps-warn">Marcó antes de que llegara el carro o cuando ya se había ido</span>
+                  <span class="nb-rl-gps nb-rl-gps-err">El carro no pasó por ese punto</span>
+                </div>
+              </div>
+              <div id="nbRelevos"></div>
+            </section>
+          </div>
+
+          <div id="nbVistaConductores" class="nb-vista-cuerpo hidden">
+            <div class="nb-barra" role="group" aria-label="Filtros del historial de conductores">
+              <div class="nb-chips" id="nbConductoresChips" role="group" aria-label="Qué conductores ver">
+                <button type="button" class="nb-chip activo" data-h="">Todos</button>
+                <button type="button" class="nb-chip" data-h="activo">Activos</button>
+                <button type="button" class="nb-chip" data-h="retirado">Retirados</button>
+                <button type="button" class="nb-chip" data-h="no_esta">No están en el ERP</button>
+              </div>
+              <div class="nb-filtros">
+                <input id="nbConductoresBuscar" type="search" placeholder="Buscar conductor o bus" aria-label="Buscar conductor o bus" />
+              </div>
+            </div>
+            <div class="nb-resumen-grupos" id="nbConductoresResumen"></div>
+            <section class="nb-seccion" aria-labelledby="nbHH">
+              <div class="nb-seccion-cabeza">
+                <h4 id="nbHH">Historial de conductores <span class="nb-cuenta" id="nbCuentaConductores"></span></h4>
+                <div class="nb-ayuda">Todos los conductores que han trabajado en su base (según la programación) y los que la hoja de conductores tiene en su base, con su estado en el <b>ERP de Combuses</b>: activo, retirado (y desde cuándo) o no está creado. Solo los <b>activos</b> salen en la lista para programar. Si alguno que sale retirado sí está trabajando, pida a Gestión Humana que lo active en el ERP: aparece en la siguiente carga.</div>
+              </div>
+              <div id="nbConductores"></div>
             </section>
           </div>
 
@@ -770,8 +827,8 @@
         <input id="filterDrivers" type="text" placeholder="Buscar por nombre...">
         <div class="list" id="driversList"></div>
         <p class="muted" style="margin-top:8px;text-align:center">
-          Arrastra un conductor a la tabla de estados<br>
-          <span style="font-size:11px">Asignacion solo por arrastre a CONDUCTOR 1/2</span>
+          Toque un conductor y luego la casilla vacía donde va.<br>
+          <span style="font-size:11px">También puede arrastrarlo a la casilla o a Estados del personal.</span>
         </p>
       </div>
     </div>
@@ -880,9 +937,9 @@
   </div>
 </div>
 
-<script src="js/functions.js?v=2.11.1"></script>
-<script src="js/main.js?v=2.11.1"></script>
-<script src="js/pwa.js?v=2.11.1"></script>
+<script src="js/functions.js?v=2.12.0"></script>
+<script src="js/main.js?v=2.12.0"></script>
+<script src="js/pwa.js?v=2.12.0"></script>
 </body>
 </html>
 

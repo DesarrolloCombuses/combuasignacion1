@@ -103,6 +103,9 @@
 
 html,body{
   width:100%; max-width:100%; overflow-x:hidden;
+  /* v2.12.0: clip corta igual lo que se sale de lado, pero sin volver a html/body una caja con scroll (hidden lo hace, y
+     entonces nada queda pegado arriba al bajar: la barra de avance, el encabezado de la tabla, el panel). */
+  overflow-x:clip;
 }
 
 body{
@@ -1585,6 +1588,7 @@ td, th{ overflow-wrap:anywhere; }
    clicables; los que no tienen quedan apagados y deshabilitados. */
 .cal2-native{
   position:absolute;
+  left:0; top:0;
   width:1px; height:1px;
   padding:0; margin:-1px; border:0;
   overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%);
@@ -1889,6 +1893,9 @@ td, th{ overflow-wrap:anywhere; }
 }
 .nb-vacio-ok{ color:var(--color-success-700); background:var(--color-success-50); }
 .nb-mut{ color:var(--color-text-mut); }
+.nb-hc-nota{ margin-top:2px; font-size:var(--fs-12); color:var(--color-text-mut); }
+.nb-tabla-conductores td:first-child{ min-width:170px; }
+.nb-tabla-conductores td:nth-child(3){ min-width:150px; }
 
 /* Badges */
 .nb-badge{
@@ -2338,4 +2345,229 @@ td.td-cambiada{ box-shadow:inset 0 0 0 2px var(--color-warning-200); }
 @media (max-width:640px){
   .nb-pag{ justify-content:center; }
   .nb-pag-num:not(.activo), .nb-pag-gap{ display:none; }
+}
+/* Mi base · Relevos (v2.12.0) */
+.nb-tabla-relevos td{ vertical-align:top; }
+.nb-tabla-relevos tr.nb-rl-err td:first-child{ box-shadow:inset 3px 0 0 var(--color-danger); }
+.nb-tabla-relevos tr.nb-rl-warn td:first-child{ box-shadow:inset 3px 0 0 var(--color-warning); }
+.nb-rl-bus{ font-weight:700; font-size:var(--fs-15, 15px); }
+.nb-rl-c-hora{ white-space:nowrap; }
+.nb-rl-c-entrega{ min-width:150px; }
+.nb-rl-per{ overflow-wrap:anywhere; line-height:1.45; }
+.nb-rl-per + .nb-rl-per{ margin-top:6px; }
+.nb-rl-juntos{ font-size:var(--fs-12, 12px); font-weight:600; color:var(--color-text-2); margin-bottom:4px; }
+.nb-rl-marca{ font-size:var(--fs-12, 12px); color:var(--color-text-mut); margin-top:1px; }
+.nb-rl-marca .nb-badge{ margin-left:2px; }
+.nb-rl-c-cond{ min-width:240px; }
+.nb-rl-rol{
+  display:inline-block; min-width:56px; font-size:var(--fs-11); font-weight:600; letter-spacing:.03em;
+  text-transform:uppercase; color:var(--color-text-mut);
+}
+.nb-rl-nota, .nb-rl-ahora{ font-size:var(--fs-12, 12px); color:var(--color-text-mut); margin-top:3px; }
+.nb-rl-ojo{ font-size:var(--fs-12, 12px); color:var(--color-warning-700); margin-top:4px; }
+.nb-tabla-relevos .nb-badge{ white-space:normal; }
+.nb-rl-gps{
+  font-size:var(--fs-12, 12px); margin-top:3px; padding-left:8px; line-height:1.4;
+  border-left:3px solid var(--color-border-strong); color:var(--color-text-2);
+}
+.nb-rl-gps-ok{ border-left-color:var(--color-success); color:var(--color-success-700); }
+.nb-rl-gps-warn{ border-left-color:var(--color-warning); color:var(--color-warning-700); }
+.nb-rl-gps-err{ border-left-color:var(--color-danger); color:var(--color-danger-700); font-weight:600; }
+.nb-rl-gps-info{ border-left-color:var(--color-info); color:var(--color-text-2); }
+.nb-rl-gps-mut{ color:var(--color-text-mut); }
+.nb-rl-rec{ margin-top:6px; font-size:var(--fs-12, 12px); }
+.nb-rl-rec summary{ cursor:pointer; color:var(--color-primary); font-weight:600; }
+.nb-rl-rec ol{ margin:4px 0 0; padding-left:18px; color:var(--color-text-2); }
+.nb-rl-rec li{ margin:1px 0; }
+.nb-rl-rec li.nb-rl-rec-marca{ color:var(--color-text); font-weight:600; }
+.nb-rl-rec li.nb-rl-rec-entrega{ color:var(--color-success-700); font-weight:700; }
+.nb-rl-rec li.nb-rl-rec-hora{ color:var(--color-text-mut); font-style:italic; }
+.nb-det-relevo:not(:empty){ margin-top:var(--space-3); padding-top:var(--space-3); border-top:1px solid var(--color-border); }
+.nb-det-relevo h5{ margin:0 0 6px; font-size:var(--fs-14); }
+.nb-det-rl-quien{ font-size:var(--fs-14); margin-bottom:6px; }
+.nb-det-rl-entrega{ font-size:var(--fs-13); margin-bottom:8px; }
+.nb-det-rl-entrega .nb-rl-rol{ margin-right:6px; }
+.nb-det-rl-cond{ font-size:var(--fs-13); }
+/* v3: turnos, origen de la marca, renglón que se toca, ventana con fotos, guía de colores */
+.nb-rl-turno{ font-size:var(--fs-12, 12px); color:var(--color-text-2); font-weight:600; margin-top:1px; }
+.nb-rl-origen{ color:var(--color-text-mut); }
+.nb-tabla-relevos tr.nb-rl-click{ cursor:pointer; }
+.nb-tabla-relevos tr.nb-rl-click:hover td{ background:var(--color-surface-2); }
+.nb-tabla-relevos tr.nb-rl-click:focus-visible{ outline:2px solid var(--color-primary); outline-offset:-2px; }
+.nb-rl-verfotos{ margin-top:4px; font-size:var(--fs-11); font-weight:600; color:var(--color-primary); }
+.nb-rl-leyenda{ display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:6px; }
+.nb-rl-leyenda .nb-rl-gps{ margin-top:0; }
+.nb-rlm-resumen{ display:grid; gap:4px; font-size:var(--fs-13); padding-bottom:var(--space-3); border-bottom:1px solid var(--color-border); }
+.nb-rlm-resumen .nb-rl-rol{ margin-right:6px; }
+.nb-rlm-cond{ padding:var(--space-3) 0; border-bottom:1px solid var(--color-border); }
+.nb-rlm-cond h4{ margin:0 0 2px; font-size:var(--fs-15, 15px); }
+.nb-rlm-cond .nb-rl-turno{ margin-bottom:8px; font-size:var(--fs-13); }
+.nb-rlm-cond .nb-rl-gps{ margin-top:6px; }
+.nb-det-rl-fotos{ margin-top:var(--space-2); }
+.nb-rl-otro-punto{ color:var(--color-text-2); margin:0 0 4px; }
+/* 25-nov: la ventana del relevo, más ordenada (entrega arriba, marcas, paso a paso, conductores lado a lado) */
+.nb-modal-card.nb-modal-relevo{ width:min(940px, 96vw); }
+.nb-rv-resumen{
+  display:grid; gap:6px; padding:12px 14px; border:1px solid var(--color-border); border-left-width:5px;
+  border-radius:var(--radius-md); background:var(--color-surface-2);
+}
+.nb-rv-resumen.nb-rv-ok{ border-left-color:var(--color-success); background:var(--color-success-50); }
+.nb-rv-resumen.nb-rv-err{ border-left-color:var(--color-danger); background:var(--color-danger-50); }
+.nb-rv-resumen.nb-rv-info{ border-left-color:var(--color-info); background:var(--color-info-50); }
+.nb-rv-resumen.nb-rv-mut{ border-left-color:var(--color-border-strong); }
+.nb-rv-big{ display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:20px; line-height:1.3; }
+.nb-rv-big b{ font-size:24px; font-variant-numeric:tabular-nums; }
+.nb-rv-en{ font-weight:600; color:var(--color-text); }
+.nb-rv-big .nb-rl-nota, .nb-rv-big .nb-rl-ahora{ flex-basis:100%; font-size:var(--fs-13); }
+.nb-rv-frase{ font-size:var(--fs-14); color:var(--color-text); }
+.nb-rv-porque{ font-size:var(--fs-13); }
+.nb-rv-tit{
+  margin:var(--space-4) 0 8px; font-size:var(--fs-12); font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--color-text-2);
+}
+.nb-rv-tit small{ margin-left:6px; font-size:var(--fs-12); font-weight:400; letter-spacing:0; text-transform:none; color:var(--color-text-mut); }
+.nb-rv-chks{ display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:8px; }
+.nb-rv-chk{ display:flex; flex-direction:column; align-items:flex-start; gap:4px; padding:8px 10px; border:1px solid var(--color-border); border-radius:var(--radius-md); }
+.nb-rv-chk-et{ font-size:var(--fs-12); color:var(--color-text-mut); }
+.nb-rv-pasos{ list-style:none; margin:0 0 0 6px; padding:0; border-left:2px solid var(--color-border-strong); display:grid; gap:6px; }
+.nb-rv-pasos li{ position:relative; display:flex; gap:12px; align-items:baseline; padding-left:14px; font-size:var(--fs-13); color:var(--color-text-2); }
+.nb-rv-pasos li::before{
+  content:""; position:absolute; left:-7px; top:.35em; width:12px; height:12px; border-radius:50%;
+  background:var(--color-surface); border:2px solid var(--color-border-strong); box-sizing:border-box;
+}
+.nb-rv-h{ min-width:42px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--color-text); }
+.nb-rv-pasos li.nb-rv-p-marca::before{ border-color:var(--color-primary); }
+.nb-rv-pasos li.nb-rv-p-carro::before{ border-color:var(--color-text-mut); background:var(--color-surface-3); }
+.nb-rv-pasos li.nb-rv-p-entrega{ color:var(--color-success-700); font-weight:700; }
+.nb-rv-pasos li.nb-rv-p-entrega::before{ background:var(--color-success); border-color:var(--color-success); }
+.nb-rv-pasos li.nb-rv-p-hora{ color:var(--color-text-mut); font-style:italic; }
+.nb-rv-conds{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.nb-rv-cond{ display:grid; gap:12px; align-content:start; min-width:0; padding:10px 12px; border:1px solid var(--color-border); border-radius:var(--radius-md); }
+.nb-rv-ch{ display:grid; gap:2px; }
+.nb-rv-nom{ font-size:var(--fs-14); font-weight:600; }
+.nb-rv-marca{ display:flex; gap:10px; align-items:flex-start; }
+.nb-rv-md{ display:grid; gap:3px; min-width:0; font-size:var(--fs-13); }
+.nb-rv-md .nb-rl-gps{ margin-top:2px; }
+.nb-rv-mt b{ font-variant-numeric:tabular-nums; }
+.nb-rv-ml{ font-size:var(--fs-12); color:var(--color-text-mut); }
+.nb-rv-foto{ flex:none; display:inline-block; border-radius:var(--radius-md); cursor:zoom-in; }
+.nb-rv-ubic a{ color:var(--color-primary); font-weight:600; }
+.nb-rv-motivo{ display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; margin-top:2px; font-size:var(--fs-12); }
+.nb-rv-motivo small{ color:var(--color-text-mut); }
+.nb-rv-motivo-txt{ flex-basis:100%; color:var(--color-text); font-style:italic; }
+.nb-rv-foto .nb-foto{ width:64px; height:84px; }
+.nb-rv-foto-vacia{ cursor:default; }
+.nb-rv-foto:focus-visible{ outline:2px solid var(--color-primary); outline-offset:2px; }
+.nb-modal-relevo .nb-rl-rec{ margin-top:var(--space-4); font-size:var(--fs-13); }
+.nb-rv-ley{ display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:var(--space-3); font-size:var(--fs-12); color:var(--color-text-mut); }
+.nb-rv-c-ok{ color:var(--color-success-700); }
+.nb-rv-c-warn{ color:var(--color-warning-700); }
+.nb-rv-c-err{ color:var(--color-danger-700); }
+.nb-rv-visor{
+  position:fixed; inset:0; z-index:1000; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:12px; padding:16px; background:rgba(15, 23, 42, .88); cursor:zoom-out;
+}
+.nb-rv-visor figure{ margin:0; display:flex; flex-direction:column; align-items:center; gap:8px; }
+.nb-rv-visor img{ width:auto; height:min(76vh, 560px); max-width:92vw; border-radius:var(--radius-md); object-fit:contain; }
+.nb-rv-visor figcaption{ color:#f8fafc; font-size:var(--fs-14); text-align:center; }
+@media (min-width:720px){ .nb-modal-relevo .nb-rl-rec ol{ columns:2; column-gap:32px; } }
+@media (max-width:640px){
+  .nb-rv-conds{ grid-template-columns:1fr; }
+  .nb-rv-big{ font-size:17px; }
+  .nb-rv-big b{ font-size:21px; }
+}
+@media (max-width: 560px){
+  .nb-tabla-relevos, .nb-tabla-relevos tbody{ display:block; }
+  .nb-tabla-relevos thead{ display:none; }
+  .nb-tabla-relevos tr{
+    display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:6px 12px;
+    padding:10px 8px; border-bottom:1px solid var(--color-border);
+  }
+  .nb-tabla.nb-tabla-relevos td{ border-bottom:0; padding:0; text-align:left; white-space:normal; min-width:0; }
+  .nb-tabla-relevos td[data-l]::before{
+    content:attr(data-l) ": "; display:block; color:var(--color-text-mut); font-size:var(--fs-11); font-weight:500;
+  }
+  .nb-tabla-relevos .nb-rl-c-donde, .nb-tabla-relevos .nb-rl-c-entrega, .nb-tabla-relevos .nb-rl-c-porque,
+  .nb-tabla-relevos .nb-rl-c-cond{ grid-column:1 / -1; }
+  .nb-tabla-relevos tr.nb-rl-err{ box-shadow:inset 3px 0 0 var(--color-danger); }
+  .nb-tabla-relevos tr.nb-rl-warn{ box-shadow:inset 3px 0 0 var(--color-warning); }
+  .nb-tabla-relevos tbody tr td, .nb-tabla-relevos tbody tr:hover td, .nb-tabla-relevos tbody tr:nth-child(even) td,
+  .nb-tabla-relevos tr.nb-rl-err td:first-child, .nb-tabla-relevos tr.nb-rl-warn td:first-child{
+    background:transparent; box-shadow:none;
+  }
+}
+
+
+/* ---------- Turnos del dia mas claro (v2.12.0) ---------- */
+#gridViewport2{ overflow:auto; max-height:70vh; }
+#grid2 td{ padding:6px 10px; }
+#grid2 th, #grid2 td:not(.drop){ white-space:nowrap; overflow-wrap:normal; word-break:normal; }
+#grid2 td.drop{ min-width:200px; border:0; border-left:3px solid transparent; }
+#grid2 td.drop.filled{ background:var(--color-surface); border-left-color:var(--color-success); }
+#grid2 td.drop.filled .driver-cell-label{ display:none; }
+#grid2 td.drop:not(.filled){ background:var(--color-danger-50); border-left-color:var(--color-danger); }
+#grid2 td.drop.con-nota{ background:var(--color-warning-50); border-left-color:var(--color-warning); }
+#grid2 td.drop:not(.filled) .driver-cell-label{ display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+#grid2 .driver-cell-editor{ margin-top:4px; }
+#grid2 td.drop.filled .driver-cell-editor{ margin-top:0; }
+#grid2 .driver-typed-input{ width:100%; font-size:var(--fs-12); padding:5px 8px; border:1px solid var(--color-border);
+  border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-text); }
+#grid2 td.drop.filled .driver-typed-input{ font-size:var(--fs-13); font-weight:600; border-color:transparent; background:transparent; }
+#grid2 td.drop.filled .driver-typed-input:hover{ border-color:var(--color-border); background:var(--color-surface); }
+#grid2 .driver-typed-input:focus{ outline:none; border-color:var(--color-primary); box-shadow:0 0 0 3px var(--color-primary-100);
+  background:var(--color-surface); }
+#grid2 .slot-vacio{ font-size:var(--fs-11); font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--color-danger-700); }
+#grid2 td.con-nota .slot-vacio{ color:var(--color-warning-700); }
+#grid2 .cell-note{ margin-top:0; padding:2px 8px; flex-basis:100%; }
+#grid2 .btn-note{ margin-top:0; padding:1px 8px; }
+#grid2.con-base th[data-campo="FECHA"], #grid2.con-base td[data-campo="FECHA"],
+#grid2.con-base th[data-campo="BASE"], #grid2.con-base td[data-campo="BASE"]{ display:none; }
+#grid2.solo-faltan tbody tr.fila-completa{ display:none; }
+#grid2.eligiendo td.drop:not(.filled){ cursor:pointer; outline:2px dashed var(--color-primary); outline-offset:-5px; background:var(--color-primary-50); }
+#grid2.eligiendo td.drop:not(.filled):hover{ background:var(--color-primary-100); }
+#grid2.eligiendo td.drop:not(.filled) .btn-note{ opacity:.35; pointer-events:none; }
+#grid2 td.drop.destello{ animation:destelloCelda 1.6s ease; }
+@keyframes destelloCelda{ 0%, 55%{ box-shadow:inset 0 0 0 3px var(--color-primary); } 100%{ box-shadow:inset 0 0 0 0 transparent; } }
+
+.avance-turnos{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 14px; margin:0 0 10px;
+  background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); }
+.avance-turnos[hidden]{ display:none; }
+.avance-num{ font-size:var(--fs-13); color:var(--color-text-2); white-space:nowrap; }
+.avance-num b{ font-size:var(--fs-20); color:var(--color-text); }
+.avance-barra{ flex:1 1 160px; min-width:120px; height:10px; background:var(--color-surface-3); border-radius:999px; overflow:hidden; }
+.avance-barra span{ display:block; height:100%; background:var(--color-primary); border-radius:999px; transition:width .3s; }
+.avance-turnos.completo .avance-barra span{ background:var(--color-success); }
+.avance-acciones{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+.av-solo{ display:flex; align-items:center; gap:6px; font-size:var(--fs-13); color:var(--color-text-2); cursor:pointer; white-space:nowrap; }
+.av-btn{ border:1px solid var(--color-primary); background:var(--color-primary); color:#fff; border-radius:var(--radius-md);
+  padding:6px 12px; font:inherit; font-size:var(--fs-13); font-weight:600; cursor:pointer; white-space:nowrap; }
+.av-btn:hover{ background:var(--color-primary-600); }
+.av-btn:disabled{ background:var(--color-surface-3); border-color:var(--color-surface-3); color:var(--color-text-mut); cursor:default; }
+.avance-chips{ display:flex; flex-wrap:wrap; gap:6px; flex-basis:100%; }
+.av-chip{ display:inline-block; padding:2px 10px; border-radius:999px; font-size:var(--fs-12); font-weight:600; border:1px solid transparent; }
+.av-ok{ background:var(--color-success-50); color:var(--color-success-700); border-color:var(--color-success-200); }
+.av-falta{ background:var(--color-danger-50); color:var(--color-danger-700); border-color:var(--color-danger-200); }
+.av-nota{ background:var(--color-warning-50); color:var(--color-warning-700); border-color:var(--color-warning-200); }
+.av-info{ background:var(--color-primary-50); color:var(--color-primary-700); border-color:var(--color-primary-200); }
+.aviso-elegido{ flex-basis:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px;
+  border-radius:var(--radius-md); background:var(--color-primary); color:#fff; font-size:var(--fs-13); }
+.aviso-elegido[hidden]{ display:none; }
+.aviso-elegido button{ background:rgba(255,255,255,.15); color:#fff; border:1px solid rgba(255,255,255,.45); border-radius:var(--radius-sm);
+  padding:3px 10px; font:inherit; font-weight:600; cursor:pointer; }
+
+.drivers .driver-item{ background:var(--color-surface); color:var(--color-text); border:1px solid var(--color-border);
+  border-left:4px solid var(--color-primary); box-shadow:none; padding:8px 10px; margin-bottom:5px; cursor:pointer; }
+.drivers .driver-item:hover{ background:var(--color-primary-50); box-shadow:var(--shadow-sm); }
+.drivers .driver-item .base-badge{ display:none; }
+.drivers .driver-item.elegido{ background:var(--color-primary); color:#fff; border-color:var(--color-primary); box-shadow:0 0 0 3px var(--color-primary-200); }
+
+@media (min-width: 1000px){
+  /* un solo scroll, el de la pagina: la tabla crece, el encabezado y la barra quedan pegados arriba */
+  /* la regla general le pone scroll horizontal propio (overflow-x:auto !important): eso descuadra el encabezado pegado.
+     En computador la tabla se ajusta al ancho y no necesita scroll propio. */
+  #gridViewport2{ overflow:visible !important; max-height:none; }
+  #grid2{ overflow:clip; width:100%; min-width:0; }
+  #grid2 thead th{ top:var(--av-alto, 0px); }
+  .avance-turnos{ position:sticky; top:0; z-index:3; }
+  .card.drivers{ position:sticky; top:12px; align-self:start; max-height:calc(100vh - 24px); }
 }
