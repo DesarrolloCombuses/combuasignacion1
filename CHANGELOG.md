@@ -18,6 +18,21 @@ Convencion de version:
 
 ---
 
+## [2.14.0] - 2026-11-25
+
+### Agregado
+- **Los conductores de cada base también salen del ERP.** Además de la hoja de conductores (la lista de Sonar), cada base ve los conductores **activos en el ERP con su base**. Así:
+  - el conductor nuevo sale apenas Gestión Humana lo crea en el ERP, sin esperar a que lo creen en Sonar y se refresque la hoja;
+  - el que en Sonar quedó sin base, con otra base o deshabilitado sale también en la base que dice el ERP.
+- No se le quita a nadie la base donde lo tiene la hoja: solo se suma. Si la persona está en la hoja, se usa el nombre de la hoja (el mismo de la programación); si no, el del ERP con su cédula.
+- El resumen de la carga dice cuántos salen por el ERP y por qué («todavía no está en la hoja de Sonar», «en Sonar no tiene base», «en Sonar dice Base n»). La píldora dice «N por el ERP».
+- Si la persona está en dos filas de la hoja (una sin base y otra con base), ya no cuenta como «sin base» cuando el ERP confirma su base.
+
+### Necesita
+- La función `afiliados_conductores_erp()` en Supabase (`supabase/migrations/20261125180000_conductores_del_erp_por_base.sql`). Solo lee; a cada cuenta de base le da solo sus conductores (la Base 3 también los de la Base 5) y al administrador todos: nombre, cédula y base, nada más del ERP. Si no está o falla, la página sigue con la hoja sola, como antes, y lo avisa.
+
+---
+
 ## [2.13.0] - 2026-11-25
 
 ### Agregado

@@ -1,7 +1,7 @@
 {
-  "version": "2.13.0",
+  "version": "2.14.0",
   "minVersion": "2.9.1",
   "buildDate": "2026-11-25",
   "channel": "stable",
-  "notes": "Mi base tiene la vista Relevos: a qué hora se entregó de verdad cada carro (con el GPS), dónde estaba a la hora del relevo y por qué se entregó tarde (por ejemplo, esperando despacho en el aeropuerto). Con los dos conductores y, en cada marca, si el carro estaba en ese punto."
+  "notes": "Los conductores de cada base también salen del ERP: el conductor nuevo sale apenas lo crean en el ERP, y el que en Sonar quedó sin base o con otra base sale también en la base que dice el ERP. No se le quita a nadie la base que tiene en la hoja."
 }

@@ -2481,6 +2481,76 @@ let driversFueraPorErp = [];   // [{ nombre, base, motivo: "retirado" | "no_esta
 let erpRevisionNota = "";      // aviso cuando no se pudo revisar con el ERP
 let driversHojaPorBase = {};   // { "3": [{ nombre, cedula }] } los habilitados de la hoja con base, activos o no (historial)
 
+// v2.14.0: los conductores ACTIVOS del ERP salen tambien en la base que dice el ERP. Asi el conductor nuevo sale apenas
+// Gestion Humana lo crea en el ERP (sin esperar a que lo creen en Sonar y se refresque la hoja), y el que en Sonar quedo
+// sin base o con otra base sale tambien en la suya. No se le quita a nadie la base donde lo tiene la hoja: solo se suma.
+const RPC_CONDUCTORES_ERP = "afiliados_conductores_erp";
+let driversSumadosErp = [];    // [{ nombre, base, hoja: "no_esta" | "sin_base" | "otra_base" | "deshabilitado", base_hoja }]
+let erpSumaNota = "";          // aviso cuando no se pudo traer la lista del ERP
+
+// Devuelve { lista: [{ n, c, b }], nota }. Una cuenta de base recibe solo su base (la 3 tambien la 5); el
+// administrador, todas. Si la consulta falla: lista vacia y una nota (quedan solo los de la hoja, como antes).
+async function conductoresActivosERP(){
+  const cli = (typeof planillaSupabaseClient !== "undefined" && planillaSupabaseClient) ? planillaSupabaseClient : null;
+  if (!cli || !currentUserId) return { lista: [], nota: "" };
+  try {
+    const { data, error } = await cli.rpc(RPC_CONDUCTORES_ERP);
+    if (error) throw error;
+    const lista = (Array.isArray(data) ? data : [])
+      .map(x => ({ n: String(x?.n || "").trim(), c: String(x?.c || "").trim(), b: String(x?.b || "").trim().replace(/^0+/, "") }))
+      .filter(x => x.n && /^[1-9]\d*$/.test(x.b));
+    return { lista, nota: "" };
+  } catch (e) {
+    console.warn("[conductores] no se pudo traer los conductores del ERP:", e?.message || e);
+    return { lista: [], nota: "No se pudo traer del ERP los conductores de cada base: se muestran solo los de la hoja de conductores." };
+  }
+}
+
+// Suma a cada base los activos del ERP que la hoja no le muestra. Cada uno se busca en la hoja por cedula y, si no,
+// por el nombre (sin tildes y en cualquier orden): si esta, se usa el nombre de la hoja (el mismo de la programacion).
+// Cambia porBase, cedulaPorNombre, sinBase y fueraErp; devuelve la lista de los que sumo.
+function sumarConductoresDelErp(listaErp, filasHoja, porBase, cedulaPorNombre, sinBase, fueraErp){
+  const limpiar = c => String(c || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  // La hoja puede traer a la misma persona en dos filas (una sin base y otra con base): vale la mejor, la habilitada
+  // y con base.
+  const puntos = f => (f.status === "ENABLED" ? 2 : 0) + (f.base ? 1 : 0);
+  const guardar = (mapa, k, f) => { if (k && (!mapa.has(k) || puntos(f) > puntos(mapa.get(k)))) mapa.set(k, f); };
+  const porCedula = new Map(), porNombre = new Map();
+  filasHoja.forEach(f => {
+    const c = limpiar(f.cedula);
+    if (c.length >= 5) guardar(porCedula, c, f);
+    guardar(porNombre, nameKeyForMatch(f.nombre), f);
+  });
+  const quitarDeSinBase = nombre => {
+    const i = sinBase.findIndex(n => norm(n) === norm(nombre));
+    if (i >= 0) sinBase.splice(i, 1);
+  };
+  const sumados = [];
+  (listaErp || []).forEach(e => {
+    const c = limpiar(e.c);
+    const f = (c.length >= 5 && porCedula.get(c)) || porNombre.get(nameKeyForMatch(e.n)) || null;
+    const nombre = f ? f.nombre : e.n;
+    const lista = porBase[e.b] || (porBase[e.b] = []);
+    if (lista.some(n => norm(n) === norm(nombre))) {           // la hoja ya lo tiene en esa base
+      quitarDeSinBase(nombre);                                 // (si tambien tenia una fila sin base, ya no cuenta)
+      return;
+    }
+    lista.push(nombre);
+    const k = nameKeyForMatch(nombre);
+    if (c.length >= 5 && !cedulaPorNombre.has(k)) cedulaPorNombre.set(k, c);
+    quitarDeSinBase(nombre);                                   // ya tiene base: la del ERP
+    for (let j = fueraErp.length - 1; j >= 0; j--) {          // el ERP lo tiene activo
+      if (norm(fueraErp[j].nombre) === norm(nombre)) fueraErp.splice(j, 1);
+    }
+    sumados.push({
+      nombre, base: e.b,
+      hoja: !f ? "no_esta" : (f.status !== "ENABLED" ? "deshabilitado" : (f.base ? "otra_base" : "sin_base")),
+      base_hoja: f && f.base ? f.base : ""
+    });
+  });
+  return sumados;
+}
+
 // Cuantos de la hoja en esta base (y sus bases extra) no salen en el panel porque en el ERP no estan activos.
 function conductoresFueraDelPanel(base){
   const bases = getDriverBasesForBase(base);
@@ -6837,17 +6907,21 @@ function renderDriversCsvSummary(totalEnabled, totalBases, opts = {}){
   const fueraErp = driversFueraPorErp.length;
   const retirados = driversFueraPorErp.filter(x => x.motivo === "retirado").length;
   const noEstan = fueraErp - retirados;
+  const sumadosErp = (driversSumadosErp || []).length;
 
   if (lblDriversCount) {
     lblDriversCount.textContent = `Conductores: ${totalEnabled} en ${totalBases} bases`
+      + (sumadosErp ? ` - ${sumadosErp} por el ERP` : "")
       + (fueraErp ? ` - ${fueraErp} fuera por el ERP` : "")
       + (sinBase ? ` - ${sinBase} sin base` : "") + sufijo;
-    lblDriversCount.classList.toggle("pill-warn", sinBase > 0 || !!erpRevisionNota);
+    lblDriversCount.classList.toggle("pill-warn", sinBase > 0 || !!erpRevisionNota || !!erpSumaNota);
     lblDriversCount.title = [
       "Conductores habilitados en la hoja de conductores, con base y activos en el ERP.",
+      sumadosErp ? `${sumadosErp} salen en la base que dice el ERP porque en la hoja no estan, no tienen base o tienen otra.` : "",
       fueraErp ? `${fueraErp} habilitados en la hoja no salen porque en el ERP no estan activos.` : "",
       sinBase ? `${sinBase} conductores habilitados no tienen base en la hoja de conductores, asi que no aparecen en ninguna base de la aplicacion.` : "",
-      erpRevisionNota
+      erpRevisionNota,
+      erpSumaNota
     ].filter(Boolean).join(" ");
   }
 
@@ -6857,7 +6931,28 @@ function renderDriversCsvSummary(totalEnabled, totalBases, opts = {}){
   if (erpRevisionNota) {
     partes.push(`<div style="margin-bottom:6px;padding:8px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb">${escapeHtml(erpRevisionNota)}</div>`);
   }
+  if (erpSumaNota) {
+    partes.push(`<div style="margin-bottom:6px;padding:8px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb">${escapeHtml(erpSumaNota)}</div>`);
+  }
   partes.push(`<div>Cargados <strong>${totalEnabled}</strong> conductores en ${totalBases} bases${sufijo}.</div>`);
+  if (sumadosErp) {
+    const porQue = x => x.hoja === "no_esta" ? "todavia no esta en la hoja de Sonar"
+      : x.hoja === "sin_base" ? "en Sonar no tiene base"
+      : x.hoja === "deshabilitado" ? "en Sonar esta deshabilitado"
+      : `en Sonar dice Base ${x.base_hoja} (tambien sale alla)`;
+    partes.push(
+      `<div class="csv-sumados-erp" style="margin-top:8px;padding:8px;border:1px solid #bbf7d0;border-radius:8px;background:#f0fdf4">` +
+        `<strong>${sumadosErp} conductores salen en la base que dice el ERP</strong>: estan activos en el ERP con esa base, ` +
+        `pero en la hoja de conductores (Sonar) no estan, no tienen base o tienen otra. Lo correcto es corregirlos en Sonar; ` +
+        `mientras tanto salen en la base del ERP.` +
+        `<details style="margin-top:6px"><summary style="cursor:pointer">Ver los ${sumadosErp} nombres</summary>` +
+          `<div style="max-height:180px;overflow:auto;margin-top:6px;font-size:12px;line-height:1.6">` +
+            driversSumadosErp.map(x => `Base ${escapeHtml(x.base)} · ${escapeHtml(x.nombre)} · ${escapeHtml(porQue(x))}`).join("<br>") +
+          `</div>` +
+        `</details>` +
+      `</div>`
+    );
+  }
   if (fueraErp) {
     const porque = [retirados ? `${retirados} estan retirados` : "", noEstan ? `${noEstan} no estan creados` : ""].filter(Boolean).join(" y ");
     partes.push(
@@ -6976,6 +7071,7 @@ async function loadDriversFromCSV() {
     const sinBase = [];      // habilitados sin base: no se pueden usar en ninguna
     let inactivos = 0;       // status distinto de ENABLED
     const habilitados = [];  // ENABLED, con base o sin ella; antes de cruzarlos con el ERP
+    const filasHoja = [];    // v2.14.0: todas las filas con nombre, para buscar en la hoja a los activos del ERP
 
     for (let i = 1; i < lines.length; i++) {
       const values = parseCsvRow(lines[i]);
@@ -6993,6 +7089,7 @@ async function loadDriversFromCSV() {
       // Tres destinos posibles, y los tres se cuentan: antes solo se contaba el
       // primero y los otros dos se perdian en silencio.
       const baseMatch = email.match(/BASE\s*(\d+)/i);
+      if (nombre) filasHoja.push({ nombre, cedula, status, base: baseMatch ? baseMatch[1] : "" });
       if (!nombre) {
         // fila sin nombre: no es un conductor
       } else if (status !== 'ENABLED') {
@@ -7020,6 +7117,11 @@ async function loadDriversFromCSV() {
       }
     }
 
+    // v2.14.0: los activos del ERP salen tambien en la base que dice el ERP (solo se suma).
+    const delErp = await conductoresActivosERP();
+    const sumadosErp = sumarConductoresDelErp(delErp.lista, filasHoja, newDriversByBase, newCedulaByName, sinBase, fueraErp);
+    totalEnabled += sumadosErp.length;
+
     // Ordenar
     Object.keys(newDriversByBase).forEach(base => {
       newDriversByBase[base].sort((a, b) => a.localeCompare(b));
@@ -7031,6 +7133,9 @@ async function loadDriversFromCSV() {
     driversFueraPorErp = fueraErp.sort((a, b) =>
       ((Number(a.base) || 999) - (Number(b.base) || 999)) || a.nombre.localeCompare(b.nombre, "es"));
     erpRevisionNota = revisionErp.nota;
+    driversSumadosErp = sumadosErp.sort((a, b) =>
+      ((Number(a.base) || 999) - (Number(b.base) || 999)) || a.nombre.localeCompare(b.nombre, "es"));
+    erpSumaNota = delErp.nota;
     driversHojaPorBase = hojaPorBase;
     if (newCedulaByName.size) driverCedulaByName = newCedulaByName;
     saveDriversCache();
@@ -7063,6 +7168,8 @@ async function loadDriversFromCSV() {
       driversInactivosCount = 0;
       driversFueraPorErp = [];   // el cache se guardo ya sin los que no estan activos en el ERP
       erpRevisionNota = "";
+      driversSumadosErp = [];    // el cache ya trae sumados los del ERP
+      erpSumaNota = "";
       renderDriversCsvSummary(totalEnabled, totalBases, {
         cache: true,
         nota: "Sin internet para Google Sheet; usando cache local de conductores."
@@ -7075,6 +7182,8 @@ async function loadDriversFromCSV() {
       driversInactivosCount = 0;
       driversFueraPorErp = [];
       erpRevisionNota = "";
+      driversSumadosErp = [];
+      erpSumaNota = "";
       lblDriversCount.textContent = "Conductores: 0 en 0 bases";
       lblDriversCount.classList.remove("pill-warn");
       csvStatus.innerHTML = 'Error al cargar conductores';
