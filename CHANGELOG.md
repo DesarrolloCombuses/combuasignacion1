@@ -18,6 +18,21 @@ Convencion de version:
 
 ---
 
+## [2.13.0] - 2026-11-25
+
+### Agregado
+- **Mi base · descargar en Excel los ingresos, salidas y relevos.** Botón «Excel» junto a «Actualizar» (en Novedades y en Relevos). Se escoge desde y hasta (atajos: el día que se está viendo, últimos 7 días y este mes; hasta 31 días por archivo, de los últimos dos meses) y baja un libro con cuatro hojas:
+  - **Resumen**: por día, programados, entraron (a tiempo, temprano, tarde, sin turno), no entraron, salidas, sin cerrar, jornadas de más de 16 h y los relevos (entregaron tarde, a tiempo, antes de la hora, todavía no, no se pudo saber), con una fila de totales.
+  - **Ingresos y salidas**: cada marca del biométrico o del celular de los conductores de la base: conductor, cédula, bus (y el programado), turno y su hora, hora de entrada, llegada (a tiempo, antes o tarde, y los minutos), dónde marcó y en qué punto, el motivo escrito, la salida (día, hora, dónde y motivo), las horas, si quedó sin cerrar, la jornada de más de 16 h y la revisión que hizo la base.
+  - **Programados**: quién tenía turno ese día (y los disponibles), su hora de entrada y salida, bus, puesto y si entró o no.
+  - **Relevos**: cada relevo con la hora programada, el resultado, la hora real de entrega (GPS), los minutos, por qué, dónde estaba el carro, y los dos conductores con su turno, sus marcas (hora, punto, biométrico o celular y con qué cuenta), si cuadran con la entrega y con el carro, cuánto esperó cada uno y los motivos escritos.
+- Los textos son los mismos de la pantalla; las fechas y los números salen como fechas y números (se pueden filtrar y sumar). Encabezado fijo, filtros y colores (tarde en rojo, a tiempo en verde).
+
+### Necesita
+- Nada nuevo en la base de datos: usa las mismas funciones de Novedades (`afiliados_novedades_base`) y Relevos (`afiliados_relevos_base`), un día a la vez.
+
+---
+
 ## [2.12.0] - 2026-11-25
 
 ### Agregado

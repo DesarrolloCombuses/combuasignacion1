@@ -2571,3 +2571,24 @@ td.td-cambiada{ box-shadow:inset 0 0 0 2px var(--color-warning-200); }
   .avance-turnos{ position:sticky; top:0; z-index:3; }
   .card.drivers{ position:sticky; top:12px; align-self:start; max-height:calc(100vh - 24px); }
 }
+
+/* v2.13.0 · Mi base: descargar en Excel los ingresos, salidas y relevos */
+.nb-btn-excel{ display:inline-flex; align-items:center; gap:6px; }
+.nb-btn-excel::before{ content:""; width:14px; height:14px; border-radius:3px; background:#15803d;
+  -webkit-mask:linear-gradient(#000 0 0); box-shadow:inset 0 0 0 2px #15803d; }
+.nb-xl{ display:grid; gap:var(--space-3, 12px); }
+.nb-xl-fechas{ display:flex; flex-wrap:wrap; gap:var(--space-3, 12px); }
+.nb-xl-fechas label{ display:grid; gap:4px; font-size:var(--fs-12, 12px); font-weight:600; color:var(--text-muted, #475569); }
+.nb-xl-fechas input[type="date"]{ min-width:160px; }
+.nb-xl-atajos{ display:flex; flex-wrap:wrap; gap:8px; }
+.nb-xl-hojas{ margin:0; padding-left:18px; display:grid; gap:4px; font-size:var(--fs-13, 13px); color:var(--text-muted, #475569); }
+.nb-xl-nota{ margin:0; font-size:var(--fs-12, 12px); color:var(--text-muted, #64748b); }
+.nb-xl-pie{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3, 12px); }
+.nb-xl-estado{ font-size:var(--fs-13, 13px); }
+.nb-xl-estado.nb-estado-ok{ color:#166534; }
+.nb-xl-estado.nb-estado-err{ color:#b91c1c; }
+.nb-xl-estado.nb-estado-cargando{ color:#1e40af; }
+@media (max-width:640px){
+  .nb-xl-fechas label{ flex:1 1 140px; }
+  .nb-xl-fechas input[type="date"]{ min-width:0; width:100%; }
+}

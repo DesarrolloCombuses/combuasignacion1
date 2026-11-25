@@ -1,7 +1,7 @@
 {
-  "version": "2.12.0",
+  "version": "2.13.0",
   "minVersion": "2.9.1",
-  "buildDate": "2026-11-24",
+  "buildDate": "2026-11-25",
   "channel": "stable",
   "notes": "Mi base tiene la vista Relevos: a qué hora se entregó de verdad cada carro (con el GPS), dónde estaba a la hora del relevo y por qué se entregó tarde (por ejemplo, esperando despacho en el aeropuerto). Con los dos conductores y, en cada marca, si el carro estaba en ese punto."
 }

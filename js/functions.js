@@ -10831,6 +10831,8 @@ function bindWindowEvents(){
     if (ant) ant.disabled = !st.fecha || st.fecha <= masDias(h, -DIAS_ATRAS);
     // La fila es en vivo y el historial es de todos los dias: no tienen dia para escoger.
     el("nbDia")?.classList.toggle("nb-dia-vivo", st.vista === "fila" || st.vista === "conductores");
+    // v2.13.0: el Excel de los ingresos, salidas y relevos sale desde Novedades y Relevos
+    el("nbExcel")?.classList.toggle("hidden", !(st.vista === "novedades" || st.vista === "relevos"));
   }
 
   /* ---------- carga ---------- */
@@ -11637,6 +11639,7 @@ function bindWindowEvents(){
     box.querySelector(".nb-det-rl-fotos")?.addEventListener("click", () => pintarRelevoModal(r, e.fecha));
   }
   function cerrarDetalle(){
+    xl.cancelado = true;
     cerrarFotoGrande();
     el("nbModal")?.classList.add("hidden");
     el("nbModal")?.querySelector(".nb-modal-card")?.classList.remove("nb-modal-relevo");
@@ -12827,6 +12830,361 @@ function bindWindowEvents(){
     if (turnosActiva() && document.visibilityState === "visible") cargarMarcas(false);
   }, 20 * 1000);
 
+  /* =====================================================================
+     G. EXCEL (v2.13.0): los ingresos y salidas del biométrico, los programados y los relevos de la base, de un día o
+        de varios (hasta 31). Se le pide a la base de datos lo mismo que muestra la pantalla, día por día, y se arma
+        el libro con ExcelJS. Hojas: Resumen, Ingresos y salidas, Programados y Relevos.
+     ===================================================================== */
+  const XL_MAX_DIAS = 31;
+  const xl = { corriendo: false, cancelado: false };
+  const XL_PROG = { entro: "Entró", tarde: "Ya debía entrar", no_entro: "No entró", proximo: "Entra en la próxima hora",
+    despues: "Entra más tarde" };
+  const XL_GRUPO = { tarde: "Entregó tarde", a_tiempo: "A tiempo", antes: "Antes de la hora" };
+  const XL_COLOR = { ok: "FFDCFCE7", warn: "FFFEF3C7", err: "FFFDE2E2", info: "FFDBEAFE", mut: "FFF1F5F9" };
+
+  // El texto de un pedazo de pantalla (los mismos textos de la vista), sin etiquetas.
+  function plano(html){
+    const d = document.createElement("div");
+    d.innerHTML = html || "";
+    d.querySelectorAll("div, li, br").forEach((n) => n.insertAdjacentText("beforebegin", " · "));
+    d.querySelectorAll("span, small, b, strong").forEach((n) => n.insertAdjacentText("beforebegin", " "));
+    return d.textContent.replace(/\s+/g, " ").replace(/(\s*·\s*)+/g, " · ").replace(/^\s*·\s*|\s*·\s*$/g, "").trim();
+  }
+  function fechaXl(iso){
+    const [y, m, d] = String(iso || "").split("-").map(Number);
+    return y ? new Date(Date.UTC(y, m - 1, d)) : null;
+  }
+  function cedulaXl(dni){
+    const s = String(dni || "").trim();
+    return /^\d{1,12}$/.test(s) ? Number(s) : s;
+  }
+  function numXl(v){
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  function puntoXl(p){
+    return p ? nombrePunto(p) : "";
+  }
+  function llegadaXl(e){
+    if (e.puntualidad === "temprano" && e.dif != null) return `${minutosTxt(e.dif)} antes`;
+    if (e.puntualidad === "tarde" && e.dif != null) return `${minutosTxt(e.dif)} tarde`;
+    if (e.puntualidad === "a_tiempo") return "A tiempo";
+    return (LLEGADA[e.puntualidad] || LLEGADA.sin_programacion).txt;
+  }
+  function motivosXl(lista){
+    return (Array.isArray(lista) ? lista : []).map((m) => {
+      const x = leerMotivo(m);
+      return [x.tipo, x.det, x.txt ? `«${x.txt}»` : ""].filter(Boolean).join(" · ");
+    }).join(" | ");
+  }
+  function estadoSalidaXl(e, esHoy){
+    if (e.salida) return "Cerrado";
+    if (Number(e.abierta_horas || 0) > SIN_CERRAR_H) return "Sin cerrar";
+    return esHoy ? "En turno" : "Sin salida";
+  }
+  function marcaXl(m, fecha){
+    if (!m || !m.hora) return "";
+    const otroDia = m.fecha && fecha && m.fecha !== fecha ? ` (${fechaCorta(m.fecha)})` : "";
+    const partes = [`${m.hora}${otroDia}${m.punto ? ` en ${nombrePunto(m.punto)}` : ""}`];
+    const o = ORIGEN[m.origen] || m.origen;
+    if (o) partes.push(o);
+    const c = cuentaMarca(m);
+    if (c) partes.push(c);
+    return partes.join(" · ");
+  }
+  function turnoXl(x){
+    return x && x.desde ? `${x.desde} a ${x.hasta || "?"}` : "";
+  }
+  function resultadoRelevoXl(r){
+    if (r.estado === "entregado") return XL_GRUPO[grupoRelevo(r)] || "Entregó tarde";
+    if (r.estado === "en_curso") return "Todavía no lo entrega";
+    if (r.estado === "falta") return "Todavía no es la hora";
+    if (r.estado === "sin_gps") return "Sin GPS del carro";
+    return "No se pudo saber";
+  }
+
+  async function leerDiaXl(cli, base, fecha){
+    const args = { p_fecha: fecha, p_base: etiquetaBase(base) };
+    const [n, r] = await Promise.all([cli.rpc(RPC_NOVEDADES, args), cli.rpc(RPC_RELEVOS, args)]);
+    if (n.error) throw n.error;
+    if (!n.data || !n.data.ok) throw new Error("La base de datos no devolvió las novedades.");
+    let rel = null;
+    let relFalta = false;
+    if (r.error) {
+      if (String(r.error.code || "") === "PGRST202") relFalta = true;
+      else throw r.error;
+    } else if (r.data && r.data.ok) {
+      rel = r.data;
+    }
+    return { fecha, nov: n.data, rel, relFalta };
+  }
+
+  function hojaXl(wb, nombre, cols, filas, vacio){
+    const ws = wb.addWorksheet(nombre, { views: [{ state: "frozen", ySplit: 1 }] });
+    ws.columns = cols.map((c) => ({ header: c.t, width: c.w || 12, style: c.f ? { numFmt: c.f } : {} }));
+    if (filas.length) filas.forEach((f) => ws.addRow(f));
+    else ws.addRow([vacio || "No hay datos en esas fechas."]);
+    const cab = ws.getRow(1);
+    cab.height = 32;
+    cab.eachCell((c) => {
+      c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E40AF" } };
+      c.alignment = { vertical: "middle", wrapText: true };
+    });
+    cols.forEach((c, i) => {
+      if (c.wrap) ws.getColumn(i + 1).alignment = { wrapText: true, vertical: "top" };
+    });
+    if (filas.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1 + filas.length, column: cols.length } };
+    return ws;
+  }
+  // Colorea una columna según su texto (tono(valor) -> "ok" | "warn" | "err" | "info" | "mut" | "").
+  function tonoXl(ws, col, tono){
+    ws.eachRow((row, n) => {
+      if (n === 1) return;
+      const c = row.getCell(col);
+      const k = tono(String(c.value == null ? "" : c.value));
+      if (k && XL_COLOR[k]) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: XL_COLOR[k] } };
+    });
+  }
+
+  function armarExcel(base, desde, hasta, dias){
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "CombuAsigna";
+    wb.created = new Date();
+    const res = [], ing = [], prog = [], rel = [];
+    let relFalta = false;
+    dias.forEach(({ fecha, nov, rel: R, relFalta: falta }) => {
+      const x = derivar(nov);
+      const esHoy = !!nov.es_hoy;
+      const revs = Array.isArray(nov.por_revisar) ? nov.por_revisar : [];
+      x.E.forEach((e) => {
+        const s = e.salida;
+        const notas = revs.filter((r) => String(r.ref) === String(e.id) && r.revision)
+          .map((r) => `${r.revision.nota} (${revisionTxt(r.revision)})`).join(" | ");
+        const mj = motivoJornada(e);
+        ing.push([fechaXl(fecha), e.nombre || "", cedulaXl(e.dni), partirBus(e.bus).num || "", partirBus(e.bus_prog).num || "",
+          numXl(e.turno) ?? (e.turno || ""), e.hora_prog || "", e.hora || "", llegadaXl(e), numXl(e.dif),
+          ORIGEN[e.origen] || e.origen || "", puntoXl(e.punto), motivosXl(e.motivos),
+          s ? fechaXl(s.fecha || fecha) : null, s ? (s.hora || "") : "", s ? (ORIGEN[s.origen] || s.origen || "") : "",
+          s ? puntoXl(s.punto) : "", s ? motivosXl(s.motivos) : "",
+          numXl(e.horas), estadoSalidaXl(e, esHoy),
+          e.jornada_excedida ? `Sí · ${mj ? `«${mj}»` : "sin explicar"}` : "", notas]);
+      });
+      x.P.forEach((p) => {
+        const disp = p.puesto === "DISPONIBLE";
+        prog.push([fechaXl(fecha), p.nombre || "", cedulaXl(p.dni), disp ? "Disponible" : (numXl(p.turno) ?? (p.turno || "")),
+          p.hora_entrada || "", p.hora_salida || "", partirBus(p.bus).num || "", p.puesto || "",
+          XL_PROG[p.estado] || (esHoy ? "No ha marcado" : "No marcó"), p.entrada_hora || ""]);
+      });
+      if (falta) relFalta = true;
+      const RL = (R && Array.isArray(R.relevos)) ? R.relevos.slice() : [];
+      RL.sort((a, b) => String(a.relevo || "").localeCompare(String(b.relevo || "")) || numBus(a.interno) - numBus(b.interno));
+      RL.forEach((r) => {
+        const t = r.turnos || {};
+        const e1 = marcaDe(r, "e1"), s1 = marcaDe(r, "s1"), e2 = marcaDe(r, "e2"), s2 = marcaDe(r, "s2");
+        const entregado = r.estado === "entregado";
+        const motivos = [e1, s1, e2, s2].filter(Boolean).map((m) => motivosXl(m.motivos)).filter(Boolean).join(" | ");
+        rel.push([fechaXl(fecha), r.interno || "", r.puesto || "", puntoXl(r.punto), r.relevo || "",
+          resultadoRelevoXl(r), entregado ? (r.entrega || "") : "", entregado ? numXl(r.minutos) : null,
+          plano(porqueRelevo(r)), plano(aLaHoraRelevo(r)), plano(entregaRelevo(r) + notaPuntoRelevo(r)),
+          r.entrega_nombre || "", turnoXl(t.t1), marcaXl(e1, fecha), marcaXl(s1, fecha), (salidaRelevo(r) || {}).txt || "",
+          s1 ? ((carroEnMarca(r, "salida") || {}).txt || "") : "",
+          r.recibe_nombre || "", turnoXl(t.t2), marcaXl(e2, fecha), (entradaRelevo(r) || {}).txt || "",
+          e2 ? ((carroEnMarca(r, "entrada") || {}).txt || "") : "",
+          numXl(r.recibe_espero_min) > 0 ? numXl(r.recibe_espero_min) : null,
+          numXl(r.carro_espero_min) > 0 ? numXl(r.carro_espero_min) : null, marcaXl(s2, fecha), motivos]);
+      });
+      const entregados = (k) => RL.filter((r) => r.estado === "entregado" && grupoRelevo(r) === k).length;
+      res.push([fechaXl(fecha), x.turnos.length, x.E.length, x.cuenta("a_tiempo"), x.cuenta("temprano"), x.cuenta("tarde"),
+        x.cuenta("sin_programacion"), x.noEntro.length + x.tarde.length, x.conSalida.length, x.sinCerrar.length, x.largas.length,
+        R ? RL.length : null, R ? entregados("tarde") : null, R ? entregados("a_tiempo") : null, R ? entregados("antes") : null,
+        R ? RL.filter((r) => grupoRelevo(r) === "en_curso").length : null,
+        R ? RL.filter((r) => grupoRelevo(r) === "sin_dato").length : null]);
+    });
+
+    const F = "dd/mm/yyyy";
+    // Resumen
+    const RES = [{ t: "Día", f: F, w: 11 }, { t: "Programados", w: 12 }, { t: "Entraron", w: 10 }, { t: "A tiempo", w: 10 },
+      { t: "Temprano", w: 10 }, { t: "Tarde", w: 9 }, { t: "Sin turno", w: 10 }, { t: "No entraron", w: 11 }, { t: "Salidas", w: 9 },
+      { t: "Sin cerrar", w: 10 }, { t: "Jornadas de más de 16 h", w: 13 }, { t: "Relevos", w: 9 }, { t: "Entregaron tarde", w: 11 },
+      { t: "Relevos a tiempo", w: 10 }, { t: "Relevos antes de la hora", w: 12 }, { t: "Todavía no", w: 10 }, { t: "No se pudo saber", w: 11 }];
+    const wsR = hojaXl(wb, "Resumen", RES, res);
+    if (res.length > 1) {
+      const tot = ["Total"];
+      for (let i = 1; i < RES.length; i++) {
+        const vals = res.map((f) => f[i]).filter((v) => typeof v === "number");
+        tot.push(vals.length ? vals.reduce((a, b) => a + b, 0) : null);
+      }
+      const fila = wsR.addRow(tot);
+      fila.font = { bold: true };
+      fila.eachCell((c) => { c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE0E7FF" } }; });
+    }
+    wsR.addRow([]);
+    const desc = new Date().toLocaleString("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit" });
+    wsR.addRow([`${etiquetaBase(base)} · del ${fechaLarga(desde)} al ${fechaLarga(hasta)} · descargado el ${desc}`]);
+    wsR.addRow(["Ingresos y salidas: las marcas del biométrico y del celular de los conductores de la base. Programados: quién tenía turno y si entró. Relevos: a qué hora se entregó de verdad cada carro (GPS) y las marcas de los dos conductores."]);
+    if (relFalta) wsR.addRow(["Los relevos todavía no están activos en la base de datos: esa hoja sale vacía."]);
+    // Ingresos y salidas
+    const ING = [{ t: "Día", f: F, w: 11 }, { t: "Conductor", w: 30 }, { t: "Cédula", f: "0", w: 13 }, { t: "Bus", w: 7 },
+      { t: "Bus programado", w: 10 }, { t: "Turno", w: 7 }, { t: "Hora del turno", w: 9 }, { t: "Entrada", w: 9 },
+      { t: "Llegada", w: 16 }, { t: "Minutos (− antes, + tarde)", w: 12 }, { t: "Entrada marcada en", w: 13 },
+      { t: "Punto de la entrada", w: 18 }, { t: "Motivo de la entrada", w: 42, wrap: true }, { t: "Día de la salida", f: F, w: 11 },
+      { t: "Salida", w: 9 }, { t: "Salida marcada en", w: 13 }, { t: "Punto de la salida", w: 18 },
+      { t: "Motivo de la salida", w: 42, wrap: true }, { t: "Horas", f: "0.0", w: 8 }, { t: "Estado", w: 11 },
+      { t: "Jornada de más de 16 h", w: 24, wrap: true }, { t: "Revisión de la base", w: 42, wrap: true }];
+    const wsI = hojaXl(wb, "Ingresos y salidas", ING, ing, "No hubo marcas de conductores de la base en esas fechas.");
+    tonoXl(wsI, 9, (v) => (/tarde/i.test(v) ? "err" : /antes/i.test(v) ? "warn" : /a tiempo/i.test(v) ? "ok" : ""));
+    tonoXl(wsI, 20, (v) => (v === "Sin cerrar" ? "err" : v === "En turno" ? "info" : ""));
+    tonoXl(wsI, 21, (v) => (v ? "err" : ""));
+    // Programados
+    const PROG = [{ t: "Día", f: F, w: 11 }, { t: "Conductor", w: 30 }, { t: "Cédula", f: "0", w: 13 }, { t: "Turno", w: 11 },
+      { t: "Entra", w: 8 }, { t: "Sale", w: 8 }, { t: "Bus", w: 7 }, { t: "Puesto", w: 22 }, { t: "Estado", w: 18 },
+      { t: "Hora en que entró", w: 10 }];
+    const wsP = hojaXl(wb, "Programados", PROG, prog, "No hay programación de la base en esas fechas.");
+    tonoXl(wsP, 9, (v) => (/^Entró/.test(v) ? "ok" : /No entró|Ya debía/.test(v) ? "err" : /No marcó|No ha marcado/.test(v) ? "warn" : ""));
+    // Relevos
+    const REL = [{ t: "Día", f: F, w: 11 }, { t: "Bus", w: 7 }, { t: "Puesto", w: 16 }, { t: "Punto del relevo", w: 16 },
+      { t: "Hora del relevo", w: 9 }, { t: "Resultado", w: 16 }, { t: "Entrega (hora)", w: 9 },
+      { t: "Minutos (− antes, + tarde)", w: 12 }, { t: "Por qué", w: 40, wrap: true },
+      { t: "A la hora del relevo el carro estaba", w: 34, wrap: true }, { t: "Detalle de la entrega", w: 40, wrap: true },
+      { t: "Conductor 1 (entrega)", w: 28 }, { t: "Turno 1", w: 13 }, { t: "Entrada del conductor 1", w: 34, wrap: true },
+      { t: "Salida del conductor 1", w: 34, wrap: true }, { t: "Salida contra la entrega", w: 24, wrap: true },
+      { t: "El carro cuando marcó la salida", w: 40, wrap: true }, { t: "Conductor 2 (recibe)", w: 28 }, { t: "Turno 2", w: 13 },
+      { t: "Entrada del conductor 2", w: 34, wrap: true }, { t: "Entrada contra su hora", w: 22, wrap: true },
+      { t: "El carro cuando marcó la entrada", w: 40, wrap: true }, { t: "Esperó el carro (min)", w: 10 },
+      { t: "El carro lo esperó (min)", w: 10 }, { t: "Salida del conductor 2", w: 34, wrap: true },
+      { t: "Motivos escritos", w: 42, wrap: true }];
+    const wsL = hojaXl(wb, "Relevos", REL, rel, relFalta
+      ? "Los relevos todavía no están activos en la base de datos."
+      : "No hubo relevos de carros de la base en esas fechas.");
+    tonoXl(wsL, 6, (v) => (v === "Entregó tarde" ? "err" : v === "A tiempo" ? "ok" : v === "Antes de la hora" ? "info"
+      : /Todavía/.test(v) ? "info" : v ? "mut" : ""));
+    tonoXl(wsL, 16, (v) => (/^Cuadra/.test(v) ? "ok" : /antes|No marcó/.test(v) ? "err" : v ? "warn" : ""));
+    tonoXl(wsL, 21, (v) => (/^En su horario/.test(v) ? "ok" : /tarde|No marcó/.test(v) ? "err" : v ? "warn" : ""));
+    return wb;
+  }
+
+  function nombreXl(base, desde, hasta){
+    // con espacios, como lo guardaría una persona; solo se quitan los signos que Windows no deja en un nombre
+    return `Mi base ${etiquetaBase(base)} - biometrico y relevos ${desde}${hasta !== desde ? ` a ${hasta}` : ""}.xlsx`
+      .replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  async function descargarExcel(){
+    if (xl.corriendo) return;
+    const base = baseActiva();
+    const cli = cliente();
+    const estado = el("nbXlEstado");
+    const btn = el("nbXlBajar");
+    const aviso = (txt, tipo) => {
+      if (!estado) return;
+      estado.textContent = txt;
+      estado.className = `nb-xl-estado${tipo ? ` nb-estado-${tipo}` : ""}`;
+    };
+    const desde = el("nbXlDesde")?.value || "";
+    const hasta = el("nbXlHasta")?.value || "";
+    const h = hoy();
+    const min = masDias(h, -DIAS_ATRAS);
+    if (!base || !cli) { aviso("Abra una base arriba (Abrir base) para descargar.", "err"); return; }
+    if (!window.ExcelJS) { aviso("No se pudo cargar la herramienta de Excel. Recargue la página e intente de nuevo.", "err"); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) { aviso("Escoja las dos fechas.", "err"); return; }
+    if (desde > hasta) { aviso("La fecha «Desde» va antes que «Hasta».", "err"); return; }
+    if (desde < min || hasta > h) { aviso(`Escoja días entre el ${fechaCorta(min)} y hoy.`, "err"); return; }
+    const n = diasEntre(desde, hasta) + 1;
+    if (n > XL_MAX_DIAS) { aviso(`Son ${n} días: escoja máximo ${XL_MAX_DIAS} por archivo.`, "err"); return; }
+    xl.corriendo = true;
+    xl.cancelado = false;
+    if (btn) btn.disabled = true;
+    try {
+      const dias = [];
+      for (let i = 0; i < n; i++) {
+        if (xl.cancelado) return;
+        aviso(n === 1 ? "Leyendo el día…" : `Leyendo ${i + 1} de ${n} días…`, "cargando");
+        dias.push(await leerDiaXl(cli, base, masDias(desde, i)));
+      }
+      if (xl.cancelado) return;
+      aviso("Armando el Excel…", "cargando");
+      const wb = armarExcel(base, desde, hasta, dias);
+      const buffer = await wb.xlsx.writeBuffer();
+      if (xl.cancelado) return;
+      const nombre = nombreXl(base, desde, hasta);
+      const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = nombre;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      const marcas = dias.reduce((s, d) => s + ((d.nov.entradas || []).length), 0);
+      const relevos = dias.reduce((s, d) => s + ((d.rel && d.rel.relevos) || []).length, 0);
+      aviso(`Listo: se descargó «${nombre}» (${plural(marcas, "ingreso", "ingresos")} y ${plural(relevos, "relevo", "relevos")}).`, "ok");
+    } catch (err) {
+      if (!xl.cancelado) {
+        aviso(mensajeError(err, "los datos para el Excel").replace("Se vuelve a intentar sola en un minuto.", "Intente de nuevo."), "err");
+        if (!errorEsperado(err) && typeof reportError === "function" && navigator.onLine) {
+          reportError("No se pudo descargar el Excel de Mi base", err, { hint: "Intente de nuevo. Si vuelve a salir, envíe este error." });
+        }
+      }
+    } finally {
+      xl.corriendo = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function abrirExcel(){
+    if (!puedeVer()) return;
+    const base = baseActiva();
+    if (!base) { setEstado("Abra una base arriba (Abrir base) para descargar el Excel.", "info"); return; }
+    const h = hoy();
+    const dia = st.fecha && st.fecha <= h ? st.fecha : h;
+    const min = masDias(h, -DIAS_ATRAS);
+    xl.cancelado = true;   // si había una descarga a medias, se suelta
+    el("nbModal")?.querySelector(".nb-modal-card")?.classList.remove("nb-modal-relevo");
+    el("nbModalTitulo").textContent = "Descargar en Excel";
+    el("nbModalSub").textContent = `${etiquetaBase(base)} · ingresos y salidas del biométrico, programados y relevos`;
+    el("nbModalCuerpo").innerHTML = `<div class="nb-xl">`
+      + `<div class="nb-xl-fechas">`
+      + `<label>Desde <input type="date" id="nbXlDesde" min="${esc(min)}" max="${esc(h)}" value="${esc(dia)}"></label>`
+      + `<label>Hasta <input type="date" id="nbXlHasta" min="${esc(min)}" max="${esc(h)}" value="${esc(dia)}"></label>`
+      + `</div>`
+      + `<div class="nb-xl-atajos">`
+      + `<button type="button" class="nb-chip" data-xl="dia">Solo el ${esc(fechaCorta(dia))}</button>`
+      + `<button type="button" class="nb-chip" data-xl="7">Últimos 7 días</button>`
+      + `<button type="button" class="nb-chip" data-xl="mes">Este mes</button>`
+      + `</div>`
+      + `<ul class="nb-xl-hojas">`
+      + `<li><b>Resumen</b>: por día, cuántos entraron (a tiempo, temprano, tarde), no entraron, salidas, sin cerrar y relevos.</li>`
+      + `<li><b>Ingresos y salidas</b>: cada marca del biométrico o del celular, con turno, llegada, punto, motivo, salida y horas.</li>`
+      + `<li><b>Programados</b>: quién tenía turno y si entró.</li>`
+      + `<li><b>Relevos</b>: a qué hora se entregó cada carro, por qué y las marcas de los dos conductores.</li>`
+      + `</ul>`
+      + `<p class="nb-xl-nota">Hasta ${XL_MAX_DIAS} días por archivo, de los últimos dos meses.</p>`
+      + `<div class="nb-xl-pie"><button type="button" class="btn btn-primary" id="nbXlBajar">Descargar Excel</button>`
+      + `<div class="nb-xl-estado" id="nbXlEstado" role="status"></div></div>`
+      + `</div>`;
+    const poner = (d, a) => {
+      el("nbXlDesde").value = d < min ? min : d;
+      el("nbXlHasta").value = a > h ? h : a;
+    };
+    el("nbModalCuerpo").querySelectorAll("[data-xl]").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.xl;
+      if (k === "dia") poner(dia, dia);
+      else if (k === "7") poner(masDias(h, -6), h);
+      else {
+        const ini = `${h.slice(0, 8)}01`;
+        poner(ini, h);
+      }
+    }));
+    el("nbXlBajar")?.addEventListener("click", descargarExcel);
+    xl.cancelado = false;
+    el("nbModal").classList.remove("hidden");
+    el("nbXlBajar")?.focus();
+  }
+
   /* ---------- eventos ---------- */
   function irA(fecha){
     const h = hoy();
@@ -12859,6 +13217,7 @@ function bindWindowEvents(){
     el("nbAnterior")?.addEventListener("click", () => irA(masDias(st.fecha || hoy(), -1)));
     el("nbSiguiente")?.addEventListener("click", () => irA(masDias(st.fecha || hoy(), 1)));
     el("nbHoy")?.addEventListener("click", () => irA(hoy()));
+    el("nbExcel")?.addEventListener("click", abrirExcel);
     el("nbBuscar")?.addEventListener("input", (ev) => { st.buscar = ev.target.value || ""; pintarEntradas(); });
     el("nbChips")?.addEventListener("click", (ev) => {
       const b = ev.target.closest(".nb-chip");
