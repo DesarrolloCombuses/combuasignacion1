@@ -4,7 +4,7 @@
 // constante viaja dentro del propio codigo, asi que pwa.js la compara con
 // version.json y, si no coinciden, fuerza una descarga limpia.
 // OJO: se actualiza en cada publicacion (lo hace `python bump.py <version>`).
-window.APP_CODE_VERSION = "2.14.0";
+window.APP_CODE_VERSION = "2.14.1";
 
 bindUIEvents();
 bindWindowEvents();

@@ -1,7 +1,7 @@
 {
-  "version": "2.14.0",
-  "minVersion": "2.9.1",
-  "buildDate": "2026-11-25",
+  "version": "2.14.1",
+  "minVersion": "2.14.1",
+  "buildDate": "2026-11-27",
   "channel": "stable",
-  "notes": "Los conductores de cada base también salen del ERP: el conductor nuevo sale apenas lo crean en el ERP, y el que en Sonar quedó sin base o con otra base sale también en la base que dice el ERP. No se le quita a nadie la base que tiene en la hoja."
+  "notes": "Turnos del día: lo asignado ya no se pierde. Se guarda aunque el cursor siga en la casilla; si la misma cuenta está abierta en otro equipo, ya no se borra lo que el otro guardó; si algo quedó sin guardar en este equipo, al abrir el día se puede recuperar; y se ve si quedó guardado."
 }

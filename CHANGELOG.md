@@ -18,6 +18,17 @@ Convencion de version:
 
 ---
 
+## [2.14.1] - 2026-11-27
+
+### Corregido
+- **Turnos del día: lo asignado ya no se pierde** (caso Base 4, programación del 28-nov, montada varias veces sin quedar guardada).
+  - **Se guarda aunque el cursor siga dentro de una casilla de nombre.** Antes, mientras el cursor estuviera en una casilla, el guardado esperaba sin fin; si se cerraba o recargaba la página así, lo asignado se perdía. Ahora espera como mucho 4 segundos.
+  - **Dos equipos con la misma cuenta ya no se borran entre sí.** Cada base guarda todas sus filas del día tal como las tiene en pantalla; si la cuenta estaba abierta en otro PC o en el celular, el equipo con la pantalla vieja borraba lo que el otro ya había guardado. Ahora, antes de guardar, se trae lo que el otro equipo guardó: casilla por casilla, lo que cambió este equipo se queda y lo demás se toma de lo guardado. Si los dos cambiaron la misma casilla, se respeta lo que ya estaba guardado y el equipo que llegó tarde ve un aviso para revisar.
+  - **Recuperar lo que quedó sin guardar.** Si en este equipo quedaron conductores de un día sin guardar, al abrir ese día sale un aviso amarillo con «Recuperarlos» o «Descartar». Nunca se pisa una casilla que ya tiene a alguien guardado.
+  - **Se ve si quedó guardado**: en la barra de avance, «✓ Guardado hh:mm», «Guardando…» o «Falta guardar». Al cerrar la página con algo sin guardar, el navegador pregunta antes de salir; al cambiar de pestaña o de aplicación se guarda de una vez.
+  - «Limpiar filtro» guarda lo pendiente antes de recargar.
+- Actualización **obligatoria**: un equipo con la versión anterior abierta podía seguir borrando lo de otro equipo.
+
 ## [2.14.0] - 2026-11-25
 
 ### Agregado

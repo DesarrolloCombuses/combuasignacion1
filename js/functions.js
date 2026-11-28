@@ -157,6 +157,11 @@ let syncRetryTimerTarget = null;
 let table2ReloadingMissingRows = false;
 let targetEditSaveTimer = null;
 let targetEditingUntil = 0;
+// v2.14.1: desde el primer cambio sin guardar, cuanto se espera como mucho a que la persona salga de la casilla.
+const TARGET_EDIT_ESPERA_MAX_MS = 4000;
+let targetEditPrimerCambio = 0;
+let recuperablesTurnos = [];        // [{ k, campo, nombre }]
+let estadoGuardadoTurnos = null;    // { tipo: ok|guardando|falta|error, hora }
 let autoRefreshTimer = null;
 const SYNC_RETRY_DELAY_MS = 8000;
 const AUTO_REFRESH_DELAY_MS = 120000;
@@ -278,15 +283,19 @@ function scheduleTargetSyncRetry(reason = "Reintento automatico DB nueva"){
 function scheduleTargetEditSave(reason = "Cambios guardados en DB nueva."){
   if (!currentUserId || !currentProgramacionIdTarget) return;
   targetEditingUntil = Date.now() + 3000;
+  if (!targetEditPrimerCambio) targetEditPrimerCambio = Date.now();
   savePendingTargetRowsLocally("Pendiente DB nueva", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
   setSyncStatus("warn", "Pendiente DB nueva");
   if (targetEditSaveTimer) clearTimeout(targetEditSaveTimer);
   const runDeferredSave = async () => {
     targetEditSaveTimer = null;
-    if (isTargetTableEditing()) {
-      targetEditSaveTimer = setTimeout(runDeferredSave, 1500);
+    // v2.14.1: se espera a que la persona termine de escribir, pero como mucho unos segundos. Antes, con el
+    // cursor dentro de una casilla de nombre no se guardaba NUNCA, y si se cerraba la pagina asi se perdia todo.
+    if (isTargetTableEditing() && Date.now() - targetEditPrimerCambio < TARGET_EDIT_ESPERA_MAX_MS) {
+      targetEditSaveTimer = setTimeout(runDeferredSave, 1000);
       return;
     }
+    targetEditPrimerCambio = 0;
     if (!navigator.onLine || !currentUserId || !currentProgramacionIdTarget) {
       scheduleTargetSyncRetry(reason);
       return;
@@ -406,6 +415,20 @@ function showToast(msg, type = "ok", error){
 function setSyncStatus(type, msg){
   lblSync.textContent = msg;
   lblSync.className = `pill pill-${type}`;
+  // v2.14.1: lo mismo, en palabras claras, en la barra de avance de Turnos del dia.
+  if (/DB nueva/.test(String(msg || ""))) {
+    const texto = String(msg || "");
+    estadoGuardadoTurnos = type === "ok"
+      ? { tipo: "ok", hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }
+      : /Guardando/i.test(texto) ? { tipo: "guardando" }
+      : type === "err" ? { tipo: "error" }
+      : /Error/i.test(texto) ? { tipo: "error" } : { tipo: "falta" };
+    const chip = document.getElementById("avGuardado");
+    if (chip) chip.outerHTML = chipGuardadoTurnos();
+    else if (document.querySelector("#avanceTurnos .avance-chips")) {
+      document.querySelector("#avanceTurnos .avance-chips").insertAdjacentHTML("beforeend", chipGuardadoTurnos());
+    }
+  }
   // En rojo, la pildora abre el ultimo error: el aviso flotante se va solo y
   // la pildora es lo que queda a la vista.
   const clickable = type === "err";
@@ -1666,17 +1689,31 @@ function rowFingerprint(row){
   return stableStringify(sanitizeRowForStorage(row || {}));
 }
 
+// v2.14.1: ademas de la huella, una copia de cada fila tal como se leyo. Sirve para saber, casilla por casilla,
+// que cambio ESTE equipo y que cambio otro equipo que guardo despues (ver traerCambiosDeOtrosEquipos).
+let rowsTargetBaselineFilas = new Map();   // row_key -> copia de la fila tal como se leyo
+
+function copiaFilaBaseline(row){
+  return JSON.parse(JSON.stringify(sanitizeRowForStorage(row || {})));
+}
+
 function snapshotTargetRowsBaseline(rowsInput){
   const map = new Map();
+  const copias = new Map();
   (Array.isArray(rowsInput) ? rowsInput : []).forEach(row => {
     const key = buildProgramacionRowKey(row);
-    if (key) map.set(key, rowFingerprint(row));
+    if (key) {
+      map.set(key, rowFingerprint(row));
+      copias.set(key, copiaFilaBaseline(row));
+    }
   });
   rowsTargetBaseline = map;
+  rowsTargetBaselineFilas = copias;
 }
 
 function clearTargetRowsBaseline(){
   rowsTargetBaseline = new Map();
+  rowsTargetBaselineFilas = new Map();
 }
 
 // Sin foto, todo cuenta como cambiado (se escribe todo, como antes).
@@ -1711,11 +1748,65 @@ function updateTargetBaselineAfterSave(rowsWritten, deletedKeys){
   if (rowsTargetBaseline.size === 0) return;
   (Array.isArray(rowsWritten) ? rowsWritten : []).forEach(row => {
     const key = buildProgramacionRowKey(row);
-    if (key) rowsTargetBaseline.set(key, rowFingerprint(row));
+    if (key) {
+      rowsTargetBaseline.set(key, rowFingerprint(row));
+      rowsTargetBaselineFilas.set(key, copiaFilaBaseline(row));
+    }
   });
   (Array.isArray(deletedKeys) ? deletedKeys : []).forEach(key => {
     rowsTargetBaseline.delete(key);
+    rowsTargetBaselineFilas.delete(key);
   });
+}
+
+// v2.14.1: una base guarda SIEMPRE todas sus filas del dia tal como las tiene en pantalla. Si la misma cuenta
+// estaba abierta en otro equipo (otro PC o el celular) y ese otro equipo guardo despues de que este leyo el dia,
+// este equipo, con la pantalla vieja, le borraba lo guardado (Base 4, 27-nov: dos PC y un celular a la vez).
+// Ahora, antes de escribir, se lee lo guardado: en cada casilla que otro equipo cambio se toma lo guardado; en las
+// demas se queda lo de este equipo. Si los dos cambiaron la MISMA casilla, se respeta lo que ya estaba guardado y
+// se avisa aqui (este equipo tenia la pantalla vieja). Devuelve cuantas filas y casillas se trajeron, y los choques.
+async function traerCambiosDeOtrosEquipos(fechaScope, baseScope){
+  const resultado = { filas: 0, casillas: 0, choques: 0 };
+  if (!baseScope || !currentProgramacionIdTarget || rowsTargetBaseline.size === 0) return resultado;
+  const guardado = await fetchProgramacionRowsFromClient(programacionesTargetClient, currentProgramacionIdTarget, { fecha: fechaScope, base: baseScope });
+  if (!guardado?.ok) throw new Error("No se pudo leer lo guardado para compararlo antes de guardar.");
+  const filasGuardadas = dedupeProgramacionRows(normalizeProgramacionRows(guardado.rows || []).normalized).rows;
+  const enMemoria = new Map();
+  rowsTarget.forEach(r => {
+    const k = buildProgramacionRowKey(r);
+    if (k && !enMemoria.has(k)) enMemoria.set(k, r);
+  });
+  const igual = (a, b) => stableStringify(a === undefined ? null : a) === stableStringify(b === undefined ? null : b);
+  filasGuardadas.forEach(guardada => {
+    const k = buildProgramacionRowKey(guardada);
+    if (!k) return;
+    const huella = rowsTargetBaseline.get(k);
+    if (huella !== undefined && huella === rowFingerprint(guardada)) return;   // nadie mas la toco
+    const mia = enMemoria.get(k);
+    if (!mia) {
+      if (huella === undefined) {             // fila que agrego otro equipo
+        rowsTarget.push(copiaFilaBaseline(guardada));
+        resultado.filas++;
+      }
+      return;
+    }
+    const comoSeLeyo = rowsTargetBaselineFilas.get(k);
+    if (!comoSeLeyo) return;
+    const campos = new Set([...Object.keys(comoSeLeyo), ...Object.keys(mia), ...Object.keys(guardada)]);
+    let trajo = false;
+    campos.forEach(c => {
+      if (c === ROW_UI_ID_KEY) return;
+      if (igual(guardada[c], comoSeLeyo[c])) return;   // el otro equipo no la toco: se queda la de este equipo
+      if (igual(mia[c], guardada[c])) return;          // los dos pusieron lo mismo
+      if (!igual(mia[c], comoSeLeyo[c])) resultado.choques++;   // los dos la cambiaron: se respeta lo guardado
+      if (guardada[c] === undefined) delete mia[c];
+      else mia[c] = guardada[c];
+      trajo = true;
+      resultado.casillas++;
+    });
+    if (trajo) resultado.filas++;
+  });
+  return resultado;
 }
 
 function rowsSignature(rowsInput){
@@ -3349,6 +3440,8 @@ async function loadTargetProgramacionByDate(dateIsoInput){
   // La foto anterior deja de valer en cuanto se recarga: se limpia al entrar y
   // se vuelve a tomar si la carga llega a buen puerto.
   clearTargetRowsBaseline();
+  recuperablesTurnos = [];
+  estadoGuardadoTurnos = null;
   const dateIso = normalizeDateToISO(dateIsoInput || "");
   if (!dateIso) {
     rowsTarget = [];
@@ -3422,6 +3515,7 @@ async function loadTargetProgramacionByDate(dateIsoInput){
     sanitizeFichoConductorSlots(rowsTarget, key1, key2);
   }
   currentProgramacionIdTarget = latestProgramacionId || null;
+  recuperablesTurnos = buscarAsignacionesSinGuardar(dateIso);
 
   if (currentProgramacionIdTarget) {
     const info = await programacionesTargetClient
@@ -3512,6 +3606,22 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
   // acababa de asignar y lo dejaba "como estaba antes". Acotando el ambito,
   // cada base escribe y borra unicamente lo suyo y ya no se pisan entre si.
   const baseScope = getBaseCanonical(currentBase);
+  // v2.14.1: antes de escribir la base entera se traen los cambios que otro equipo guardo despues (si falla la
+  // lectura no se escribe nada: queda pendiente y se reintenta, mejor que pisar lo de otro).
+  let traidos = { filas: 0, casillas: 0, choques: 0 };
+  if (baseScope) {
+    try {
+      traidos = await traerCambiosDeOtrosEquipos(fechaScope, baseScope);
+    } catch (lecturaError) {
+      console.error("No se pudo comparar con lo guardado antes de guardar:", lecturaError?.message || lecturaError);
+      savePendingTargetRowsLocally("Error de sincronizacion (DB nueva)", rowsTarget, currentProgramacionIdTarget, currentProgramacionFileNameTarget);
+      setSyncStatus("warn", "Pendiente DB nueva");
+      showToast("Guardado local pendiente de confirmacion en DB nueva.", "warn", lecturaError);
+      scheduleTargetSyncRetry(reason);
+      syncRowsInProgressTarget = false;
+      return false;
+    }
+  }
   const rowsEnAmbito = Array.isArray(rowsTarget)
     ? rowsTarget.filter(r =>
         (!fechaScope || getRowDateISO(r, rowsTargetFechaKey) === fechaScope) &&
@@ -3583,9 +3693,19 @@ async function syncProgramacionRowsToTargetSupabase(reason = "Cambios guardados 
     clearPendingTargetRowsLocal();
     setSyncStatus("ok", "Confirmado DB nueva");
     showToast(`${reason} (confirmado)`, "ok");
-    // Aviso visible y veraz: el dato ya quedo verificado en la base de datos.
+    // v2.14.1: si se trajeron cambios de otro equipo, se pintan y se avisa (la pantalla de este equipo estaba vieja).
+    if (traidos.filas > 0) {
+      renderTable2();
+      renderDrivers();
+      showToast(traidos.choques > 0
+        ? `Otro equipo con esta misma cuenta ya había llenado ${traidos.choques} casilla(s) que usted también cambió: se dejó lo que estaba guardado. Revise la tabla. Use un solo equipo por base.`
+        : `Se sumaron ${traidos.casillas} cambio(s) que se guardaron desde otro equipo con esta misma cuenta. Use un solo equipo por base.`, "warn");
+    }
+    // Aviso visible y veraz: el dato ya quedo verificado en la base de datos. Si la persona sigue escribiendo en
+    // una casilla (v2.14.1 ya guarda aunque el cursor siga ahi) no se le tapa la pantalla: basta el aviso de abajo.
+    // Si hubo choques no se muestra: alguna de esas asignaciones no quedo.
     if (pendingAssignmentConfirmations.length > 0) {
-      showAssignmentConfirmedModal(pendingAssignmentConfirmations.slice());
+      if (!isTargetTableEditing() && !traidos.choques) showAssignmentConfirmedModal(pendingAssignmentConfirmations.slice());
       pendingAssignmentConfirmations = [];
     }
     return true;
@@ -3655,6 +3775,92 @@ function pintarEleccionConductor(){
   }
 }
 
+/* ---------- v2.14.1: lo que quedo sin guardar en este equipo ----------
+   Cada cambio deja una copia en este navegador hasta que la base de datos lo confirma. Si la pagina se cerro antes
+   (o la base de datos no respondio), esa copia quedaba escondida: al volver, el dia salia vacio. Ahora, al abrir el
+   dia, se buscan en esa copia los conductores que no alcanzaron a guardarse en casillas que siguen vacias, y se
+   ofrece recuperarlos. Nunca se pisa una casilla que ya tiene a alguien guardado. */
+
+function buscarAsignacionesSinGuardar(dateIso){
+  const pendiente = readPendingTargetRowsLocal();
+  if (!pendiente || !Array.isArray(pendiente.rows_data) || !pendiente.rows_data.length || !dateIso) return [];
+  if (pendiente.programacion_id && currentProgramacionIdTarget
+      && String(pendiente.programacion_id) !== String(currentProgramacionIdTarget)) return [];
+  const base = getBaseCanonical(currentBase);
+  const fechaKeyPend = getFechaKeyFromArray(pendiente.rows_data);
+  const fechaKeyAct = getFechaKeyFromArray(rowsTarget);
+  const { key1, key2 } = getConductorKeysFromArray(rowsTarget);
+  const campos = [key1, key2].filter(Boolean);
+  if (!campos.length) return [];
+  const actuales = new Map();
+  const yaPuestos = new Set();
+  rowsTarget.forEach(r => {
+    if (getRowDateISO(r, fechaKeyAct) !== dateIso) return;
+    if (base && getRowCanonicalBase(r) !== base) return;
+    const k = buildProgramacionRowKey(r);
+    if (k) actuales.set(k, r);
+    campos.forEach(c => { const n = extractConductorName(r[c] || ""); if (n) yaPuestos.add(norm(n)); });
+  });
+  const salida = [];
+  pendiente.rows_data.forEach(p => {
+    if (getRowDateISO(p, fechaKeyPend) !== dateIso) return;
+    if (base && getRowCanonicalBase(p) !== base) return;
+    const k = buildProgramacionRowKey(p);
+    const actual = k ? actuales.get(k) : null;
+    if (!actual || isFichoRowByContent(actual)) return;
+    campos.forEach(c => {
+      const nombre = extractConductorName(p[c] || "");
+      if (!nombre || yaPuestos.has(norm(nombre))) return;
+      if (extractConductorName(actual[c] || "")) return;     // ya tiene a alguien guardado: no se pisa
+      yaPuestos.add(norm(nombre));
+      salida.push({ k, campo: c, nombre });
+    });
+  });
+  return salida;
+}
+
+function recuperarAsignacionesSinGuardar(){
+  const lista = recuperablesTurnos.slice();
+  recuperablesTurnos = [];
+  const porClave = new Map();
+  rowsTarget.forEach(r => { const k = buildProgramacionRowKey(r); if (k && !porClave.has(k)) porClave.set(k, r); });
+  let puestos = 0;
+  lista.forEach(x => {
+    const r = porClave.get(x.k);
+    if (!r || extractConductorName(r[x.campo] || "")) return;
+    r[x.campo] = x.nombre;
+    setConductorNote(r, x.campo, "");
+    puestos++;
+  });
+  renderTable2();
+  renderDrivers();
+  if (puestos > 0) {
+    scheduleTargetEditSave(`${puestos} conductor(es) recuperado(s) y guardado(s) en DB nueva.`);
+    showToast(`Se recuperaron ${puestos} conductor(es). Guardando...`, "ok");
+  }
+}
+
+function descartarAsignacionesSinGuardar(){
+  recuperablesTurnos = [];
+  clearPendingTargetRowsLocal();
+  pintarAvanceTurnos();
+}
+
+function hayTurnosSinGuardar(){
+  return !!targetEditSaveTimer || syncRowsInProgressTarget || syncRowsPendingTarget || !!syncRetryTimerTarget;
+}
+
+function chipGuardadoTurnos(){
+  const e = estadoGuardadoTurnos;
+  if (!e) return "";
+  const txt = e.tipo === "ok" ? `&#10003; Guardado${e.hora ? " " + e.hora : ""}`
+    : e.tipo === "guardando" ? "Guardando&hellip;"
+    : e.tipo === "error" ? "&#9888; No se pudo guardar: se reintenta"
+    : "&#9888; Falta guardar";
+  const clase = e.tipo === "ok" ? "av-ok" : e.tipo === "guardando" ? "av-info" : e.tipo === "error" ? "av-falta" : "av-nota";
+  return `<span class="av-chip av-guardado ${clase}" id="avGuardado">${txt}</span>`;
+}
+
 function pintarAvanceTurnos(){
   const caja = document.getElementById("avanceTurnos");
   if (!caja || !gridBody2) return;
@@ -3687,7 +3893,14 @@ function pintarAvanceTurnos(){
     +   (faltan ? `<span class="av-chip av-falta">${faltan} sin conductor</span>` : `<span class="av-chip av-ok">Ninguna vacía</span>`)
     +   (conNota ? `<span class="av-chip av-nota">${conNota} con nota (taller, etc.)</span>` : "")
     +   `<span class="av-chip av-info">${libres.length} ${libres.length === 1 ? "conductor" : "conductores"} sin ubicar</span>`
+    +   chipGuardadoTurnos()
     + `</div>`
+    + (recuperablesTurnos.length
+        ? `<div class="aviso-recuperar" id="avisoRecuperar"><span>En este equipo quedaron <b>${recuperablesTurnos.length}</b> `
+          + `${recuperablesTurnos.length === 1 ? "conductor" : "conductores"} de este d&iacute;a <b>sin guardar</b>.</span>`
+          + `<span class="ar-botones"><button type="button" id="btnRecuperarTurnos">Recuperarlos</button>`
+          + `<button type="button" id="btnDescartarTurnos" class="ar-sec">Descartar</button></span></div>`
+        : "")
     + `<div class="aviso-elegido" id="avisoElegido" hidden></div>`;
   const grid = document.getElementById("grid2");
   if (grid) grid.classList.toggle("solo-faltan", soloFaltanTurnos);
@@ -3716,6 +3929,21 @@ function irASiguienteVacia(){
 document.addEventListener("click", (ev) => {
   if (ev.target.closest("#avSiguiente")) irASiguienteVacia();
   else if (ev.target.closest("#avisoElegidoCancelar")) soltarConductorElegido();
+  else if (ev.target.closest("#btnRecuperarTurnos")) recuperarAsignacionesSinGuardar();
+  else if (ev.target.closest("#btnDescartarTurnos")) descartarAsignacionesSinGuardar();
+});
+// v2.14.1: al irse a otra pestana/aplicacion se guarda de una vez lo pendiente; al cerrar o recargar la pagina con
+// algo sin guardar, el navegador pregunta antes de salir.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && targetEditSaveTimer) {
+    flushPendingTargetSave().catch(() => {});
+  }
+});
+window.addEventListener("beforeunload", (ev) => {
+  if (!hayTurnosSinGuardar()) return;
+  if (targetEditSaveTimer) flushPendingTargetSave().catch(() => {});
+  ev.preventDefault();
+  ev.returnValue = "";
 });
 document.addEventListener("change", (ev) => {
   if (ev.target && ev.target.id === "avSoloFaltan") {
@@ -10358,6 +10586,7 @@ function bindUIEvents(){
   }
   if (clearFilter2) {
     clearFilter2.addEventListener("click", async () => {
+      await flushPendingTargetSave();   // v2.14.1: lo pendiente se guarda antes de recargar
       if (filterDate2) filterDate2.value = "";
       try {
         await loadLatestProgramacionFromTargetSupabase();
